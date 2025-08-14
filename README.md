@@ -19,7 +19,7 @@ We should absolutely minimize the software and maximize the onchain logic of the
 
 ## Hosting
 
-Builds are posted to [zWallet.eth](https://zwallets.eth.limo/).
+Builds are posted to [zWallets.eth](https://zwallets.eth.limo/).
 
 This domain should provide consistent UX over time with updates to `zWallet.html` and `zWallet.sol`.
 
