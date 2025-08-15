@@ -1,5 +1,5 @@
 # zWallet
-> v0.0.1
+> v0.0.2
 
 onchain maxi wallet software
 

@@ -37,6 +37,9 @@ const TOKEN_LOGOS = {
 // WETH address for ETH price
 const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
+// zQuoter contract for finding best swap routes
+const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
+
 // ERC6909 addresses
 const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
 const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
@@ -56,10 +59,18 @@ const DEFAULT_KDF = { kdf: "pbkdf2-sha256", iter: 210000 }; // bump iter later i
 // Default tokens configuration
 const DEFAULT_TOKENS = {
   ETH: { address: null, symbol: "ETH", name: "Ethereum", decimals: 18 },
-  USDC: {
-    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol: "USDC",
-    name: "USD Coin",
+  ZAMM: {
+    address: COINS_CONTRACT,
+    symbol: "ZAMM",
+    name: "ZAMM",
+    decimals: 18,
+    isERC6909: true,
+    id: ZAMM_ID,
+  },
+  USDT: {
+    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    symbol: "USDT",
+    name: "Tether",
     decimals: 6,
   },
   DAI: {
@@ -68,10 +79,10 @@ const DEFAULT_TOKENS = {
     name: "Dai",
     decimals: 18,
   },
-  USDT: {
-    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    symbol: "USDT",
-    name: "Tether",
+  USDC: {
+    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    symbol: "USDC",
+    name: "USD Coin",
     decimals: 6,
   },
   ENS: {
@@ -85,14 +96,6 @@ const DEFAULT_TOKENS = {
     symbol: "CULT",
     name: "Milady Cult Coin",
     decimals: 18,
-  },
-  ZAMM: {
-    address: COINS_CONTRACT,
-    symbol: "ZAMM",
-    name: "ZAMM",
-    decimals: 18,
-    isERC6909: true,
-    id: ZAMM_ID,
   },
 };
 
@@ -129,6 +132,8 @@ let currentRpc =
   localStorage.getItem("rpc_endpoint") || "https://eth.llamarpc.com";
 let autoRefreshInterval = null;
 let txHistory = [];
+let ensResolveTimeout = null;
+let gasUpdateTimeout = null;
 let gasPrices = {
   slow: null,
   normal: null,
@@ -136,6 +141,48 @@ let gasPrices = {
   custom: null,
 };
 let TOKENS = { ...DEFAULT_TOKENS };
+
+// Event listener management for cleanup
+const eventListeners = new Map();
+const abortControllers = new Map();
+
+function addManagedEventListener(element, event, handler, options = {}) {
+  if (!element) return;
+  
+  const key = `${element.id || element.className}_${event}`;
+  
+  // Remove existing listener if present
+  if (eventListeners.has(key)) {
+    const oldHandler = eventListeners.get(key);
+    element.removeEventListener(event, oldHandler);
+  }
+  
+  // Add new listener
+  element.addEventListener(event, handler, options);
+  eventListeners.set(key, handler);
+}
+
+function cleanupEventListeners() {
+  // Remove all managed event listeners
+  eventListeners.forEach((handler, key) => {
+    const [elementId, event] = key.split('_');
+    const element = document.getElementById(elementId) || document.querySelector(`.${elementId}`);
+    if (element) {
+      element.removeEventListener(event, handler);
+    }
+  });
+  eventListeners.clear();
+  
+  // Abort all pending requests
+  abortControllers.forEach(controller => controller.abort());
+  abortControllers.clear();
+  
+  // Clear timeouts
+  if (ensResolveTimeout) clearTimeout(ensResolveTimeout);
+  if (gasUpdateTimeout) clearTimeout(gasUpdateTimeout);
+  if (swapSimulationTimeout) clearTimeout(swapSimulationTimeout);
+  if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+}
 
 const enc = new TextEncoder(),
   dec = new TextDecoder();
@@ -318,6 +365,275 @@ async function init() {
   }
 
   setupEventListeners();
+  
+  // Check if opened for dApp approval
+  checkForDappRequest();
+}
+
+// Handle dApp requests when opened as popup
+async function checkForDappRequest() {
+  const params = new URLSearchParams(window.location.search);
+  const requestId = params.get('request');
+  const requestType = params.get('type');
+  const origin = params.get('origin');
+  
+  if (!requestId || !requestType) return;
+  
+  // Show the dApp modal
+  const modal = document.getElementById('dappApprovalModal');
+  const originDiv = document.getElementById('dappOrigin');
+  
+  if (!modal || !originDiv) return;
+  
+  modal.classList.remove('hidden');
+  // Safely set origin text to prevent XSS
+  originDiv.textContent = '';
+  const warningIcon = document.createTextNode('⚠️ Request from: ');
+  const strongElem = document.createElement('strong');
+  strongElem.textContent = decodeURIComponent(origin);
+  originDiv.appendChild(warningIcon);
+  originDiv.appendChild(strongElem);
+  
+  // Hide all request types first
+  document.getElementById('connectionRequest')?.classList.add('hidden');
+  document.getElementById('transactionRequest')?.classList.add('hidden');
+  document.getElementById('signRequest')?.classList.add('hidden');
+  
+  // Get the request details from background script
+  chrome.runtime.sendMessage({ 
+    type: 'GET_REQUEST', 
+    requestId: requestId 
+  }, async (pendingRequest) => {
+    if (!pendingRequest) {
+      modal.classList.add('hidden');
+      return;
+    }
+    
+    switch (requestType) {
+      case 'connect':
+        handleConnectionRequest(requestId, pendingRequest);
+        break;
+      case 'transaction':
+        await handleTransactionRequest(requestId, pendingRequest);
+        break;
+      case 'sign':
+        handleSignRequest(requestId, pendingRequest);
+        break;
+    }
+  });
+}
+
+function handleConnectionRequest(requestId, pendingRequest) {
+  const connDiv = document.getElementById('connectionRequest');
+  const accountDiv = document.getElementById('connectionAccount');
+  const modalTitle = document.getElementById('dappModalTitle');
+  
+  if (!connDiv || !accountDiv || !modalTitle) return;
+  
+  modalTitle.textContent = 'Connect to DApp';
+  connDiv.classList.remove('hidden');
+  
+  if (wallet) {
+    accountDiv.textContent = wallet.address;
+  } else {
+    accountDiv.textContent = 'No wallet connected';
+  }
+  
+  // Setup approve/reject handlers
+  const approveBtn = document.getElementById('approveDapp');
+  const rejectBtn = document.getElementById('rejectDapp');
+  
+  if (approveBtn) {
+    approveBtn.onclick = async () => {
+      if (!wallet) {
+        alert('Please unlock your wallet first');
+        return;
+      }
+      
+      // Store connected site
+      chrome.storage.local.set({ 
+        [`connected_${pendingRequest.origin}`]: true,
+        'current_wallet': wallet.address 
+      });
+      
+      // Send response
+      chrome.runtime.sendMessage({
+        type: 'USER_RESPONSE',
+        requestId: requestId,
+        response: { result: [wallet.address] }
+      });
+      
+      window.close();
+    };
+  }
+  
+  if (rejectBtn) {
+    rejectBtn.onclick = () => {
+      chrome.runtime.sendMessage({
+        type: 'USER_RESPONSE',
+        requestId: requestId,
+        response: { error: { code: 4001, message: 'User rejected connection' } }
+      });
+      
+      window.close();
+    };
+  }
+}
+
+async function handleTransactionRequest(requestId, pendingRequest) {
+  const txDiv = document.getElementById('transactionRequest');
+  const modalTitle = document.getElementById('dappModalTitle');
+  
+  if (!txDiv || !modalTitle) return;
+  
+  modalTitle.textContent = 'Approve Transaction';
+  txDiv.classList.remove('hidden');
+  
+  const txParams = pendingRequest.request.params[0];
+  
+  // Display transaction details
+  document.getElementById('dappTxFrom').textContent = txParams.from || wallet?.address || '';
+  document.getElementById('dappTxTo').textContent = txParams.to || '';
+  document.getElementById('dappTxValue').textContent = txParams.value ? 
+    `${ethers.formatEther(txParams.value)} ETH` : '0 ETH';
+  document.getElementById('dappTxGas').textContent = txParams.gas || 'Auto';
+  
+  // Handle calldata
+  const calldata = txParams.data || '0x';
+  const calldataDisplay = document.getElementById('calldataDisplay');
+  const swissKnifeLink = document.getElementById('swissKnifeLink');
+  const toggleBtn = document.getElementById('toggleCalldata');
+  const calldataSection = document.getElementById('calldataSection');
+  
+  if (calldataDisplay) {
+    calldataDisplay.value = calldata;
+  }
+  
+  if (swissKnifeLink && calldata !== '0x') {
+    swissKnifeLink.href = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
+  }
+  
+  if (toggleBtn && calldataSection) {
+    toggleBtn.onclick = () => {
+      const isHidden = calldataSection.classList.contains('hidden');
+      calldataSection.classList.toggle('hidden');
+      toggleBtn.textContent = isHidden ? 'Hide' : 'Show';
+    };
+  }
+  
+  // Setup approve/reject handlers
+  const approveBtn = document.getElementById('approveDapp');
+  const rejectBtn = document.getElementById('rejectDapp');
+  
+  if (approveBtn) {
+    approveBtn.onclick = async () => {
+      if (!wallet) {
+        alert('Please unlock your wallet first');
+        return;
+      }
+      
+      try {
+        // Send the transaction
+        const tx = await wallet.sendTransaction({
+          to: txParams.to,
+          value: txParams.value || 0,
+          data: txParams.data || '0x',
+          gasLimit: txParams.gas,
+          maxFeePerGas: txParams.maxFeePerGas,
+          maxPriorityFeePerGas: txParams.maxPriorityFeePerGas
+        });
+        
+        // Send response with transaction hash
+        chrome.runtime.sendMessage({
+          type: 'USER_RESPONSE',
+          requestId: requestId,
+          response: { result: tx.hash }
+        });
+        
+        showToast(`Transaction sent: ${tx.hash.slice(0, 10)}...`);
+        window.close();
+      } catch (err) {
+        chrome.runtime.sendMessage({
+          type: 'USER_RESPONSE',
+          requestId: requestId,
+          response: { error: { code: -32000, message: err.message } }
+        });
+        
+        alert('Transaction failed: ' + err.message);
+      }
+    };
+  }
+  
+  if (rejectBtn) {
+    rejectBtn.onclick = () => {
+      chrome.runtime.sendMessage({
+        type: 'USER_RESPONSE',
+        requestId: requestId,
+        response: { error: { code: 4001, message: 'User rejected transaction' } }
+      });
+      
+      window.close();
+    };
+  }
+}
+
+function handleSignRequest(requestId, pendingRequest) {
+  const signDiv = document.getElementById('signRequest');
+  const modalTitle = document.getElementById('dappModalTitle');
+  const messageDiv = document.getElementById('signMessage');
+  
+  if (!signDiv || !modalTitle || !messageDiv) return;
+  
+  modalTitle.textContent = 'Sign Message';
+  signDiv.classList.remove('hidden');
+  
+  const message = pendingRequest.request.params[0];
+  messageDiv.textContent = message;
+  
+  // Setup approve/reject handlers
+  const approveBtn = document.getElementById('approveDapp');
+  const rejectBtn = document.getElementById('rejectDapp');
+  
+  if (approveBtn) {
+    approveBtn.onclick = async () => {
+      if (!wallet) {
+        alert('Please unlock your wallet first');
+        return;
+      }
+      
+      try {
+        const signature = await wallet.signMessage(message);
+        
+        chrome.runtime.sendMessage({
+          type: 'USER_RESPONSE',
+          requestId: requestId,
+          response: { result: signature }
+        });
+        
+        window.close();
+      } catch (err) {
+        chrome.runtime.sendMessage({
+          type: 'USER_RESPONSE',
+          requestId: requestId,
+          response: { error: { code: -32000, message: err.message } }
+        });
+        
+        alert('Signing failed: ' + err.message);
+      }
+    };
+  }
+  
+  if (rejectBtn) {
+    rejectBtn.onclick = () => {
+      chrome.runtime.sendMessage({
+        type: 'USER_RESPONSE',
+        requestId: requestId,
+        response: { error: { code: 4001, message: 'User rejected signature' } }
+      });
+      
+      window.close();
+    };
+  }
 }
 
 async function loadCustomTokens() {
@@ -325,12 +641,30 @@ async function loadCustomTokens() {
     const stored = localStorage.getItem("custom_tokens");
     if (stored) {
       customTokens = JSON.parse(stored);
-      // Merge with default tokens
-      TOKENS = { ...DEFAULT_TOKENS, ...customTokens };
+      // Create TOKENS in specific order: defaults first, then custom
+      TOKENS = {};
+      // Add default tokens in order
+      for (const key of Object.keys(DEFAULT_TOKENS)) {
+        TOKENS[key] = DEFAULT_TOKENS[key];
+      }
+      // Add custom tokens
+      for (const key of Object.keys(customTokens)) {
+        if (!DEFAULT_TOKENS[key]) {
+          TOKENS[key] = customTokens[key];
+        }
+      }
+    } else {
+      TOKENS = {};
+      for (const key of Object.keys(DEFAULT_TOKENS)) {
+        TOKENS[key] = DEFAULT_TOKENS[key];
+      }
     }
   } catch (err) {
     customTokens = {};
-    TOKENS = { ...DEFAULT_TOKENS };
+    TOKENS = {};
+    for (const key of Object.keys(DEFAULT_TOKENS)) {
+      TOKENS[key] = DEFAULT_TOKENS[key];
+    }
   }
 }
 
@@ -562,8 +896,16 @@ async function fetchAllBalances() {
       let priceInEth = Number(pricesETH[i]) / 1e18;
       let priceInUsd = Number(pricesUSDC[i]) / 1e6;
 
+      // Override stablecoin prices to exactly $1.00
+      if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
+        priceInUsd = 1.0; // Stablecoins are always $1
+        // Calculate ETH price based on current ETH/USD rate
+        if (wethPrice > 0) {
+          priceInEth = 1.0 / wethPrice; // 1 USD worth of ETH
+        }
+      }
       // Override ETH price with WETH price we fetched
-      if (symbol === "ETH") {
+      else if (symbol === "ETH") {
         priceInUsd = wethPrice; // Use the WETH price in USDC
         priceInEth = 1; // 1 ETH = 1 ETH always
       }
@@ -626,6 +968,12 @@ async function fetchBalancesFallback() {
           eth: 1, // 1 ETH = 1 ETH
           usd: ethPrice, // Use WETH price in USDC
         };
+      } else if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
+        // Override stablecoin prices to exactly $1.00
+        tokenPrices[symbol] = {
+          eth: ethPrice > 0 ? 1.0 / ethPrice : 0,
+          usd: 1.0,
+        };
       } else {
         try {
           const [priceETH] = await zWalletContract.checkPriceInETH(
@@ -661,7 +1009,10 @@ function updateBalanceDisplay() {
 
   let totalValue = 0;
 
-  for (const [symbol, token] of Object.entries(TOKENS)) {
+  // Use Object.keys to maintain insertion order
+  const tokenKeys = Object.keys(TOKENS);
+  for (const symbol of tokenKeys) {
+    const token = TOKENS[symbol];
     const balance = currentBalances[symbol] || { formatted: "0" };
     const price = tokenPrices[symbol] || { eth: 0, usd: 0 };
     const value = parseFloat(balance.formatted) * price.usd;
@@ -875,13 +1226,201 @@ async function calculateMaxAmount() {
   return balance.formatted;
 }
 
+async function fetchTransactionHistoryExtended() {
+  if (!wallet || !provider) return;
+
+  const txList = document.getElementById("txList");
+  const loadingMsg = document.getElementById("txLoadingMessage");
+  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+
+  if (!loadingMsg) {
+    console.error("Loading message element not found");
+    return;
+  }
+
+  loadingMsg.textContent = "Loading 24 hours of transactions...";
+  loadingMsg.classList.remove("hidden");
+  if (loadMoreBtn) loadMoreBtn.classList.add("hidden");
+  txHistory = [];
+
+  const uniqueTxs = new Set();
+
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    // ~7200 blocks in 24 hours (12 sec per block)
+    // We'll fetch in chunks of 999 blocks
+    const totalBlocks = 7200;
+    const chunkSize = 999;
+    const chunks = Math.ceil(totalBlocks / chunkSize);
+    
+    for (let i = 0; i < chunks; i++) {
+      const toBlock = currentBlock - (i * chunkSize);
+      const fromBlock = Math.max(0, toBlock - chunkSize + 1);
+      
+      loadingMsg.textContent = `Loading transactions... (${i + 1}/${chunks})`;
+      
+      const promises = [];
+      
+      // Fetch each token's transfers for this chunk
+      for (const [symbol, token] of Object.entries(TOKENS)) {
+        if (!token.address) continue;
+        
+        if (token.isERC6909) {
+          // Handle ERC6909 tokens
+          promises.push(
+            Promise.all([
+              provider.getLogs({
+                address: token.address,
+                fromBlock,
+                toBlock,
+                topics: [
+                  ethers.id("TransferSingle(address,address,address,uint256,uint256)"),
+                  null,
+                  ethers.zeroPadValue(wallet.address, 32),
+                ],
+              }).catch(() => []),
+              provider.getLogs({
+                address: token.address,
+                fromBlock,
+                toBlock,
+                topics: [
+                  ethers.id("TransferSingle(address,address,address,uint256,uint256)"),
+                  null,
+                  null,
+                  ethers.zeroPadValue(wallet.address, 32),
+                ],
+              }).catch(() => [])
+            ]).then(([sentLogs, receivedLogs]) => {
+              // Process logs same as before
+              for (const log of sentLogs) {
+                const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                  ["uint256", "uint256"],
+                  log.data
+                );
+                if (decoded[0].toString() === token.id) {
+                  const txKey = `${log.transactionHash}-${log.logIndex}`;
+                  if (!uniqueTxs.has(txKey)) {
+                    uniqueTxs.add(txKey);
+                    txHistory.push({
+                      type: "send",
+                      token: symbol,
+                      amount: ethers.formatUnits(decoded[1], token.decimals),
+                      hash: log.transactionHash,
+                      block: log.blockNumber,
+                      to: "0x" + log.topics[3].slice(26),
+                      logIndex: log.logIndex,
+                    });
+                  }
+                }
+              }
+              for (const log of receivedLogs) {
+                const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                  ["uint256", "uint256"],
+                  log.data
+                );
+                if (decoded[0].toString() === token.id) {
+                  const txKey = `${log.transactionHash}-${log.logIndex}`;
+                  if (!uniqueTxs.has(txKey)) {
+                    uniqueTxs.add(txKey);
+                    txHistory.push({
+                      type: "receive",
+                      token: symbol,
+                      amount: ethers.formatUnits(decoded[1], token.decimals),
+                      hash: log.transactionHash,
+                      block: log.blockNumber,
+                      from: "0x" + log.topics[2].slice(26),
+                      logIndex: log.logIndex,
+                    });
+                  }
+                }
+              }
+            })
+          );
+        } else {
+          // Standard ERC20
+          promises.push(
+            Promise.all([
+              provider.getLogs({
+                address: token.address,
+                fromBlock,
+                toBlock,
+                topics: [
+                  ethers.id("Transfer(address,address,uint256)"),
+                  ethers.zeroPadValue(wallet.address, 32),
+                ],
+              }).catch(() => []),
+              provider.getLogs({
+                address: token.address,
+                fromBlock,
+                toBlock,
+                topics: [
+                  ethers.id("Transfer(address,address,uint256)"),
+                  null,
+                  ethers.zeroPadValue(wallet.address, 32),
+                ],
+              }).catch(() => [])
+            ]).then(([sentLogs, receivedLogs]) => {
+              for (const log of sentLogs) {
+                const txKey = `${log.transactionHash}-${log.logIndex}`;
+                if (!uniqueTxs.has(txKey)) {
+                  uniqueTxs.add(txKey);
+                  const amount = ethers.formatUnits(log.data, token.decimals);
+                  txHistory.push({
+                    type: "send",
+                    token: symbol,
+                    amount,
+                    hash: log.transactionHash,
+                    block: log.blockNumber,
+                    to: "0x" + log.topics[2].slice(26),
+                    logIndex: log.logIndex,
+                  });
+                }
+              }
+              for (const log of receivedLogs) {
+                const txKey = `${log.transactionHash}-${log.logIndex}`;
+                if (!uniqueTxs.has(txKey)) {
+                  uniqueTxs.add(txKey);
+                  const amount = ethers.formatUnits(log.data, token.decimals);
+                  txHistory.push({
+                    type: "receive",
+                    token: symbol,
+                    amount,
+                    hash: log.transactionHash,
+                    block: log.blockNumber,
+                    from: "0x" + log.topics[1].slice(26),
+                    logIndex: log.logIndex,
+                  });
+                }
+              }
+            })
+          );
+        }
+      }
+      
+      await Promise.all(promises);
+    }
+    
+    // Sort by block number and log index
+    txHistory.sort((a, b) => {
+      if (b.block !== a.block) return b.block - a.block;
+      return (b.logIndex || 0) - (a.logIndex || 0);
+    });
+
+    displayTransactions();
+  } catch (err) {
+    console.error("Error fetching extended history:", err);
+    if (loadingMsg) loadingMsg.textContent = "Error loading extended history";
+    if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
+  }
+}
+
 async function fetchTransactionHistory() {
   if (!wallet || !provider) return;
 
   const txList = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
 
-  loadingMsg.textContent = "Loading transactions...";
+  loadingMsg.textContent = "Loading recent transactions (last ~3 hours)...";
   txList.classList.add("hidden");
   txHistory = [];
 
@@ -891,75 +1430,159 @@ async function fetchTransactionHistory() {
   try {
     // Get block number for limiting search
     const currentBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, currentBlock - 10000); // Last ~10k blocks
+    // Use 999 blocks to stay under RPC limit of 1000
+    // This is approximately 3.3 hours of Ethereum blocks (12 sec per block)
+    const fromBlock = Math.max(0, currentBlock - 999);
 
-    // Fetch token transfers for each token
+    // Parallel fetch all logs
+    const promises = [];
+    
+    // Fetch token transfers for each token in parallel
     for (const [symbol, token] of Object.entries(TOKENS)) {
-      if (!token.address) continue;
+      if (!token.address) continue; // Skip ETH
 
-      try {
-        // Sent tokens
-        const sentLogs = await provider.getLogs({
-          address: token.address,
-          fromBlock,
-          toBlock: currentBlock,
-          topics: [
-            ethers.id("Transfer(address,address,uint256)"),
-            ethers.zeroPadValue(wallet.address, 32),
-          ],
-        });
-
-        // Received tokens
-        const receivedLogs = await provider.getLogs({
-          address: token.address,
-          fromBlock,
-          toBlock: currentBlock,
-          topics: [
-            ethers.id("Transfer(address,address,uint256)"),
-            null,
-            ethers.zeroPadValue(wallet.address, 32),
-          ],
-        });
-
-        // Process sent with deduplication
-        for (const log of sentLogs) {
-          const txKey = `${log.transactionHash}-${log.logIndex}`;
-          if (!uniqueTxs.has(txKey)) {
-            uniqueTxs.add(txKey);
-            const amount = ethers.formatUnits(log.data, token.decimals);
-            txHistory.push({
-              type: "send",
-              token: symbol,
-              amount,
-              hash: log.transactionHash,
-              block: log.blockNumber,
-              to: "0x" + log.topics[2].slice(26),
-              logIndex: log.logIndex,
-            });
-          }
-        }
-
-        // Process received with deduplication
-        for (const log of receivedLogs) {
-          const txKey = `${log.transactionHash}-${log.logIndex}`;
-          if (!uniqueTxs.has(txKey)) {
-            uniqueTxs.add(txKey);
-            const amount = ethers.formatUnits(log.data, token.decimals);
-            txHistory.push({
-              type: "receive",
-              token: symbol,
-              amount,
-              hash: log.transactionHash,
-              block: log.blockNumber,
-              from: "0x" + log.topics[1].slice(26),
-              logIndex: log.logIndex,
-            });
-          }
-        }
-      } catch (err) {
-        console.error(`Error fetching ${symbol} history:`, err);
+      // Handle ERC6909 tokens differently
+      if (token.isERC6909) {
+        // ERC6909 uses TransferSingle event
+        promises.push(
+          Promise.all([
+            provider.getLogs({
+              address: token.address,
+              fromBlock,
+              toBlock: currentBlock,
+              topics: [
+                ethers.id("TransferSingle(address,address,address,uint256,uint256)"),
+                null,
+                ethers.zeroPadValue(wallet.address, 32),
+              ],
+            }),
+            provider.getLogs({
+              address: token.address,
+              fromBlock,
+              toBlock: currentBlock,
+              topics: [
+                ethers.id("TransferSingle(address,address,address,uint256,uint256)"),
+                null,
+                null,
+                ethers.zeroPadValue(wallet.address, 32),
+              ],
+            })
+          ]).then(([sentLogs, receivedLogs]) => {
+            // Process ERC6909 sent
+            for (const log of sentLogs) {
+              const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                ["uint256", "uint256"],
+                log.data
+              );
+              if (decoded[0].toString() === token.id) {
+                const txKey = `${log.transactionHash}-${log.logIndex}`;
+                if (!uniqueTxs.has(txKey)) {
+                  uniqueTxs.add(txKey);
+                  txHistory.push({
+                    type: "send",
+                    token: symbol,
+                    amount: ethers.formatUnits(decoded[1], token.decimals),
+                    hash: log.transactionHash,
+                    block: log.blockNumber,
+                    to: "0x" + log.topics[3].slice(26),
+                    logIndex: log.logIndex,
+                  });
+                }
+              }
+            }
+            // Process ERC6909 received
+            for (const log of receivedLogs) {
+              const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                ["uint256", "uint256"],
+                log.data
+              );
+              if (decoded[0].toString() === token.id) {
+                const txKey = `${log.transactionHash}-${log.logIndex}`;
+                if (!uniqueTxs.has(txKey)) {
+                  uniqueTxs.add(txKey);
+                  txHistory.push({
+                    type: "receive",
+                    token: symbol,
+                    amount: ethers.formatUnits(decoded[1], token.decimals),
+                    hash: log.transactionHash,
+                    block: log.blockNumber,
+                    from: "0x" + log.topics[2].slice(26),
+                    logIndex: log.logIndex,
+                  });
+                }
+              }
+            }
+          }).catch(err => {
+            console.error(`Error fetching ${symbol} history:`, err);
+          })
+        );
+      } else {
+        // Standard ERC20 transfers
+        promises.push(
+          Promise.all([
+            provider.getLogs({
+              address: token.address,
+              fromBlock,
+              toBlock: currentBlock,
+              topics: [
+                ethers.id("Transfer(address,address,uint256)"),
+                ethers.zeroPadValue(wallet.address, 32),
+              ],
+            }),
+            provider.getLogs({
+              address: token.address,
+              fromBlock,
+              toBlock: currentBlock,
+              topics: [
+                ethers.id("Transfer(address,address,uint256)"),
+                null,
+                ethers.zeroPadValue(wallet.address, 32),
+              ],
+            })
+          ]).then(([sentLogs, receivedLogs]) => {
+            // Process sent
+            for (const log of sentLogs) {
+              const txKey = `${log.transactionHash}-${log.logIndex}`;
+              if (!uniqueTxs.has(txKey)) {
+                uniqueTxs.add(txKey);
+                const amount = ethers.formatUnits(log.data, token.decimals);
+                txHistory.push({
+                  type: "send",
+                  token: symbol,
+                  amount,
+                  hash: log.transactionHash,
+                  block: log.blockNumber,
+                  to: "0x" + log.topics[2].slice(26),
+                  logIndex: log.logIndex,
+                });
+              }
+            }
+            // Process received
+            for (const log of receivedLogs) {
+              const txKey = `${log.transactionHash}-${log.logIndex}`;
+              if (!uniqueTxs.has(txKey)) {
+                uniqueTxs.add(txKey);
+                const amount = ethers.formatUnits(log.data, token.decimals);
+                txHistory.push({
+                  type: "receive",
+                  token: symbol,
+                  amount,
+                  hash: log.transactionHash,
+                  block: log.blockNumber,
+                  from: "0x" + log.topics[1].slice(26),
+                  logIndex: log.logIndex,
+                });
+              }
+            }
+          }).catch(err => {
+            console.error(`Error fetching ${symbol} history:`, err);
+          })
+        );
       }
     }
+
+    // Wait for all fetches to complete
+    await Promise.all(promises);
 
     // Sort by block number and log index
     txHistory.sort((a, b) => {
@@ -978,19 +1601,27 @@ async function fetchTransactionHistory() {
 function displayTransactions() {
   const txList = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
+  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+
+  if (!txList || !loadingMsg) {
+    console.error("Transaction display elements not found");
+    return;
+  }
 
   if (txHistory.length === 0) {
-    loadingMsg.textContent = "No transactions found";
+    loadingMsg.textContent = "No transactions found in the last 3 hours";
     txList.classList.add("hidden");
+    if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
     return;
   }
 
   loadingMsg.classList.add("hidden");
   txList.classList.remove("hidden");
+  if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
   txList.innerHTML = "";
 
-  // Display max 50 most recent
-  const displayTxs = txHistory.slice(0, 50);
+  // Display max 100 most recent
+  const displayTxs = txHistory.slice(0, 100);
 
   for (const tx of displayTxs) {
     const item = document.createElement("div");
@@ -1003,7 +1634,7 @@ function displayTransactions() {
     item.innerHTML = `
                     <span class="tx-type ${tx.type}">${tx.type}</span>
                     <div class="tx-details">
-                        <div class="tx-hash">${tx.hash.slice(0, 10)}...</div>
+                        <a class="tx-hash" data-hash="${tx.hash}" href="#" title="View on Etherscan">${tx.hash.slice(0, 10)}... ↗</a>
                         <div style="font-size: 10px; color: var(--text-secondary);">
                             ${
                               tx.type === "send"
@@ -1019,21 +1650,29 @@ function displayTransactions() {
                     </div>
                 `;
 
-    item.addEventListener("click", () => {
-      // Use Chrome API to open in new tab for extension compatibility
-      if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({
-          action: 'open_external',
-          url: `https://etherscan.io/tx/${tx.hash}`
-        });
-      } else {
-        window.open(
-          `https://etherscan.io/tx/${tx.hash}`,
-          "_blank",
-          "noopener,noreferrer"
-        );
-      }
-    });
+    // Add click handler to the hash link
+    const hashLink = item.querySelector('.tx-hash');
+    if (hashLink) {
+      hashLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const hash = hashLink.dataset.hash;
+        
+        // Use Chrome API to open in new tab for extension compatibility
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            action: 'open_external',
+            url: `https://etherscan.io/tx/${hash}`
+          });
+        } else {
+          window.open(
+            `https://etherscan.io/tx/${hash}`,
+            "_blank",
+            "noopener,noreferrer"
+          );
+        }
+      });
+    }
 
     txList.appendChild(item);
   }
@@ -1054,6 +1693,8 @@ function esc(s) {
 }
 
 window.addEventListener("beforeunload", () => {
+  // Clean up all event listeners and timers
+  cleanupEventListeners();
   wallet = null;
 });
 function lockWallet() {
@@ -1113,31 +1754,47 @@ async function copyToClipboard(text, type) {
   }
 }
 
-function downloadPrivateKey() {
+async function exportEncryptedKey() {
   if (!wallet) return;
 
   try {
-    const content =
-      `zWallet - Ethereum Wallet\n` +
-      `Date: ${new Date().toISOString()}\n` +
-      `Address: ${wallet.address}\n` +
-      `Private Key: ${wallet.privateKey}\n\n` +
-      `KEEP SECURE! NEVER SHARE THIS!`;
+    const password = prompt("Enter a password to encrypt your private key:");
+    if (!password) return;
+    
+    const confirmPassword = prompt("Confirm password:");
+    if (password !== confirmPassword) {
+      alert("Passwords don't match!");
+      return;
+    }
 
-    const blob = new Blob([content], { type: "text/plain" });
+    // Encrypt the private key
+    const encrypted = await encryptPK(wallet.privateKey, password, {
+      aad: wallet.address.toLowerCase()
+    });
+
+    const exportData = {
+      version: 2,
+      address: wallet.address,
+      encrypted: encrypted,
+      timestamp: new Date().toISOString()
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { 
+      type: "application/json" 
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `zWallet-key-${wallet.address.slice(2, 8)}.txt`;
+    a.download = `zWallet-encrypted-${wallet.address.slice(2, 8)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    showToast("Key downloaded!");
+    showToast("Encrypted key exported!");
   } catch (err) {
-    console.error("Download failed:", err);
-    showToast("Download failed");
+    console.error("Export failed:", err);
+    showToast("Export failed");
   }
 }
 
@@ -1149,9 +1806,14 @@ async function displayWallet() {
   document.getElementById("address").textContent =
     address.slice(0, 6) + "..." + address.slice(-4);
   document.getElementById("address").title = address;
+  
+  // Set Etherscan link
+  const etherscanLink = document.getElementById("etherscanLink");
+  if (etherscanLink) {
+    etherscanLink.href = `https://etherscan.io/address/${address}`;
+  }
 
-  document.getElementById("privateKey").textContent =
-    "••••••••••••••••••••••••••••••••";
+  // Private key display moved to Settings tab
 
   try {
     const ensName = await provider.lookupAddress(address);
@@ -1286,6 +1948,72 @@ async function sendTransaction() {
   document.getElementById("confirmTotal").textContent = `$${totalUsd.toFixed(
     2
   )}`;
+
+  // Prepare transaction calldata
+  let calldata = '0x';
+  if (selectedToken === 'ETH') {
+    // ETH transfers have no calldata
+    calldata = '0x';
+  } else {
+    // ERC20 transfer calldata
+    const token = TOKENS[selectedToken];
+    if (token.isERC6909) {
+      // ERC6909 transferFrom calldata
+      const iface = new ethers.Interface([
+        "function transferFrom(address from, address to, uint256 id, uint256 amount)"
+      ]);
+      calldata = iface.encodeFunctionData("transferFrom", [
+        wallet.address,
+        toAddress,
+        token.id,
+        ethers.parseUnits(amount.toString(), token.decimals)
+      ]);
+    } else {
+      // Standard ERC20 transfer calldata
+      const iface = new ethers.Interface([
+        "function transfer(address to, uint256 amount)"
+      ]);
+      calldata = iface.encodeFunctionData("transfer", [
+        toAddress,
+        ethers.parseUnits(amount.toString(), token.decimals)
+      ]);
+    }
+  }
+
+  // Setup calldata display
+  const calldataDisplay = document.getElementById('sendCalldataDisplay');
+  const swissKnifeLink = document.getElementById('sendSwissKnifeLink');
+  const toggleBtn = document.getElementById('toggleSendCalldata');
+  const calldataSection = document.getElementById('sendCalldataSection');
+  
+  if (calldataDisplay) {
+    calldataDisplay.value = calldata;
+  }
+  
+  if (swissKnifeLink) {
+    if (calldata !== '0x' && calldata.length > 2) {
+      swissKnifeLink.href = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
+      swissKnifeLink.style.display = 'inline-block';
+    } else {
+      swissKnifeLink.style.display = 'none';
+    }
+  }
+  
+  if (toggleBtn && calldataSection) {
+    // Reset state
+    calldataSection.classList.add('hidden');
+    toggleBtn.textContent = 'Show';
+    
+    // Add click handler (remove old one first to avoid duplicates)
+    const newToggleBtn = toggleBtn.cloneNode(true);
+    toggleBtn.parentNode.replaceChild(newToggleBtn, toggleBtn);
+    
+    newToggleBtn.onclick = () => {
+      const isHidden = calldataSection.classList.contains('hidden');
+      calldataSection.classList.toggle('hidden');
+      newToggleBtn.textContent = isHidden ? 'Hide' : 'Show';
+    };
+  }
 
   // Show modal
   const modal = document.getElementById("txConfirmModal");
@@ -1445,6 +2173,19 @@ function setupEventListeners() {
     fetchTransactionHistory();
   });
 
+  // Load more transactions button  
+  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+  if (loadMoreBtn) {
+    loadMoreBtn.addEventListener("click", async () => {
+      try {
+        await fetchTransactionHistoryExtended();
+      } catch (err) {
+        console.error("Error loading extended history:", err);
+        showToast("Failed to load transactions");
+      }
+    });
+  }
+
   // Wallet management
   document
     .getElementById("walletSelector")
@@ -1503,10 +2244,15 @@ function setupEventListeners() {
   });
 
   document.getElementById("generateBtn").addEventListener("click", async () => {
-    wallet = ethers.Wallet.createRandom().connect(provider);
-    saveWallet(wallet.address, wallet.privateKey);
-    await displayWallet();
-    showToast("Wallet generated!");
+    try {
+      wallet = ethers.Wallet.createRandom().connect(provider);
+      saveWallet(wallet.address, wallet.privateKey);
+      await displayWallet();
+      showToast("Wallet generated!");
+    } catch (err) {
+      console.error("Error generating wallet:", err);
+      alert("Failed to generate wallet: " + err.message);
+    }
   });
 
   document.getElementById("importBtn").addEventListener("click", () => {
@@ -1521,15 +2267,28 @@ function setupEventListeners() {
       if (!key) return;
 
       try {
-        const formattedKey = key.startsWith("0x") ? key : "0x" + key;
+        // Validate private key format and length
+        const cleanKey = key.replace(/^0x/i, '');
+        if (!/^[0-9a-fA-F]{64}$/.test(cleanKey)) {
+          throw new Error("Invalid private key format");
+        }
+        
+        const formattedKey = "0x" + cleanKey;
         wallet = new ethers.Wallet(formattedKey, provider);
+        
+        // Verify the wallet was created successfully
+        if (!wallet.address) {
+          throw new Error("Failed to create wallet");
+        }
+        
         saveWallet(wallet.address, wallet.privateKey);
         await displayWallet();
         document.getElementById("importSection").classList.add("hidden");
         document.getElementById("privateKeyInput").value = "";
         showToast("Wallet imported!");
-      } catch {
-        alert("Invalid private key");
+      } catch (err) {
+        console.error("Import error:", err);
+        alert("Invalid private key: " + (err.message || "Unknown error"));
       }
     });
 
@@ -1553,17 +2312,16 @@ function setupEventListeners() {
     });
   });
 
-  document
-    .getElementById("downloadKeyBtn")
-    .addEventListener("click", async () => {
-      if (!wallet) return;
-      if (!confirm("Download your PRIVATE KEY as plaintext file?")) return;
-      downloadPrivateKey();
-    });
+  // Download key button removed - moved to Settings tab
 
   document.getElementById("refreshBtn").addEventListener("click", async () => {
-    await fetchAllBalances();
-    showToast("Refreshed!");
+    try {
+      await fetchAllBalances();
+      showToast("Refreshed!");
+    } catch (err) {
+      console.error("Error refreshing balances:", err);
+      showToast("Failed to refresh");
+    }
   });
 
   // Add token functionality
@@ -1607,32 +2365,60 @@ function setupEventListeners() {
 
   // Send functionality
   document.getElementById("maxBtn").addEventListener("click", async () => {
-    const max = await calculateMaxAmount();
-    document.getElementById("amount").value = parseFloat(max).toFixed(6);
-    await updateEstimatedTotal();
+    try {
+      const max = await calculateMaxAmount();
+      document.getElementById("amount").value = parseFloat(max).toFixed(6);
+      await updateEstimatedTotal();
+    } catch (err) {
+      console.error("Error calculating max amount:", err);
+      showToast("Failed to calculate max");
+    }
   });
 
   document.getElementById("toAddress").addEventListener("input", async (e) => {
     const value = e.target.value.trim();
     const resolved = document.getElementById("resolvedAddress");
 
+    // Clear previous timeout to prevent race conditions
+    if (ensResolveTimeout) {
+      clearTimeout(ensResolveTimeout);
+      ensResolveTimeout = null;
+    }
+
     if (value.endsWith(".eth")) {
       resolved.textContent = "Resolving...";
-      const address = await resolveENS(value);
-      if (address) {
-        resolved.textContent = `→ ${address.slice(0, 6)}...${address.slice(
-          -4
-        )}`;
-        resolved.style.color = "var(--success)";
-      } else {
-        resolved.textContent = "Not found";
-        resolved.style.color = "var(--error)";
-      }
+      
+      // Debounce ENS resolution by 500ms
+      ensResolveTimeout = setTimeout(async () => {
+        try {
+          const address = await resolveENS(value);
+          // Check if input hasn't changed
+          if (document.getElementById("toAddress").value.trim() === value) {
+            if (address) {
+              resolved.textContent = `→ ${address.slice(0, 6)}...${address.slice(-4)}`;
+              resolved.style.color = "var(--success)";
+            } else {
+              resolved.textContent = "Not found";
+              resolved.style.color = "var(--error)";
+            }
+          }
+        } catch (err) {
+          console.error("ENS resolution error:", err);
+          resolved.textContent = "Error resolving";
+          resolved.style.color = "var(--error)";
+        }
+      }, 500);
     } else {
       resolved.textContent = "";
     }
 
-    await updateEstimatedTotal();
+    // Debounce gas update
+    if (gasUpdateTimeout) {
+      clearTimeout(gasUpdateTimeout);
+    }
+    gasUpdateTimeout = setTimeout(() => {
+      updateEstimatedTotal();
+    }, 300);
   });
 
   document
@@ -1743,6 +2529,54 @@ function setupEventListeners() {
     localStorage.setItem("auto_refresh", e.target.checked);
   });
 
+  // Private Key Management in Settings
+  document.getElementById("revealKeyBtn")?.addEventListener("click", () => {
+    if (!wallet) {
+      alert("Please unlock your wallet first");
+      return;
+    }
+    
+    if (!confirm("Are you sure you want to reveal your private key?")) return;
+    
+    const keySection = document.getElementById("privateKeySection");
+    const keyDisplay = document.getElementById("privateKeyDisplay");
+    
+    if (keySection && keyDisplay) {
+      keyDisplay.textContent = wallet.privateKey;
+      keySection.classList.remove("hidden");
+      
+      // Auto-hide after 60 seconds
+      setTimeout(() => {
+        keyDisplay.textContent = "••••••••••••••••••••••••••••••••";
+        keySection.classList.add("hidden");
+      }, 60000);
+    }
+  });
+  
+  document.getElementById("hideKeyBtn")?.addEventListener("click", () => {
+    const keySection = document.getElementById("privateKeySection");
+    const keyDisplay = document.getElementById("privateKeyDisplay");
+    
+    if (keySection && keyDisplay) {
+      keyDisplay.textContent = "••••••••••••••••••••••••••••••••";
+      keySection.classList.add("hidden");
+    }
+  });
+  
+  document.getElementById("exportKeyBtn")?.addEventListener("click", async () => {
+    if (!wallet) {
+      alert("Please unlock your wallet first");
+      return;
+    }
+    
+    try {
+      await exportEncryptedKey();
+    } catch (err) {
+      console.error("Export error:", err);
+      alert("Failed to export key: " + err.message);
+    }
+  });
+
   document.getElementById("exportWallets").addEventListener("click", () => {
     try {
       const data = localStorage.getItem(LS_WALLETS) || "[]";
@@ -1776,6 +2610,974 @@ function setupEventListeners() {
   // Load auto-refresh setting
   const autoRefresh = localStorage.getItem("auto_refresh") === "true";
   document.getElementById("autoRefresh").checked = autoRefresh;
+  
+  // Setup swap event listeners
+  setupSwapEventListeners();
+}
+
+// ============= SWAP FUNCTIONALITY =============
+const ZROUTER_ADDRESS = "0x0000000000404FECAf36E6184245475eE1254835";
+const ZROUTER_ABI = [
+  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
+  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
+];
+
+// zQuoter ABI for getting best quotes
+const ZQUOTER_ABI = [
+  "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)",
+  "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
+];
+
+// Multicall3 contract (deployed on Ethereum mainnet)
+const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const MULTICALL3_ABI = [
+  "function tryAggregate(bool requireSuccess, (address target, bytes callData)[] calls) returns ((bool success, bytes returnData)[] returnData)"
+];
+
+// Swap state
+let swapFromToken = "ETH";
+let swapToToken = "USDC";
+let swapSlippage = 0.5; // 0.5% default
+let swapMode = "exactIn"; // exactIn or exactOut
+let bestSwapRoute = null;
+let tokenSelectorTarget = null; // 'from' or 'to'
+let swapSimulationTimeout = null; // Debounce timer
+let isSimulating = false; // Prevent concurrent simulations
+
+// AMM sources enum from zQuoter contract
+const AMM_SOURCES = {
+  0: "UNI_V2",
+  1: "SUSHI",
+  2: "ZAMM"
+};
+
+// Standard Uniswap V3 fee tiers
+const V3_FEE_TIERS = [500, 3000, 10000]; // 0.05%, 0.3%, 1%
+
+// Uniswap V4 tick spacings
+const V4_TICK_SPACINGS = {
+  500: 10,    // 0.05% fee
+  3000: 60,   // 0.3% fee
+  10000: 200  // 1% fee
+};
+
+async function setupSwapEventListeners() {
+  // Token selector dropdowns
+  // Initialize swap token displays
+  function updateSwapTokenDisplay(which) {
+    const token = which === 'from' ? swapFromToken : swapToToken;
+    const iconEl = document.getElementById(which === 'from' ? 'swapFromTokenIcon' : 'swapToTokenIcon');
+    const displayEl = document.getElementById(which === 'from' ? 'swapFromTokenDisplay' : 'swapToTokenDisplay');
+    
+    if (iconEl && displayEl) {
+      iconEl.innerHTML = TOKEN_LOGOS[token] || '💰';
+      displayEl.textContent = token;
+    }
+  }
+  
+  // Function to initialize token dropdowns with logos
+  function initializeTokenDropdowns() {
+    const swapTokens = ['ETH', 'USDC', 'USDT', 'DAI', 'ENS'];
+    
+    // Populate from dropdown
+    const fromDropdown = document.getElementById('swapFromDropdown');
+    if (fromDropdown) {
+      fromDropdown.innerHTML = swapTokens.map(token => `
+        <div class="token-option" data-token="${token}">
+          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
+          <span class="token-option-symbol">${token}</span>
+        </div>
+      `).join('');
+      
+      // Add click handlers
+      fromDropdown.querySelectorAll('.token-option').forEach(option => {
+        option.addEventListener('click', (e) => {
+          e.stopPropagation();
+          swapFromToken = option.dataset.token;
+          updateSwapTokenDisplay('from');
+          updateSwapBalances();
+          fromDropdown.classList.add('hidden');
+          if (document.getElementById("swapFromAmount").value) {
+            simulateSwap();
+          }
+        });
+      });
+    }
+    
+    // Populate to dropdown
+    const toDropdown = document.getElementById('swapToDropdown');
+    if (toDropdown) {
+      toDropdown.innerHTML = swapTokens.map(token => `
+        <div class="token-option" data-token="${token}">
+          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
+          <span class="token-option-symbol">${token}</span>
+        </div>
+      `).join('');
+      
+      // Add click handlers
+      toDropdown.querySelectorAll('.token-option').forEach(option => {
+        option.addEventListener('click', (e) => {
+          e.stopPropagation();
+          swapToToken = option.dataset.token;
+          updateSwapTokenDisplay('to');
+          updateSwapBalances();
+          toDropdown.classList.add('hidden');
+          if (document.getElementById("swapFromAmount").value) {
+            simulateSwap();
+          }
+        });
+      });
+    }
+  }
+  
+  // Initialize token displays and dropdowns
+  updateSwapTokenDisplay('from');
+  updateSwapTokenDisplay('to');
+  initializeTokenDropdowns();
+  
+  // Setup token selector clicks
+  document.getElementById('swapFromTokenSelector')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = document.getElementById('swapFromDropdown');
+    const otherDropdown = document.getElementById('swapToDropdown');
+    
+    if (dropdown) {
+      dropdown.classList.toggle('hidden');
+      otherDropdown?.classList.add('hidden');
+    }
+  });
+  
+  document.getElementById('swapToTokenSelector')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = document.getElementById('swapToDropdown');
+    const otherDropdown = document.getElementById('swapFromDropdown');
+    
+    if (dropdown) {
+      dropdown.classList.toggle('hidden');
+      otherDropdown?.classList.add('hidden');
+    }
+  });
+  
+  // Hide dropdowns when clicking elsewhere
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.token-selector') && !e.target.closest('.token-dropdown')) {
+      document.getElementById('swapFromDropdown')?.classList.add('hidden');
+      document.getElementById('swapToDropdown')?.classList.add('hidden');
+    }
+  });
+  
+  // Swap direction button
+  document.getElementById("swapDirectionBtn")?.addEventListener("click", () => {
+    // Swap tokens
+    const temp = swapFromToken;
+    swapFromToken = swapToToken;
+    swapToToken = temp;
+    
+    // Swap amounts
+    const fromAmount = document.getElementById("swapFromAmount").value;
+    const toAmount = document.getElementById("swapToAmount").value;
+    document.getElementById("swapFromAmount").value = toAmount;
+    document.getElementById("swapToAmount").value = fromAmount;
+    
+    // Update displays
+    updateSwapTokenDisplay('from');
+    updateSwapTokenDisplay('to');
+    updateSwapBalances();
+    
+    if (fromAmount || toAmount) {
+      simulateSwap();
+    }
+  });
+  
+  // Amount inputs with smart detection and debouncing
+  document.getElementById("swapFromAmount")?.addEventListener("input", (e) => {
+    swapMode = "exactIn";
+    
+    // Sanitize input - only allow numbers and decimal point
+    let value = e.target.value.replace(/[^0-9.]/g, '');
+    
+    // Ensure only one decimal point
+    const parts = value.split('.');
+    if (parts.length > 2) {
+      value = parts[0] + '.' + parts.slice(1).join('');
+    }
+    
+    e.target.value = value;
+    
+    // Validate against balance
+    const inputAmount = parseFloat(e.target.value);
+    if (inputAmount && inputAmount > 0) {
+      const token = TOKENS[swapFromToken];
+      let maxBalance;
+      
+      if (swapFromToken === "ETH") {
+        // For ETH, check against actual balance minus gas buffer
+        maxBalance = parseFloat(currentBalances["ETH"] || "0");
+        // Smart gas buffer based on balance
+        const balanceETH = maxBalance;
+        let gasBuffer;
+        if (balanceETH < 0.01) {
+          gasBuffer = 0.003; // ~$12 for low balance users
+        } else if (balanceETH < 0.05) {
+          gasBuffer = 0.005; // ~$20 for medium balance
+        } else {
+          gasBuffer = 0.01; // ~$40 for higher balance
+        }
+        const effectiveBalance = Math.max(0, maxBalance - gasBuffer);
+        
+        if (inputAmount > effectiveBalance) {
+          e.target.value = effectiveBalance > 0 ? effectiveBalance.toFixed(6) : "0";
+          showToast(`Max available: ${effectiveBalance.toFixed(6)} ETH (${gasBuffer} ETH gas reserved)`);
+        }
+      } else {
+        // For tokens, check against token balance
+        maxBalance = parseFloat(currentBalances[swapFromToken] || "0");
+        
+        if (inputAmount > maxBalance) {
+          const decimals = token?.decimals || 18;
+          const precision = decimals <= 6 ? 6 : (decimals <= 8 ? 8 : 6);
+          e.target.value = maxBalance > 0 ? maxBalance.toFixed(precision) : "0";
+          showToast(`Max available: ${maxBalance.toFixed(precision)} ${swapFromToken}`);
+        }
+      }
+    }
+    
+    // Clear existing timeout
+    if (swapSimulationTimeout) {
+      clearTimeout(swapSimulationTimeout);
+    }
+    
+    if (e.target.value) {
+      // Debounce simulation by 500ms
+      swapSimulationTimeout = setTimeout(() => {
+        simulateSwap();
+      }, 500);
+    } else {
+      clearSwapQuote();
+    }
+  });
+  
+  document.getElementById("swapToAmount")?.addEventListener("input", (e) => {
+    swapMode = "exactOut";
+    
+    // Sanitize input - only allow numbers and decimal point
+    let value = e.target.value.replace(/[^0-9.]/g, '');
+    
+    // Ensure only one decimal point
+    const parts = value.split('.');
+    if (parts.length > 2) {
+      value = parts[0] + '.' + parts.slice(1).join('');
+    }
+    
+    e.target.value = value;
+    
+    // Clear existing timeout
+    if (swapSimulationTimeout) {
+      clearTimeout(swapSimulationTimeout);
+    }
+    
+    if (e.target.value) {
+      // Debounce simulation by 500ms
+      swapSimulationTimeout = setTimeout(() => {
+        simulateSwap();
+      }, 500);
+    } else {
+      clearSwapQuote();
+    }
+  });
+  
+  // Max button
+  document.getElementById("swapMaxBtn")?.addEventListener("click", async () => {
+    if (!wallet || !provider) {
+      showToast("Connect wallet first");
+      return;
+    }
+    
+    try {
+      let maxAmount;
+      const token = TOKENS[swapFromToken];
+      
+      if (!token || swapFromToken === "ETH") {
+        // For ETH, we need to account for gas fees more accurately
+        const balanceObj = currentBalances["ETH"];
+        if (!balanceObj || !balanceObj.formatted) {
+          console.log("No ETH balance found");
+          showToast("No ETH balance");
+          return;
+        }
+        
+        const balanceETH = parseFloat(balanceObj.formatted);
+        
+        // Get current gas price to calculate buffer more accurately
+        let gasBuffer;
+        try {
+          const feeData = await provider.getFeeData();
+          const gasPrice = feeData.maxFeePerGas || feeData.gasPrice || ethers.parseUnits("30", "gwei");
+          
+          // Estimate gas for a swap transaction (typically 150k-250k gas)
+          const estimatedGasLimit = 250000n; // Conservative estimate
+          const estimatedGasCost = gasPrice * estimatedGasLimit;
+          const estimatedGasETH = parseFloat(ethers.formatEther(estimatedGasCost));
+          
+          // Add 20% buffer to gas estimate for safety
+          gasBuffer = estimatedGasETH * 1.2;
+          
+          // Apply minimum gas buffers based on balance
+          if (balanceETH < 0.01) {
+            // For very small balances, use at least the estimated gas cost
+            gasBuffer = Math.max(gasBuffer, estimatedGasETH);
+          } else if (balanceETH < 0.05) {
+            // For small balances, ensure at least 0.002 ETH buffer
+            gasBuffer = Math.max(gasBuffer, 0.002);
+          } else if (balanceETH < 0.1) {
+            // For medium balances, ensure at least 0.003 ETH buffer
+            gasBuffer = Math.max(gasBuffer, 0.003);
+          } else {
+            // For larger balances, ensure at least 0.005 ETH buffer
+            gasBuffer = Math.max(gasBuffer, 0.005);
+          }
+          
+          console.log(`ETH Balance: ${balanceETH}, Gas Buffer: ${gasBuffer.toFixed(6)}`);
+        } catch (err) {
+          console.error("Error estimating gas:", err);
+          // Fallback to conservative buffer if gas estimation fails
+          if (balanceETH < 0.01) {
+            gasBuffer = 0.002;
+          } else if (balanceETH < 0.05) {
+            gasBuffer = 0.003;
+          } else if (balanceETH < 0.1) {
+            gasBuffer = 0.005;
+          } else {
+            gasBuffer = 0.01;
+          }
+        }
+        
+        // Calculate max amount after gas buffer
+        maxAmount = Math.max(0, balanceETH - gasBuffer);
+        
+        // Round down to 6 decimal places to avoid precision issues
+        maxAmount = Math.floor(maxAmount * 1000000) / 1000000;
+        
+        // If the result is too small, set to 0
+        if (maxAmount < 0.0001) {
+          maxAmount = 0;
+          const needed = gasBuffer.toFixed(4);
+          showToast(`Need ~${needed} ETH for gas`);
+        }
+      } else {
+        // For tokens, use the formatted balance from currentBalances
+        const balanceObj = currentBalances[swapFromToken];
+        if (!balanceObj || !balanceObj.formatted) {
+          console.log(`No balance found for ${swapFromToken}`);
+          showToast(`No ${swapFromToken} balance`);
+          return;
+        }
+        
+        maxAmount = parseFloat(balanceObj.formatted);
+        
+        // Round down to avoid precision issues
+        const decimals = token?.decimals || 18;
+        if (decimals <= 6) {
+          maxAmount = Math.floor(maxAmount * 1000000) / 1000000;
+        } else if (decimals <= 8) {
+          maxAmount = Math.floor(maxAmount * 100000000) / 100000000;
+        } else {
+          maxAmount = Math.floor(maxAmount * 1000000) / 1000000;
+        }
+        
+        // Also check if user has ETH for gas
+        const ethBalance = currentBalances["ETH"];
+        if (!ethBalance || parseFloat(ethBalance.formatted) < 0.001) {
+          showToast("Warning: Low ETH for gas");
+        }
+      }
+      
+      // Set the value in the input field
+      if (maxAmount > 0) {
+        const displayDecimals = swapFromToken === "ETH" ? 6 : 
+                               (token?.decimals === 6 ? 6 : 
+                                token?.decimals === 8 ? 8 : 6);
+        document.getElementById("swapFromAmount").value = maxAmount.toFixed(displayDecimals);
+        
+        // Update USD display
+        updateSwapUSDValues();
+        
+        // Trigger simulation
+        swapMode = "exactIn";
+        
+        // Small delay to ensure UI updates
+        setTimeout(() => {
+          simulateSwap();
+        }, 100);
+      } else {
+        document.getElementById("swapFromAmount").value = "0";
+        updateSwapUSDValues();
+      }
+    } catch (err) {
+      console.error("Error getting max amount:", err);
+      showToast("Failed to calculate max");
+    }
+  });
+  
+  // Slippage options
+  document.querySelectorAll(".slippage-option").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      document.querySelectorAll(".slippage-option").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      
+      const slippage = btn.dataset.slippage;
+      if (slippage === "custom") {
+        document.getElementById("customSlippageSection")?.classList.remove("hidden");
+        // Focus on custom input
+        document.getElementById("customSlippage")?.focus();
+      } else {
+        document.getElementById("customSlippageSection")?.classList.add("hidden");
+        swapSlippage = parseFloat(slippage);
+        
+        // Re-simulate if amounts are present
+        if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
+          simulateSwap();
+        }
+      }
+    });
+  });
+  
+  // Custom slippage input
+  document.getElementById("customSlippage")?.addEventListener("input", (e) => {
+    const value = parseFloat(e.target.value);
+    if (!isNaN(value) && value >= 0 && value <= 50) {
+      swapSlippage = value;
+      if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
+        simulateSwap();
+      }
+    }
+  });
+  
+  // Swap button
+  document.getElementById("swapBtn")?.addEventListener("click", executeSwap);
+  
+  // Swap confirmation modal
+  document.getElementById("swapModalClose")?.addEventListener("click", () => {
+    document.getElementById("swapConfirmModal")?.classList.add("hidden");
+  });
+  
+  document.getElementById("cancelSwapBtn")?.addEventListener("click", () => {
+    document.getElementById("swapConfirmModal")?.classList.add("hidden");
+  });
+  
+  // Initialize swap display
+  updateSwapTokenDisplay();
+  updateSwapBalances();
+}
+
+// Update swap token display
+function updateSwapTokenDisplay() {
+  // Update From token
+  const fromIcon = document.getElementById("swapFromIcon");
+  const fromSymbol = document.getElementById("swapFromSymbol");
+  if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
+  if (fromSymbol) fromSymbol.textContent = swapFromToken;
+  
+  // Update To token
+  const toIcon = document.getElementById("swapToIcon");
+  const toSymbol = document.getElementById("swapToSymbol");
+  if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
+  if (toSymbol) toSymbol.textContent = swapToToken;
+}
+
+function updateSwapBalances() {
+  const fromBalance = document.getElementById("swapFromBalance");
+  const toBalance = document.getElementById("swapToBalance");
+  
+  if (fromBalance) {
+    const balanceObj = currentBalances[swapFromToken];
+    const balance = balanceObj ? balanceObj.formatted : "0";
+    const numBalance = parseFloat(balance);
+    fromBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+  }
+  
+  if (toBalance) {
+    const balanceObj = currentBalances[swapToToken];
+    const balance = balanceObj ? balanceObj.formatted : "0";
+    const numBalance = parseFloat(balance);
+    toBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+  }
+}
+
+function clearSwapQuote() {
+  document.getElementById("swapRoute").textContent = "--";
+  document.getElementById("swapMinimum").textContent = "--";
+  document.getElementById("swapGasFee").textContent = "--";
+  document.getElementById("swapBtn").textContent = "Enter Amount to Swap";
+  document.getElementById("swapBtn").disabled = true;
+  bestSwapRoute = null;
+}
+
+// Helper to update USD values
+function updateSwapUSDValues() {
+  const fromAmount = document.getElementById("swapFromAmount").value;
+  const toAmount = document.getElementById("swapToAmount").value;
+  
+  const fromUSD = document.getElementById("swapFromUSD");
+  const toUSD = document.getElementById("swapToUSD");
+  
+  if (fromUSD && fromAmount) {
+    const price = tokenPrices[swapFromToken]?.usd || 0;
+    const usdValue = parseFloat(fromAmount) * price;
+    fromUSD.textContent = `$${usdValue.toFixed(2)}`;
+  } else if (fromUSD) {
+    fromUSD.textContent = "$0.00";
+  }
+  
+  if (toUSD && toAmount) {
+    const price = tokenPrices[swapToToken]?.usd || 0;
+    const usdValue = parseFloat(toAmount) * price;
+    toUSD.textContent = `$${usdValue.toFixed(2)}`;
+  } else if (toUSD) {
+    toUSD.textContent = "$0.00";
+  }
+}
+
+async function simulateSwap() {
+  if (!wallet || !provider) {
+    showToast("Please connect wallet first");
+    return;
+  }
+  
+  // Prevent concurrent simulations
+  if (isSimulating) {
+    console.log("Simulation already in progress, skipping...");
+    return;
+  }
+  
+  isSimulating = true;
+  
+  try {
+    const fromToken = TOKENS[swapFromToken];
+    const toToken = TOKENS[swapToToken];
+    
+    // Get amount  
+    const amountIn = document.getElementById("swapFromAmount").value;
+    if (!amountIn || parseFloat(amountIn) <= 0) {
+      clearSwapQuote();
+      return;
+    }
+    
+    // Update UI to show loading
+    document.getElementById("swapRoute").textContent = "Finding best route...";
+    document.getElementById("swapBtn").textContent = "Getting quote...";
+    document.getElementById("swapBtn").disabled = true;
+    
+    // Prepare token addresses (use 0x0 for ETH)
+    const tokenInAddress = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
+    const tokenOutAddress = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+    
+    // Convert amount to wei
+    const maxDecimals = fromToken?.decimals || 18;
+    const truncated = parseFloat(amountIn).toFixed(maxDecimals);
+    const swapAmount = ethers.parseUnits(truncated, maxDecimals);
+    
+    // Create zQuoter contract instance
+    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+    
+    let quotesResult, bestQuote, allQuotes;
+    try {
+      // Get quotes from zQuoter (exactOut = false for exactIn mode)
+      quotesResult = await quoter.getQuotes(
+        false, // exactOut = false (we're doing exactIn)
+        tokenInAddress,
+        tokenOutAddress,
+        swapAmount
+      );
+      
+      bestQuote = quotesResult.best;
+      allQuotes = quotesResult.quotes;
+    } catch (quoterError) {
+      console.error("Quoter error:", quoterError);
+      // If quoter fails, show a more specific error
+      document.getElementById("swapRoute").textContent = "Quoter unavailable";
+      document.getElementById("swapBtn").textContent = "Network error";
+      document.getElementById("swapBtn").disabled = true;
+      return;
+    }
+    
+    // Check if we got a valid quote
+    if (!bestQuote || bestQuote.amountOut === 0n) {
+      document.getElementById("swapRoute").textContent = "No route found";
+      document.getElementById("swapBtn").textContent = "No liquidity";
+      document.getElementById("swapBtn").disabled = true;
+      document.getElementById("swapToAmount").value = "";
+      updateSwapUSDValues();
+      return;
+    }
+    
+    // Format the output amount
+    const outputAmount = ethers.formatUnits(bestQuote.amountOut, toToken?.decimals || 18);
+    console.log(`Quote received: ${amountIn} ${swapFromToken} -> ${outputAmount} ${swapToToken}`);
+    document.getElementById("swapToAmount").value = parseFloat(outputAmount).toFixed(6);
+    
+    // Update USD values
+    updateSwapUSDValues();
+    
+    // Determine the source name
+    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM"];
+    const sourceName = sourceNames[bestQuote.source] || `AMM ${bestQuote.source}`;
+    
+    
+    // Calculate minimum received with slippage
+    const slippage = swapSlippage;
+    const minOutput = parseFloat(outputAmount) * (1 - slippage / 100);
+    
+    // Estimate gas fee
+    const gasPrice = await provider.getFeeData();
+    const gasLimit = 200000n; // Estimated gas for swap
+    const gasFee = gasPrice.gasPrice * gasLimit;
+    const gasFeeETH = ethers.formatEther(gasFee);
+    const gasFeeUSD = parseFloat(gasFeeETH) * (tokenPrices["ETH"]?.usd || 0);
+    
+    // Update UI with quote details
+    document.getElementById("swapRoute").textContent = sourceName;
+    document.getElementById("swapMinimum").textContent = `${minOutput.toFixed(6)} ${swapToToken}`;
+    document.getElementById("swapGasFee").textContent = `$${gasFeeUSD.toFixed(2)}`;
+    
+    // Store the best quote for execution
+    bestSwapRoute = {
+      quote: bestQuote,
+      tokenIn: tokenInAddress,
+      tokenOut: tokenOutAddress,
+      amountIn: swapAmount,
+      amountOut: bestQuote.amountOut,
+      sourceName,
+      slippage
+    };
+    
+    // Enable swap button
+    document.getElementById("swapBtn").textContent = "Swap";
+    document.getElementById("swapBtn").disabled = false;
+    
+  } catch (err) {
+    console.error("Swap simulation error:", err);
+    document.getElementById("swapRoute").textContent = "Error";
+    document.getElementById("swapBtn").textContent = "Try again";
+    document.getElementById("swapBtn").disabled = false;
+  } finally {
+    isSimulating = false;
+  }
+}
+
+async function executeSwap() {
+  if (!wallet || !bestSwapRoute) {
+    showToast("No swap route available");
+    return;
+  }
+  
+  try {
+    // Check if approval is needed for non-ETH tokens
+    if (swapFromToken !== "ETH") {
+      const fromToken = TOKENS[swapFromToken];
+      const needsApproval = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
+      if (!needsApproval) return;
+    }
+    
+    // Create zQuoter contract instance
+    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+    
+    // Get the swap calldata from buildBestSwap
+    const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour deadline
+    const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
+    
+    let swapData;
+    try {
+      swapData = await quoter.buildBestSwap(
+        wallet.address,
+        false, // exactOut = false
+        bestSwapRoute.tokenIn,
+        bestSwapRoute.tokenOut,
+        bestSwapRoute.amountIn,
+        slippageBps,
+        deadline
+      );
+    } catch (err) {
+      console.error("Failed to build swap:", err);
+      showToast("Failed to prepare swap");
+      return;
+    }
+    
+    // Extract the calldata and value
+    const { callData, msgValue } = swapData;
+    
+    // Show confirmation modal
+    const modal = document.getElementById("swapConfirmModal");
+    const fromToken = TOKENS[swapFromToken];
+    const toToken = TOKENS[swapToToken];
+    
+    // Populate confirmation details
+    const inputFormatted = ethers.formatUnits(bestSwapRoute.amountIn, fromToken?.decimals || 18);
+    const outputFormatted = ethers.formatUnits(bestSwapRoute.amountOut, toToken?.decimals || 18);
+    
+    document.getElementById("confirmSwapFrom").textContent = `${parseFloat(inputFormatted).toFixed(6)} ${swapFromToken}`;
+    document.getElementById("confirmSwapTo").textContent = `${parseFloat(outputFormatted).toFixed(6)} ${swapToToken}`;
+    document.getElementById("confirmSwapRoute").textContent = bestSwapRoute.sourceName || "Best Route";
+    document.getElementById("confirmSwapSlippage").textContent = `${swapSlippage}%`;
+    
+    const minOutput = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
+    const minFormatted = ethers.formatUnits(minOutput, toToken?.decimals || 18);
+    document.getElementById("confirmSwapMinimum").textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
+    
+    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits("30", "gwei");
+    const gasLimit = 200000n; // Estimated
+    const gasCost = gasLimit * gasPrice;
+    const gasCostEth = ethers.formatEther(gasCost);
+    document.getElementById("confirmSwapGas").textContent = `${parseFloat(gasCostEth).toFixed(5)} ETH`;
+    
+    const totalCostEth = swapFromToken === "ETH" 
+      ? parseFloat(inputFormatted) + parseFloat(gasCostEth)
+      : parseFloat(gasCostEth);
+    document.getElementById("confirmSwapTotal").textContent = `${totalCostEth.toFixed(6)} ETH`;
+    
+    // Setup calldata display
+    const calldataDisplay = document.getElementById("swapCalldataDisplay");
+    if (calldataDisplay) calldataDisplay.value = callData;
+    
+    const toggleBtn = document.getElementById("toggleSwapCalldata");
+    const calldataSection = document.getElementById("swapCalldataSection");
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        if (calldataSection.classList.contains("hidden")) {
+          calldataSection.classList.remove("hidden");
+          toggleBtn.textContent = "Hide";
+        } else {
+          calldataSection.classList.add("hidden");
+          toggleBtn.textContent = "Show";
+        }
+      };
+    }
+    
+    modal.classList.remove("hidden");
+    
+    // Wait for user confirmation
+    const userConfirmed = await new Promise(resolve => {
+      const confirmBtn = document.getElementById("confirmSwapBtn");
+      const cancelBtn = document.getElementById("cancelSwapBtn");
+      
+      const handleConfirm = () => {
+        cleanup();
+        resolve(true);
+      };
+      
+      const handleCancel = () => {
+        cleanup();
+        resolve(false);
+      };
+      
+      const cleanup = () => {
+        confirmBtn.removeEventListener("click", handleConfirm);
+        cancelBtn.removeEventListener("click", handleCancel);
+        modal.classList.add("hidden");
+      };
+      
+      confirmBtn.addEventListener("click", handleConfirm);
+      cancelBtn.addEventListener("click", handleCancel);
+    });
+    
+    if (!userConfirmed) {
+      console.log("Swap cancelled by user");
+      return;
+    }
+    
+    // Execute the swap
+    document.getElementById("swapStatus").innerHTML = '<div style="color: var(--warning)">Sending transaction...</div>';
+    
+    const tx = await wallet.sendTransaction({
+      to: ZROUTER_ADDRESS,
+      data: callData,
+      value: msgValue
+    });
+    
+    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--info)">Transaction sent: ${tx.hash.slice(0, 10)}...</div>`;
+    
+    // Wait for confirmation
+    const receipt = await tx.wait();
+    
+    if (receipt.status === 1) {
+      // Create Etherscan link
+      const etherscanUrl = `https://etherscan.io/tx/${tx.hash}`;
+      document.getElementById("swapStatus").innerHTML = `
+        <div style="color: var(--success)">
+          ✓ Swap successful! 
+          <a href="${etherscanUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; margin-left: 8px;">
+            View on Etherscan ↗
+          </a>
+        </div>`;
+      showToast("Swap successful!");
+      
+      // Clear inputs and refresh balances
+      document.getElementById("swapFromAmount").value = "";
+      document.getElementById("swapToAmount").value = "";
+      clearSwapQuote();
+      await fetchAllBalances();
+    } else {
+      throw new Error("Transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Swap error:", err);
+    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ ${err.message || "Swap failed"}</div>`;
+    showToast(`Swap failed: ${err.message || "Unknown error"}`);
+  }
+}
+async function checkAndRequestApproval(token, amount) {
+  if (!token || !token.address) return true;
+  
+  try {
+    // Handle ERC6909 tokens (like ZAMM)
+    if (token.isERC6909) {
+      // Check operator approval for ERC6909
+      const erc6909Contract = new ethers.Contract(
+        token.address,
+        [
+          "function isOperator(address owner, address spender) view returns (bool)",
+          "function setOperator(address spender, bool approved) returns (bool)"
+        ],
+        provider
+      );
+      
+      const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
+      
+      if (isApproved) {
+        return true; // Already approved as operator
+      }
+      
+      // Show approval modal with details
+      const approvalConfirmed = await showApprovalModal(token, true);
+      
+      if (!approvalConfirmed) return false;
+      
+      document.getElementById("swapStatus").innerHTML = '<div class="status">Setting operator approval...</div>';
+      
+      // Set operator approval for ERC6909
+      const approveContract = new ethers.Contract(token.address, erc6909Contract.interface, wallet);
+      const approveTx = await approveContract.setOperator(ZROUTER_ADDRESS, true);
+      
+      document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
+      await approveTx.wait();
+      
+      showToast(`${token.symbol} operator approval granted!`);
+      return true;
+      
+    } else {
+      // Standard ERC20 approval flow
+      const tokenContract = new ethers.Contract(
+        token.address,
+        ["function allowance(address owner, address spender) view returns (uint256)"],
+        provider
+      );
+      
+      const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
+      
+      if (allowance >= amount) {
+        return true; // Already approved
+      }
+      
+      // Show approval modal with details
+      const approvalConfirmed = await showApprovalModal(token, false);
+      
+      if (!approvalConfirmed) return false;
+      
+      document.getElementById("swapStatus").innerHTML = '<div class="status">Approving token...</div>';
+      
+      const approveContract = new ethers.Contract(
+        token.address,
+        ["function approve(address spender, uint256 amount) returns (bool)"],
+        wallet
+      );
+      
+      // Approve max amount to avoid future approvals
+      const approveTx = await approveContract.approve(ZROUTER_ADDRESS, ethers.MaxUint256);
+      
+      document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
+      await approveTx.wait();
+      
+      showToast(`${token.symbol} approved for swapping!`);
+      return true;
+    }
+    
+  } catch (err) {
+    console.error("Approval error:", err);
+    document.getElementById("swapStatus").innerHTML = '<div class="status error">Approval failed</div>';
+    showToast("Approval failed");
+    return false;
+  }
+}
+
+async function showApprovalModal(token, isERC6909) {
+  return new Promise((resolve) => {
+    // Create a simple approval modal
+    const modalHtml = `
+      <div id="approvalModal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Approval Required</h3>
+            <button class="modal-close" id="approvalModalClose">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="warning" style="margin-bottom: 16px;">
+              ⚠️ First-time swap requires approval
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Token:</span>
+              <span class="confirm-value">${token.symbol}</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Contract:</span>
+              <span class="confirm-value mono" style="font-size: 10px;">${token.address.slice(0, 6)}...${token.address.slice(-4)}</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Approval Type:</span>
+              <span class="confirm-value">${isERC6909 ? 'ERC6909 Operator' : 'ERC20 Allowance'}</span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Spender:</span>
+              <span class="confirm-value mono" style="font-size: 10px;">zRouter: ${ZROUTER_ADDRESS.slice(0, 6)}...${ZROUTER_ADDRESS.slice(-4)}</span>
+            </div>
+            <div style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+              ${isERC6909 
+                ? 'This will grant zRouter permission to transfer your ERC6909 tokens (like ZAMM) for swapping.'
+                : 'This will grant zRouter permission to spend your tokens for swapping. This is a one-time approval.'}
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="confirmApproval" class="btn-confirm">Approve</button>
+            <button id="cancelApproval" class="btn-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Add modal to page
+    const modalDiv = document.createElement('div');
+    modalDiv.innerHTML = modalHtml;
+    document.body.appendChild(modalDiv);
+    
+    const confirmBtn = document.getElementById('confirmApproval');
+    const cancelBtn = document.getElementById('cancelApproval');
+    const closeBtn = document.getElementById('approvalModalClose');
+    
+    const cleanup = () => {
+      document.body.removeChild(modalDiv);
+      resolve(false);
+    };
+    
+    const handleConfirm = () => {
+      document.body.removeChild(modalDiv);
+      resolve(true);
+    };
+    
+    confirmBtn.addEventListener('click', handleConfirm);
+    cancelBtn.addEventListener('click', cleanup);
+    closeBtn.addEventListener('click', cleanup);
+  });
 }
 
 // Initialize app with proper error handling

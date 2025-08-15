@@ -6,6 +6,11 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
+    <!-- Security: Content Security Policy -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com https://etherscan.io"
+    />
 
     <title>zWallet</title>
     <!-- Favicon -->
@@ -24,6 +29,47 @@
           max-height: 600px !important;
           overflow-y: auto !important;
           overflow-x: hidden !important;
+        }
+      }
+
+      /* Mobile optimizations */
+      @media (max-width: 480px) {
+        body {
+          padding: 10px;
+        }
+        
+        .window {
+          border-radius: 0;
+        }
+        
+        .content {
+          padding: 12px;
+        }
+        
+        .tabs {
+          gap: 4px;
+        }
+        
+        .tab {
+          padding: 8px 12px;
+          font-size: 11px;
+        }
+        
+        .swap-box {
+          padding: 12px !important;
+        }
+        
+        #swapFromAmount, #swapToAmount {
+          font-size: 20px !important;
+        }
+        
+        .token-selector {
+          padding: 4px 8px !important;
+        }
+        
+        .token-icon {
+          width: 20px !important;
+          height: 20px !important;
         }
       }
 
@@ -676,6 +722,16 @@
         font-family: "Courier New", monospace;
         font-size: 10px;
         color: var(--text-secondary);
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.2s ease;
+        display: inline-block;
+      }
+
+      .tx-hash:hover {
+        color: var(--accent);
+        text-decoration: underline;
+        transform: translateX(2px);
       }
 
       .tx-amount {
@@ -795,6 +851,118 @@
         justify-content: flex-end;
       }
 
+      /* Swap Tab Styles */
+      .slippage-option {
+        padding: 8px 4px;
+        font-size: 11px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        box-shadow: 1px 1px 0 var(--border);
+        cursor: pointer;
+      }
+
+      .slippage-option:hover {
+        transform: translate(-1px, -1px);
+        box-shadow: 2px 2px 0 var(--border);
+      }
+
+      .slippage-option.active {
+        background: var(--accent);
+        color: var(--bg);
+        border: 2px solid var(--border);
+      }
+
+      .token-dropdown {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-top: 4px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .token-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+
+      .token-option:hover {
+        background: var(--hover);
+      }
+
+      .token-option-icon {
+        width: 24px;
+        height: 24px;
+        flex-shrink: 0;
+      }
+
+      .token-option-symbol {
+        font-weight: 500;
+      }
+
+      .swap-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 3000;
+      }
+
+      .swap-modal.hidden {
+        display: none;
+      }
+
+      .swap-modal-content {
+        background: var(--bg);
+        border: 2px solid var(--border);
+        box-shadow: 4px 4px 0 var(--border);
+        max-width: 400px;
+        width: 90%;
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+
+      .token-list {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .token-list-item {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .token-list-item:hover {
+        background: var(--hover);
+      }
+
+      .token-list-item:last-child {
+        border-bottom: none;
+      }
+
+      .token-icon-small {
+        display: inline-block;
+      }
+
       .btn-confirm {
         background: var(--success);
         color: var(--bg);
@@ -838,6 +1006,14 @@
           border: none;
           box-shadow: none;
           max-width: 100%;
+        }
+        
+        .swap-container {
+          padding: 16px;
+        }
+        
+        .swap-box {
+          margin-bottom: 12px;
         }
 
         .content {
@@ -893,7 +1069,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.1</span>
+          <span>zWallet v0.0.2</span>
         </div>
         <div class="title-right">
           <button class="icon-btn" id="themeToggle" title="Toggle theme">
@@ -906,6 +1082,7 @@
         <div class="tabs">
           <button class="tab active" data-tab="wallet">Wallet</button>
           <button class="tab" data-tab="send">Send</button>
+          <button class="tab" data-tab="swap">Swap</button>
           <button class="tab" data-tab="txs">Txs</button>
           <button class="tab" data-tab="settings">Settings</button>
         </div>
@@ -951,18 +1128,17 @@
             <div class="info-box">
               <button class="copy-btn" data-copy="address">Copy</button>
               <strong>Address</strong>
-              <div class="mono" id="address"></div>
-              <div class="ens-indicator" id="ensName"></div>
-            </div>
-            <div class="info-box" style="margin-top: 8px">
-              <button class="download-btn" id="downloadKeyBtn" title="Save">
-                💾
-              </button>
-              <button class="copy-btn" data-copy="privateKey">Copy</button>
-              <strong>Private Key</strong>
-              <div class="mono obfuscated" id="privateKey">
-                ••••••••••••••••••••••••••••••••
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <div class="mono" id="address" style="flex: 1;"></div>
+                <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                </a>
               </div>
+              <div class="ens-indicator" id="ensName"></div>
             </div>
           </div>
 
@@ -991,6 +1167,103 @@
             <button id="refreshBtn" style="width: 100%; margin-top: 8px">
               Refresh All
             </button>
+          </div>
+        </div>
+
+        <!-- Swap Tab -->
+        <div class="tab-content swap-container" id="swap-tab">
+          <div class="section">
+            <h2>Swap</h2>
+            
+            <!-- From Token -->
+            <div class="swap-box" style="background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 4px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="font-size: 12px; color: var(--text-secondary);">You pay</span>
+                <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="swapFromBalance">0.0</span></span>
+              </div>
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <input type="text" id="swapFromAmount" placeholder="0" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 0; outline: none;" autocomplete="off" inputmode="decimal" />
+                <div style="position: relative;">
+                  <div class="token-selector" id="swapFromTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; cursor: pointer; transition: all 0.2s; min-width: 100px;">
+                    <div class="token-icon" id="swapFromTokenIcon" style="width: 24px; height: 24px;"></div>
+                    <span id="swapFromTokenDisplay" style="font-weight: 500;">ETH</span>
+                    <span style="font-size: 10px;">▼</span>
+                  </div>
+                  <div id="swapFromDropdown" class="token-dropdown hidden"></div>
+                </div>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-top: 8px;">
+                <span id="swapFromUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
+                <button class="max-btn" id="swapMaxBtn" style="padding: 2px 10px; font-size: 11px; margin: 0; background: var(--accent); color: white; border-radius: 4px;">MAX</button>
+              </div>
+            </div>
+            
+            <!-- Swap Direction Button -->
+            <div style="position: relative; height: 0; margin: -2px 0;">
+              <button id="swapDirectionBtn" style="position: absolute; left: 50%; transform: translateX(-50%); width: 36px; height: 36px; border-radius: 8px; padding: 0; font-size: 16px; background: var(--bg); border: 3px solid var(--window-bg); z-index: 10; transition: all 0.2s;">↓</button>
+            </div>
+            
+            <!-- To Token -->
+            <div class="swap-box" style="background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="font-size: 12px; color: var(--text-secondary);">You receive</span>
+                <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="swapToBalance">0.0</span></span>
+              </div>
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <input type="text" id="swapToAmount" placeholder="0" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 0; outline: none;" autocomplete="off" inputmode="decimal" readonly />
+                <div style="position: relative;">
+                  <div class="token-selector" id="swapToTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; cursor: pointer; transition: all 0.2s; min-width: 100px;">
+                    <div class="token-icon" id="swapToTokenIcon" style="width: 24px; height: 24px;"></div>
+                    <span id="swapToTokenDisplay" style="font-weight: 500;">USDC</span>
+                    <span style="font-size: 10px;">▼</span>
+                  </div>
+                  <div id="swapToDropdown" class="token-dropdown hidden"></div>
+                </div>
+              </div>
+              <div style="margin-top: 8px;">
+                <span id="swapToUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
+              </div>
+            </div>
+            
+            <!-- Slippage Settings -->
+            <div class="swap-settings" style="margin-bottom: 16px;">
+              <label style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Slippage Tolerance</span>
+                <button id="slippageSettingsBtn" style="padding: 4px 8px; font-size: 11px; margin-bottom: 4px;">⚙️</button>
+              </label>
+              <div class="slippage-selector" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
+                <button class="slippage-option" data-slippage="0.1">0.1%</button>
+                <button class="slippage-option active" data-slippage="0.5">0.5%</button>
+                <button class="slippage-option" data-slippage="1">1%</button>
+                <button class="slippage-option" data-slippage="custom">Custom</button>
+              </div>
+              <div id="customSlippageSection" class="hidden" style="margin-top: 8px;">
+                <input type="number" id="customSlippage" placeholder="Custom slippage %" step="0.1" min="0" max="50" />
+              </div>
+            </div>
+            
+            <!-- Swap Route Info -->
+            <div class="swap-info" style="border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 11px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span>Best Route:</span>
+                <span id="swapRoute" style="font-weight: bold;">--</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span>Minimum Received:</span>
+                <span id="swapMinimum">--</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span>Network Fee:</span>
+                <span id="swapGasFee">--</span>
+              </div>
+            </div>
+            
+            <!-- Swap Button -->
+            <button id="swapBtn" style="width: 100%;" disabled>
+              Enter Amount to Swap
+            </button>
+            
+            <div id="swapStatus" style="margin-top: 12px;"></div>
           </div>
         </div>
 
@@ -1103,9 +1376,14 @@
             <div class="tx-list hidden" id="txList">
               <!-- Populated dynamically -->
             </div>
-            <button id="loadTxBtn" style="width: 100%; margin-top: 12px">
-              Load Transactions
-            </button>
+            <div style="display: flex; gap: 8px; margin-top: 12px">
+              <button id="loadTxBtn" style="flex: 1">
+                Load Transactions
+              </button>
+              <button id="loadMoreTxBtn" class="hidden" style="flex: 1">
+                Load Older (24h)
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1156,8 +1434,27 @@
           </div>
 
           <div class="section">
+            <h2>Private Key Management</h2>
+            <div class="warning" style="margin-bottom: 12px;">
+              ⚠️ Never share your private key with anyone
+            </div>
+            <button id="revealKeyBtn">Reveal Private Key</button>
+            <button id="exportKeyBtn">Export Encrypted Key</button>
+            <div id="privateKeySection" class="hidden" style="margin-top: 12px;">
+              <div class="info-box">
+                <button class="copy-btn" data-copy="privateKey">Copy</button>
+                <strong>Private Key</strong>
+                <div class="mono" id="privateKeyDisplay" style="word-break: break-all;">
+                  ••••••••••••••••••••••••••••••••
+                </div>
+              </div>
+              <button id="hideKeyBtn" style="margin-top: 8px;">Hide</button>
+            </div>
+          </div>
+
+          <div class="section">
             <h2>Data</h2>
-            <button id="exportWallets">Export Wallets</button>
+            <button id="exportWallets">Export All Wallets</button>
             <button
               id="clearData"
               style="background: var(--error); color: white"
@@ -1206,10 +1503,155 @@
             <span class="confirm-label">Total Cost:</span>
             <span class="confirm-value" id="confirmTotal"></span>
           </div>
+          <!-- Calldata Preview -->
+          <div style="margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: bold; font-size: 12px;">Transaction Data</label>
+              <button id="toggleSendCalldata" style="padding: 4px 8px; font-size: 11px;">Show</button>
+            </div>
+            <div id="sendCalldataSection" class="hidden" style="margin-top: 8px;">
+              <textarea id="sendCalldataDisplay" readonly style="width: 100%; height: 80px; font-family: 'Courier New', monospace; font-size: 10px; resize: none;"></textarea>
+              <a id="sendSwissKnifeLink" href="#" target="_blank" style="display: inline-block; margin-top: 8px; font-size: 11px; color: var(--accent);">
+                Decode with Swiss Knife →
+              </a>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button id="confirmSend" class="btn-confirm">Confirm Send</button>
           <button id="cancelSend" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- Swap Confirmation Modal -->
+    <div id="swapConfirmModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Confirm Swap</h3>
+          <button class="modal-close" id="swapModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="confirm-row">
+            <span class="confirm-label">From:</span>
+            <span class="confirm-value" id="confirmSwapFrom"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">To:</span>
+            <span class="confirm-value" id="confirmSwapTo"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Route:</span>
+            <span class="confirm-value" id="confirmSwapRoute"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Slippage:</span>
+            <span class="confirm-value" id="confirmSwapSlippage"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Min. Received:</span>
+            <span class="confirm-value" id="confirmSwapMinimum"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Gas Fee:</span>
+            <span class="confirm-value" id="confirmSwapGas"></span>
+          </div>
+          <div class="confirm-row total">
+            <span class="confirm-label">Total Cost:</span>
+            <span class="confirm-value" id="confirmSwapTotal"></span>
+          </div>
+          <!-- Calldata Preview -->
+          <div style="margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: bold; font-size: 12px;">Transaction Data</label>
+              <button id="toggleSwapCalldata" style="padding: 4px 8px; font-size: 11px;">Show</button>
+            </div>
+            <div id="swapCalldataSection" class="hidden" style="margin-top: 8px;">
+              <textarea id="swapCalldataDisplay" readonly style="width: 100%; height: 80px; font-family: 'Courier New', monospace; font-size: 10px; resize: none;"></textarea>
+              <a id="swapSwissKnifeLink" href="#" target="_blank" style="display: inline-block; margin-top: 8px; font-size: 11px; color: var(--accent);">
+                Decode with Swiss Knife →
+              </a>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmSwapBtn" class="btn-confirm">Confirm Swap</button>
+          <button id="cancelSwapBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DApp Approval Modal -->
+    <div id="dappApprovalModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="dappModalTitle">Connect to DApp</h3>
+          <button class="modal-close" id="dappModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="warning" id="dappOrigin" style="margin-bottom: 16px;">
+            <!-- Origin will be displayed here -->
+          </div>
+          
+          <!-- Connection Request -->
+          <div id="connectionRequest" class="hidden">
+            <p style="margin-bottom: 16px;">This website wants to:</p>
+            <ul style="margin-left: 20px; margin-bottom: 16px;">
+              <li>View your wallet address</li>
+              <li>Request approval for transactions</li>
+            </ul>
+            <div class="info-box">
+              <strong>Current Account</strong>
+              <div class="mono" id="connectionAccount"></div>
+            </div>
+          </div>
+          
+          <!-- Transaction Request -->
+          <div id="transactionRequest" class="hidden">
+            <div class="confirm-row">
+              <span class="confirm-label">From:</span>
+              <span class="confirm-value mono" id="dappTxFrom"></span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">To:</span>
+              <span class="confirm-value mono" id="dappTxTo"></span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Value:</span>
+              <span class="confirm-value" id="dappTxValue"></span>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">Gas Limit:</span>
+              <span class="confirm-value" id="dappTxGas"></span>
+            </div>
+            
+            <!-- Calldata Section -->
+            <div style="margin-top: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label style="font-weight: bold; margin-bottom: 8px;">Call Data</label>
+                <button id="toggleCalldata" style="padding: 4px 8px; font-size: 11px;">Show</button>
+              </div>
+              <div id="calldataSection" class="hidden" style="margin-top: 8px;">
+                <textarea id="calldataDisplay" readonly style="width: 100%; height: 100px; font-family: 'Courier New', monospace; font-size: 11px; resize: none;"></textarea>
+                <a id="swissKnifeLink" href="#" target="_blank" style="display: inline-block; margin-top: 8px; font-size: 12px; color: var(--accent);">
+                  Decode with Swiss Knife →
+                </a>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Sign Request -->
+          <div id="signRequest" class="hidden">
+            <p style="margin-bottom: 16px;">Sign this message:</p>
+            <div class="info-box" style="max-height: 200px; overflow-y: auto;">
+              <pre id="signMessage" style="white-space: pre-wrap; word-break: break-all;"></pre>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="approveDapp" class="btn-confirm">Approve</button>
+          <button id="rejectDapp" class="btn-cancel">Reject</button>
         </div>
       </div>
     </div>
