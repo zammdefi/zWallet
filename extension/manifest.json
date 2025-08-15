@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "zWallet",
+  "version": "0.0.1",
+  "description": "Your favorite new minimalist Ethereum wallet built for DeFi",
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "permissions": [
+    "storage",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://eth.llamarpc.com/*",
+    "https://ethereum.publicnode.com/*",
+    "https://rpc.ankr.com/*",
+    "https://cloudflare-eth.com/*",
+    "https://etherscan.io/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

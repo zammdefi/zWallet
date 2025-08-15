@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+
+    <title>zWallet</title>
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" sizes="16x16" href="icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="icon.png" />
+    <style>
+      /* Chrome detection */
+      @media (max-width: 800px) {
+        body.extension-mode {
+          width: 450px !important;
+          min-width: 450px !important;
+          max-width: 450px !important;
+          height: 600px !important;
+          min-height: 600px !important;
+          max-height: 600px !important;
+          overflow-y: auto !important;
+          overflow-x: hidden !important;
+        }
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg: #ffffff;
+        --fg: #000000;
+        --border: #000000;
+        --accent: #000000;
+        --hover: #f0f0f0;
+        --input-bg: #ffffff;
+        --info-bg: #f9f9f9;
+        --warning-bg: #ffe066;
+        --success: #66d9a6;
+        --error: #ff6b9d;
+        --text-secondary: #666666;
+      }
+
+      [data-theme="dark"] {
+        --bg: #1a1a1a;
+        --fg: #ffffff;
+        --border: #ffffff;
+        --accent: #ffffff;
+        --hover: #2a2a2a;
+        --input-bg: #2a2a2a;
+        --info-bg: #2a2a2a;
+        --warning-bg: #3a3a1a;
+        --text-secondary: #aaaaaa;
+      }
+
+      body {
+        font-family: Chicago, -apple-system, "Helvetica Neue", monospace;
+        background: var(--bg);
+        color: var(--fg);
+        padding: 20px;
+        font-size: 13px;
+        line-height: 1.4;
+        transition: background 0.3s, color 0.3s;
+      }
+
+      .window {
+        max-width: 640px;
+        margin: 20px auto;
+        background: var(--bg);
+        border: 2px solid var(--border);
+        box-shadow: 4px 4px 0 var(--border);
+      }
+
+      .title-bar {
+        background: var(--accent);
+        color: var(--bg);
+        padding: 8px;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 2px solid var(--border);
+      }
+
+      .title-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .title-right {
+        display: flex;
+        gap: 8px;
+      }
+
+      .icon-btn {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        color: var(--fg);
+        border: 1px solid var(--bg);
+        cursor: pointer;
+        font-size: 16px;
+        box-shadow: none;
+      }
+
+      .icon-btn:hover {
+        transform: none;
+        opacity: 0.8;
+      }
+
+      .logo {
+        width: 16px;
+        height: 16px;
+      }
+
+      .content {
+        padding: 16px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+        border-bottom: 2px solid var(--border);
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .tab {
+        padding: 8px 16px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-size: 12px;
+        color: var(--fg);
+        margin-bottom: -2px;
+        box-shadow: none;
+      }
+
+      .tab:hover {
+        background: var(--hover);
+      }
+
+      .tab.active {
+        border-bottom-color: var(--fg);
+        background: var(--bg);
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      .section {
+        margin-bottom: 20px;
+      }
+
+      h2 {
+        font-size: 13px;
+        font-weight: bold;
+        margin-bottom: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-weight: bold;
+        font-size: 12px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 13px;
+        margin-bottom: 12px;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 0;
+      }
+
+      button {
+        background: var(--bg);
+        color: var(--fg);
+        border: 2px solid var(--border);
+        padding: 8px 16px;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.1s;
+        box-shadow: 2px 2px 0 var(--border);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translate(-1px, -1px);
+        box-shadow: 3px 3px 0 var(--border);
+      }
+
+      button:active:not(:disabled) {
+        transform: translate(1px, 1px);
+        box-shadow: 1px 1px 0 var(--border);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button + button {
+        margin-left: 8px;
+      }
+
+      .info-box {
+        border: 1px solid var(--border);
+        padding: 12px;
+        margin-top: 12px;
+        background: var(--info-bg);
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        word-break: break-all;
+        line-height: 1.6;
+        position: relative;
+      }
+
+      .info-box strong {
+        display: block;
+        margin-bottom: 4px;
+        font-family: Chicago, -apple-system, "Helvetica Neue", monospace;
+        font-size: 12px;
+      }
+
+      .copy-btn,
+      .download-btn {
+        position: absolute;
+        right: 8px;
+        top: 8px;
+        padding: 2px 6px;
+        font-size: 10px;
+        box-shadow: 1px 1px 0 var(--border);
+      }
+
+      .download-btn {
+        right: 60px;
+      }
+
+      .status {
+        margin-top: 12px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+
+      .status.error {
+        background: var(--error);
+        color: var(--bg);
+      }
+
+      .status.success {
+        background: var(--success);
+        color: var(--bg);
+        font-weight: bold;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      .mono {
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+      }
+
+      .obfuscated {
+        color: var(--text-secondary);
+        letter-spacing: 2px;
+      }
+
+      .loader {
+        width: 20px;
+        height: 20px;
+        display: inline-block;
+        vertical-align: middle;
+        animation: spin 3.2s linear infinite;
+      }
+
+      @keyframes spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .toast {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: var(--accent);
+        color: var(--bg);
+        padding: 8px 12px;
+        border: 2px solid var(--border);
+        font-size: 12px;
+        font-weight: bold;
+        opacity: 0;
+        transition: opacity 0.3s;
+        z-index: 1000;
+      }
+
+      .toast.show {
+        opacity: 1;
+      }
+
+      .warning {
+        background: var(--warning-bg);
+        border: 2px solid var(--border);
+        padding: 12px;
+        margin-bottom: 16px;
+        font-size: 11px;
+        font-weight: bold;
+      }
+
+      .gas-selector {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .gas-option {
+        padding: 8px 4px;
+        font-size: 11px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        box-shadow: 1px 1px 0 var(--border);
+      }
+
+      .gas-option:hover {
+        transform: translate(-1px, -1px);
+        box-shadow: 2px 2px 0 var(--border);
+      }
+
+      .gas-option.active {
+        background: var(--accent);
+        color: var(--bg);
+        border: 2px solid var(--border);
+      }
+
+      .gas-icon {
+        font-size: 16px;
+        line-height: 1;
+      }
+
+      .gas-label {
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .gas-price {
+        font-size: 10px;
+        font-family: "Courier New", monospace;
+      }
+
+      .amount-controls {
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+      }
+
+      .amount-controls input {
+        flex: 1;
+      }
+
+      .max-btn {
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        font-size: 11px;
+        box-shadow: 1px 1px 0 var(--border);
+      }
+
+      .token-grid {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 16px;
+        border: 1px solid var(--border);
+      }
+
+      .token-row {
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.1s;
+        background: var(--bg);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        min-height: 60px;
+      }
+
+      .token-row:last-child {
+        border-bottom: none;
+      }
+
+      .token-row:hover {
+        background: var(--hover);
+      }
+
+      .token-row.selected {
+        background: var(--accent);
+        color: var(--bg);
+      }
+
+      .token-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 200px;
+      }
+
+      .token-icon {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+      }
+
+      .token-details {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .token-symbol {
+        font-weight: bold;
+        font-size: 15px;
+        letter-spacing: 0.5px;
+      }
+
+      .token-name {
+        font-size: 11px;
+        color: var(--text-secondary);
+        opacity: 0.8;
+      }
+
+      .token-row.selected .token-name {
+        color: inherit;
+        opacity: 0.7;
+      }
+
+      .token-right {
+        text-align: right;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+      }
+
+      .token-balance {
+        font-family: "Courier New", monospace;
+        font-size: 14px;
+        font-weight: bold;
+        letter-spacing: 0.5px;
+      }
+
+      .token-prices {
+        font-size: 11px;
+        color: var(--text-secondary);
+        display: flex;
+        gap: 12px;
+      }
+
+      .token-row.selected .token-prices {
+        color: inherit;
+        opacity: 0.7;
+      }
+
+      .eth-price {
+        font-family: "Courier New", monospace;
+        opacity: 0.9;
+      }
+
+      .usd-price {
+        font-weight: bold;
+      }
+
+      .add-token-btn {
+        width: 100%;
+        padding: 12px;
+        border: 2px dashed var(--border);
+        background: transparent;
+        margin-top: 8px;
+        font-size: 12px;
+        box-shadow: none;
+      }
+
+      .add-token-btn:hover {
+        background: var(--hover);
+        transform: none;
+        box-shadow: none;
+      }
+
+      .token-input-group {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .token-input-group input {
+        margin-bottom: 0;
+      }
+
+      .token-input-group button {
+        grid-column: span 2;
+      }
+
+      .wallet-selector {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .wallet-selector select {
+        flex: 1;
+        margin-bottom: 0;
+      }
+
+      .delete-wallet-btn {
+        padding: 8px;
+        font-size: 16px;
+        line-height: 1;
+        min-width: auto;
+        box-shadow: 1px 1px 0 var(--border);
+      }
+
+      .ens-indicator {
+        font-size: 10px;
+        color: var(--text-secondary);
+        margin-top: 4px;
+      }
+
+      .portfolio-total {
+        font-size: 16px;
+        font-weight: bold;
+        padding: 12px;
+        border: 2px solid var(--border);
+        text-align: center;
+        margin-bottom: 16px;
+        background: var(--info-bg);
+      }
+
+      .rpc-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 12px 0;
+      }
+
+      .rpc-item {
+        padding: 8px;
+        border: 1px solid var(--border);
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--bg);
+      }
+
+      .rpc-item:hover {
+        background: var(--hover);
+      }
+
+      .rpc-item.active {
+        background: var(--accent);
+        color: var(--bg);
+      }
+
+      select {
+        appearance: none;
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        background-size: 16px;
+        padding-right: 32px;
+      }
+
+      .token-icon {
+        width: 24px;
+        height: 24px;
+        margin-bottom: 4px;
+      }
+
+      .tx-list {
+        max-height: 400px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+      }
+
+      .tx-item {
+        padding: 12px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+      }
+
+      .tx-item:last-child {
+        border-bottom: none;
+      }
+
+      .tx-item:hover {
+        background: var(--hover);
+      }
+
+      .tx-type {
+        font-weight: bold;
+        text-transform: uppercase;
+        padding: 2px 6px;
+        border: 1px solid var(--border);
+        font-size: 10px;
+      }
+
+      .tx-type.send {
+        color: var(--error);
+      }
+
+      .tx-type.receive {
+        color: var(--success);
+      }
+
+      .tx-details {
+        flex: 1;
+        margin: 0 12px;
+      }
+
+      .tx-hash {
+        font-family: "Courier New", monospace;
+        font-size: 10px;
+        color: var(--text-secondary);
+      }
+
+      .tx-amount {
+        font-weight: bold;
+        text-align: right;
+      }
+
+      .etherscan-link {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 11px;
+        font-weight: bold;
+        padding: 4px 8px;
+        border: 1px solid var(--accent);
+        display: inline-block;
+        margin-top: 8px;
+      }
+
+      .etherscan-link:hover {
+        background: var(--accent);
+        color: var(--bg);
+      }
+
+      .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+      }
+
+      .modal.hidden {
+        display: none;
+      }
+
+      .modal-content {
+        background: var(--bg);
+        border: 2px solid var(--border);
+        box-shadow: 4px 4px 0 var(--border);
+        max-width: 420px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      .modal-header {
+        background: var(--accent);
+        color: var(--bg);
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 2px solid var(--border);
+      }
+
+      .modal-header h3 {
+        margin: 0;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .modal-close {
+        background: transparent;
+        border: none;
+        color: var(--bg);
+        font-size: 24px;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        line-height: 1;
+        box-shadow: none;
+      }
+
+      .modal-body {
+        padding: 16px;
+      }
+
+      .confirm-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .confirm-row.total {
+        border-top: 2px solid var(--border);
+        margin-top: 8px;
+        padding-top: 12px;
+        font-weight: bold;
+      }
+
+      .confirm-label {
+        font-weight: bold;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .confirm-value {
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        text-align: right;
+      }
+
+      .modal-footer {
+        padding: 16px;
+        border-top: 2px solid var(--border);
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
+      .btn-confirm {
+        background: var(--success);
+        color: var(--bg);
+        border: 2px solid var(--border);
+        padding: 8px 16px;
+        font-weight: bold;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        box-shadow: 2px 2px 0 var(--border);
+      }
+
+      .btn-confirm:hover {
+        transform: translate(-1px, -1px);
+        box-shadow: 3px 3px 0 var(--border);
+      }
+
+      .btn-cancel {
+        background: var(--bg);
+        color: var(--fg);
+        border: 2px solid var(--border);
+        padding: 8px 16px;
+        font-weight: bold;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        box-shadow: 2px 2px 0 var(--border);
+      }
+
+      .btn-cancel:hover {
+        background: var(--hover);
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 0;
+        }
+
+        .window {
+          margin: 0;
+          border: none;
+          box-shadow: none;
+          max-width: 100%;
+        }
+
+        .content {
+          padding: 12px;
+        }
+
+        .token-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .gas-selector {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .tabs {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+
+        .tabs::-webkit-scrollbar {
+          display: none;
+        }
+
+        .tab {
+          white-space: nowrap;
+        }
+      }
+    </style>
+    <style>
+      /* Extension-specific styles */
+      .is-extension body {
+        width: 450px !important;
+        max-width: 450px !important;
+        height: 600px !important;
+        overflow-y: auto !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="window">
+      <div class="title-bar">
+        <div class="title-left">
+          <svg
+            class="logo"
+            viewBox="0 0 100 100"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <polygon points="50,20 30,60 50,45" fill="#FF6B9D" />
+            <polygon points="50,20 50,45 70,60" fill="#00D4FF" />
+            <polygon points="30,60 50,45 50,60" fill="#FFE066" />
+            <polygon points="50,45 70,60 50,60" fill="#66D9A6" />
+            <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
+            <polygon points="50,60 70,60 50,80" fill="#B967DB" />
+          </svg>
+          <span>zWallet v0.0.1</span>
+        </div>
+        <div class="title-right">
+          <button class="icon-btn" id="themeToggle" title="Toggle theme">
+            🌓
+          </button>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="tabs">
+          <button class="tab active" data-tab="wallet">Wallet</button>
+          <button class="tab" data-tab="send">Send</button>
+          <button class="tab" data-tab="txs">Txs</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <!-- Wallet Tab -->
+        <div class="tab-content active" id="wallet-tab">
+          <div class="warning">
+            ⚠️ Browser wallet - Never share your private key
+          </div>
+
+          <div class="section">
+            <div id="walletSelectorSection" class="wallet-selector hidden">
+              <select id="walletSelector">
+                <option value="">Select wallet...</option>
+              </select>
+              <button
+                class="delete-wallet-btn"
+                id="deleteWalletBtn"
+                title="Delete"
+              >
+                ×
+              </button>
+            </div>
+
+            <div style="margin-top: 8px">
+              <button id="generateBtn">New Wallet</button>
+              <button id="importBtn">Import</button>
+            </div>
+
+            <div id="importSection" class="hidden" style="margin-top: 12px">
+              <input
+                type="password"
+                id="privateKeyInput"
+                placeholder="Private key"
+              />
+              <button id="confirmImportBtn">Import</button>
+              <button id="cancelImportBtn">Cancel</button>
+            </div>
+          </div>
+
+          <div id="walletSection" class="section hidden">
+            <h2>Account</h2>
+            <div class="info-box">
+              <button class="copy-btn" data-copy="address">Copy</button>
+              <strong>Address</strong>
+              <div class="mono" id="address"></div>
+              <div class="ens-indicator" id="ensName"></div>
+            </div>
+            <div class="info-box" style="margin-top: 8px">
+              <button class="download-btn" id="downloadKeyBtn" title="Save">
+                💾
+              </button>
+              <button class="copy-btn" data-copy="privateKey">Copy</button>
+              <strong>Private Key</strong>
+              <div class="mono obfuscated" id="privateKey">
+                ••••••••••••••••••••••••••••••••
+              </div>
+            </div>
+          </div>
+
+          <div id="balanceSection" class="section hidden">
+            <h2>Balances</h2>
+            <div class="portfolio-total" id="portfolioTotal">Total: $0.00</div>
+            <div class="token-grid" id="tokenGrid">
+              <!-- Populated dynamically -->
+            </div>
+            <button class="add-token-btn" id="addTokenBtn">
+              + Add Custom Token
+            </button>
+            <div id="addTokenSection" class="hidden token-input-group">
+              <input
+                type="text"
+                id="newTokenAddress"
+                placeholder="Token address"
+              />
+              <input
+                type="text"
+                id="newTokenSymbol"
+                placeholder="Symbol (optional)"
+              />
+              <button id="confirmAddToken">Add Token</button>
+            </div>
+            <button id="refreshBtn" style="width: 100%; margin-top: 8px">
+              Refresh All
+            </button>
+          </div>
+        </div>
+
+        <!-- Send Tab -->
+        <div class="tab-content" id="send-tab">
+          <div class="section">
+            <h2>Select Token</h2>
+            <div class="token-grid" id="sendTokenGrid">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+
+          <div class="section">
+            <label for="toAddress">Recipient (Address or ENS)</label>
+            <input
+              type="text"
+              id="toAddress"
+              placeholder="0x... or name.eth"
+              autocomplete="off"
+            />
+            <div class="ens-indicator" id="resolvedAddress"></div>
+
+            <label for="amount"
+              >Amount <span id="selectedTokenLabel">ETH</span></label
+            >
+            <div class="amount-controls">
+              <input
+                type="number"
+                id="amount"
+                step="0.000001"
+                min="0"
+                placeholder="0.000000"
+              />
+              <button class="max-btn" id="maxBtn">MAX</button>
+            </div>
+
+            <div style="margin-top: 16px">
+              <label>Gas Fee</label>
+              <div class="gas-selector">
+                <button class="gas-option" data-speed="slow">
+                  <span class="gas-icon">🐢</span>
+                  <span class="gas-label">Slow</span>
+                  <span class="gas-price" id="slowPrice">--</span>
+                </button>
+                <button class="gas-option active" data-speed="normal">
+                  <span class="gas-icon">⚡</span>
+                  <span class="gas-label">Normal</span>
+                  <span class="gas-price" id="normalPrice">--</span>
+                </button>
+                <button class="gas-option" data-speed="fast">
+                  <span class="gas-icon">🚀</span>
+                  <span class="gas-label">Fast</span>
+                  <span class="gas-price" id="fastPrice">--</span>
+                </button>
+                <button class="gas-option" data-speed="custom">
+                  <span class="gas-icon">⚙️</span>
+                  <span class="gas-label">Custom</span>
+                </button>
+              </div>
+              <div
+                id="customGasSection"
+                class="hidden"
+                style="margin-top: 12px"
+              >
+                <input
+                  type="number"
+                  id="customGasPrice"
+                  placeholder="Max fee (Gwei)"
+                  step="0.1"
+                  min="0"
+                  style="width: 48%; margin-right: 4%"
+                />
+                <input
+                  type="number"
+                  id="customPriorityFee"
+                  placeholder="Priority fee (Gwei)"
+                  step="0.1"
+                  min="0"
+                  style="width: 48%"
+                />
+              </div>
+              <div
+                style="
+                  margin-top: 8px;
+                  font-size: 11px;
+                  color: var(--text-secondary);
+                "
+              >
+                Est: <span id="estimatedTotal">--</span>
+              </div>
+            </div>
+
+            <button id="sendBtn" style="width: 100%; margin-top: 12px">
+              Send Transaction
+            </button>
+            <div id="txStatus"></div>
+          </div>
+        </div>
+
+        <!-- Transactions Tab -->
+        <div class="tab-content" id="txs-tab">
+          <div class="section">
+            <h2>Transaction History</h2>
+            <div
+              id="txLoadingMessage"
+              style="padding: 20px; text-align: center"
+            >
+              Click "Load Transactions" to fetch history
+            </div>
+            <div class="tx-list hidden" id="txList">
+              <!-- Populated dynamically -->
+            </div>
+            <button id="loadTxBtn" style="width: 100%; margin-top: 12px">
+              Load Transactions
+            </button>
+          </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div class="tab-content" id="settings-tab">
+          <div class="section">
+            <h2>RPC Endpoint</h2>
+            <div class="rpc-list">
+              <div class="rpc-item" data-rpc="https://eth.llamarpc.com">
+                <span>Llama RPC</span>
+                <span class="mono" style="font-size: 10px">Fast</span>
+              </div>
+              <div class="rpc-item" data-rpc="https://ethereum.publicnode.com">
+                <span>Public Node</span>
+                <span class="mono" style="font-size: 10px">Reliable</span>
+              </div>
+              <div class="rpc-item" data-rpc="https://rpc.ankr.com/eth">
+                <span>Ankr</span>
+                <span class="mono" style="font-size: 10px">Global</span>
+              </div>
+              <div class="rpc-item" data-rpc="https://cloudflare-eth.com">
+                <span>Cloudflare</span>
+                <span class="mono" style="font-size: 10px">CDN</span>
+              </div>
+              <div class="rpc-item" data-rpc="custom" id="customRpcItem">
+                <span>Custom RPC</span>
+                <span class="mono" style="font-size: 10px">Configure</span>
+              </div>
+            </div>
+
+            <div id="customRpcSection" class="hidden">
+              <label for="customRpcUrl">Custom RPC URL</label>
+              <input type="text" id="customRpcUrl" placeholder="https://..." />
+              <button id="saveCustomRpc">Save Custom RPC</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Display</h2>
+            <label>
+              <input
+                type="checkbox"
+                id="autoRefresh"
+                style="width: auto; margin-right: 8px"
+              />
+              Auto-refresh balances (15s)
+            </label>
+          </div>
+
+          <div class="section">
+            <h2>Data</h2>
+            <button id="exportWallets">Export Wallets</button>
+            <button
+              id="clearData"
+              style="background: var(--error); color: white"
+            >
+              Clear All Data
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="ethers.umd.min.js"></script>
+    <script src="popup.js"></script>
+
+    <!-- Transaction Confirmation Modal -->
+    <div id="txConfirmModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Confirm Transaction</h3>
+          <button class="modal-close" id="modalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="confirm-row">
+            <span class="confirm-label">Token:</span>
+            <span class="confirm-value" id="confirmToken"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Amount:</span>
+            <span class="confirm-value" id="confirmAmount"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">To:</span>
+            <span class="confirm-value mono" id="confirmTo"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Value (USD):</span>
+            <span class="confirm-value" id="confirmValueUSD"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Gas Fee:</span>
+            <span class="confirm-value" id="confirmGas"></span>
+          </div>
+          <div class="confirm-row total">
+            <span class="confirm-label">Total Cost:</span>
+            <span class="confirm-value" id="confirmTotal"></span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmSend" class="btn-confirm">Confirm Send</button>
+          <button id="cancelSend" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

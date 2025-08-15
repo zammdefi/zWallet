@@ -1,0 +1,1797 @@
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
+  document.documentElement.classList.add("is-extension");
+}
+
+// Generate dynamic coin SVG
+function generateCoinSVG(id) {
+  const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+  const textColor = isDark ? "#ffffff" : "#000000";
+  const goldColor = isDark ? "#FFD700" : "#DAA520";
+  const shadowColor = isDark ? "#B8860B" : "#996515";
+
+  return `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="coinGrad${id}" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:${goldColor};stop-opacity:1" />
+              <stop offset="50%" style="stop-color:#FFA500;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:${shadowColor};stop-opacity:1" />
+            </linearGradient>
+          </defs>
+          <circle cx="16" cy="16" r="14" fill="url(#coinGrad${id})" stroke="${shadowColor}" stroke-width="1"/>
+          <circle cx="16" cy="16" r="11" fill="none" stroke="${shadowColor}" stroke-width="0.5" opacity="0.5"/>
+          <text x="16" y="20" font-family="monospace" font-size="8" font-weight="bold" text-anchor="middle" fill="${textColor}">${id}</text>
+        </svg>`;
+}
+
+// Token configuration with logos
+const TOKEN_LOGOS = {
+  ETH: '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></g></svg>',
+  USDC: '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><g fill="none"><circle fill="#3E73C4" cx="16" cy="16" r="16"/><g fill="#FFF"><path d="M20.022 18.124c0-2.124-1.28-2.852-3.84-3.156-1.828-.243-2.193-.728-2.193-1.578 0-.85.61-1.396 1.828-1.396 1.097 0 1.707.364 2.011 1.275a.458.458 0 00.427.303h.975a.416.416 0 00.427-.425v-.06a3.04 3.04 0 00-2.743-2.489V9.142c0-.243-.183-.425-.487-.486h-.915c-.243 0-.426.182-.487.486v1.396c-1.829.242-2.986 1.456-2.986 2.974 0 2.002 1.218 2.791 3.778 3.095 1.707.303 2.255.668 2.255 1.639 0 .97-.853 1.638-2.011 1.638-1.585 0-2.133-.667-2.316-1.578-.06-.242-.244-.364-.427-.364h-1.036a.416.416 0 00-.426.425v.06c.243 1.518 1.219 2.61 3.23 2.914v1.457c0 .242.183.425.487.485h.915c.243 0 .426-.182.487-.485V21.34c1.829-.303 3.047-1.578 3.047-3.217z"/><path d="M12.892 24.497c-4.754-1.7-7.192-6.98-5.424-11.653.914-2.55 2.925-4.491 5.424-5.402.244-.121.365-.303.365-.607v-.85c0-.242-.121-.424-.365-.485-.061 0-.183 0-.244.06a10.895 10.895 0 00-7.13 13.717c1.096 3.4 3.717 6.01 7.13 7.102.244.121.488 0 .548-.243.061-.06.061-.122.061-.243v-.85c0-.182-.182-.424-.365-.546zm6.46-18.936c-.244-.122-.488 0-.548.242-.061.061-.061.122-.061.243v.85c0 .243.182.485.365.607 4.754 1.7 7.192 6.98 5.424 11.653-.914 2.55-2.925 4.491-5.424 5.402-.244.121-.365.303-.365.607v.85c0 .242.121.424.365.485.061 0 .183 0 .244-.06a10.895 10.895 0 007.13-13.717c-1.096-3.46-3.778-6.07-7.13-7.162z"/></g></g></svg>',
+  DAI: '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><circle fill="#F4B731" fill-rule="nonzero" cx="16" cy="16" r="16"/><path d="M9.277 8h6.552c3.985 0 7.006 2.116 8.13 5.194H26v1.861h-1.611c.031.294.047.594.047.898v.046c0 .342-.02.68-.06 1.01H26v1.86h-2.08C22.767 21.905 19.77 24 15.83 24H9.277v-5.131H7v-1.86h2.277v-1.954H7v-1.86h2.277V8zm1.831 10.869v3.462h4.72c2.914 0 5.078-1.387 6.085-3.462H11.108zm11.366-1.86H11.108v-1.954h11.37c.041.307.063.622.063.944v.045c0 .329-.023.65-.067.964zM15.83 9.665c2.926 0 5.097 1.424 6.098 3.528h-10.82V9.666h4.72z" fill="#FFF"/></g></svg>',
+  USDT: '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><g fill="none"><circle fill="#26A17B" cx="16" cy="16" r="16"/><path fill="#FFF" d="M17.922 17.383v-.002c-.11.008-.677.042-1.942.042-1.01 0-1.721-.03-1.971-.042v.003c-3.888-.171-6.79-.848-6.79-1.658 0-.809 2.902-1.486 6.79-1.66v2.644c.254.018.982.061 1.988.061 1.207 0 1.812-.05 1.925-.06v-2.643c3.88.173 6.775.85 6.775 1.658 0 .81-2.895 1.485-6.775 1.657m0-3.59v-2.366h5.414V7.819H8.595v3.608h5.414v2.365c-4.4.202-7.709 1.074-7.709 2.118 0 1.044 3.309 1.915 7.709 2.118v7.582h3.913v-7.584c4.393-.202 7.694-1.073 7.694-2.116 0-1.043-3.301-1.914-7.694-2.117"/></g></svg>',
+  ENS: '<svg viewBox="0 0 202 231" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M98.3592 2.80337L34.8353 107.327C34.3371 108.147 33.1797 108.238 32.5617 107.505C26.9693 100.864 6.13478 72.615 31.9154 46.8673C55.4403 23.3726 85.4045 6.62129 96.5096 0.831705C97.7695 0.174847 99.0966 1.59007 98.3592 2.80337Z" fill="#0080BC"/><path d="M94.8459 230.385C96.1137 231.273 97.6758 229.759 96.8261 228.467C82.6374 206.886 35.4713 135.081 28.9559 124.302C22.5295 113.67 9.88976 96.001 8.83534 80.8842C8.7301 79.3751 6.64332 79.0687 6.11838 80.4879C5.27178 82.7767 4.37045 85.5085 3.53042 88.6292C-7.07427 128.023 8.32698 169.826 41.7753 193.238L94.8459 230.386V230.385Z" fill="#0080BC"/><path d="M103.571 228.526L167.095 124.003C167.593 123.183 168.751 123.092 169.369 123.825C174.961 130.465 195.796 158.715 170.015 184.463C146.49 207.957 116.526 224.709 105.421 230.498C104.161 231.155 102.834 229.74 103.571 228.526Z" fill="#0080BC"/><path d="M107.154 0.930762C105.886 0.0433954 104.324 1.5567 105.174 2.84902C119.363 24.4301 166.529 96.2354 173.044 107.014C179.471 117.646 192.11 135.315 193.165 150.432C193.27 151.941 195.357 152.247 195.882 150.828C196.728 148.539 197.63 145.808 198.47 142.687C209.074 103.293 193.673 61.4905 160.225 38.078L107.154 0.930762Z" fill="#0080BC"/></svg>',
+  CULT: '<img src="https://assets.coingecko.com/coins/images/52583/standard/cult.jpg?1733712273" style="width: 100%; height: 100%; object-fit: contain;" />',
+  ZAMM: '<img src="https://raw.githubusercontent.com/NaniDAO/coinchan/main/public/zammzamm.gif" style="width: 100%; height: 100%; object-fit: contain;" />',
+};
+
+// WETH address for ETH price
+const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+
+// ERC6909 addresses
+const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
+const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
+
+// CTC contract for price checking
+const CTC_ADDRESS = "0x0000000000cDC1F8d393415455E382c30FBc0a84";
+const CTC_ABI = [
+  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
+];
+
+const LS_WALLETS = "eth_wallets_v2";
+const LS_LAST = "last_wallet_addr";
+
+const KEY_VERSION = 1;
+const DEFAULT_KDF = { kdf: "pbkdf2-sha256", iter: 210000 }; // bump iter later if you want
+
+// Default tokens configuration
+const DEFAULT_TOKENS = {
+  ETH: { address: null, symbol: "ETH", name: "Ethereum", decimals: 18 },
+  USDC: {
+    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    symbol: "USDC",
+    name: "USD Coin",
+    decimals: 6,
+  },
+  DAI: {
+    address: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    symbol: "DAI",
+    name: "Dai",
+    decimals: 18,
+  },
+  USDT: {
+    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    symbol: "USDT",
+    name: "Tether",
+    decimals: 6,
+  },
+  ENS: {
+    address: "0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72",
+    symbol: "ENS",
+    name: "ENS",
+    decimals: 18,
+  },
+  CULT: {
+    address: "0x0000000000c5dc95539589fbD24BE07c6C14eCa4",
+    symbol: "CULT",
+    name: "Milady Cult Coin",
+    decimals: 18,
+  },
+  ZAMM: {
+    address: COINS_CONTRACT,
+    symbol: "ZAMM",
+    name: "ZAMM",
+    decimals: 18,
+    isERC6909: true,
+    id: ZAMM_ID,
+  },
+};
+
+// zWallet contract address and ABI
+const ZWALLET_ADDRESS = "0xF0cf3dD4A74dA18012Ec3FF83E9794440E80d095";
+const ZWALLET_ABI = [
+  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, uint256[] pricesUSDC, string[] pricesETHStr, string[] pricesUSDCStr)",
+  "function getBalanceOf(address user, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
+  "function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)",
+  "function getERC20Transfer(address to, uint256 amount) pure returns (bytes)",
+  "function getERC6909Transfer(address to, uint256 id, uint256 amount) pure returns (bytes)",
+  "function checkPriceInETH(address token) view returns (uint256 price, string priceStr)",
+  "function checkPriceInETHToUSDC(address token) view returns (uint256 price, string priceStr)",
+];
+
+const ERC20_ABI = [
+  "function transfer(address, uint256) returns (bool)",
+  "function approve(address, uint256) returns (bool)",
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+];
+
+// Global state
+let wallet = null;
+let provider = null;
+let zWalletContract = null;
+let selectedGasSpeed = "normal";
+let currentBalances = {};
+let tokenPrices = {};
+let ethPrice = 0;
+let selectedToken = "ETH";
+let savedWallets = [];
+let customTokens = {};
+let currentRpc =
+  localStorage.getItem("rpc_endpoint") || "https://eth.llamarpc.com";
+let autoRefreshInterval = null;
+let txHistory = [];
+let gasPrices = {
+  slow: null,
+  normal: null,
+  fast: null,
+  custom: null,
+};
+let TOKENS = { ...DEFAULT_TOKENS };
+
+const enc = new TextEncoder(),
+  dec = new TextDecoder();
+async function deriveKey(pass, salt, meta) {
+  const kdf = (meta && meta.kdf) || "pbkdf2-sha256";
+  if (kdf === "pbkdf2-sha256") {
+    let iter = Number((meta && meta.iter) || 210000);
+    if (!Number.isFinite(iter)) iter = 210000;
+    iter = Math.min(Math.max(10_000, Math.floor(iter)), 5_000_000); // clamp
+    const km = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(pass),
+      "PBKDF2",
+      false,
+      ["deriveKey"]
+    );
+    return crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" },
+      km,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+  throw new Error("Unsupported KDF: " + kdf);
+}
+
+const b64 = (u8) => btoa(String.fromCharCode(...u8));
+const unb64 = (s) =>
+  new Uint8Array(
+    atob(s)
+      .split("")
+      .map((c) => c.charCodeAt(0))
+  );
+
+async function encryptPK(pkHex, pass, opts = {}) {
+  const meta = { v: KEY_VERSION, ...DEFAULT_KDF, ...opts };
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass, salt, meta);
+  const aad = meta.aad ? enc.encode(meta.aad) : undefined;
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: aad },
+      key,
+      enc.encode(pkHex)
+    )
+  );
+  return { ...meta, ct: b64(ct), iv: b64(iv), salt: b64(salt) };
+}
+
+async function decryptPK(payload, pass, aadExpected) {
+  const meta = {
+    v: payload.v ?? 0,
+    kdf: payload.kdf || "pbkdf2-sha256",
+    iter: payload.iter || 210000,
+    aad: payload.aad,
+  };
+  const key = await deriveKey(pass, unb64(payload.salt), meta);
+
+  if (aadExpected && meta.aad && meta.aad !== aadExpected) {
+    throw new Error("Keystore/address mismatch");
+  }
+
+  try {
+    const aad = enc.encode(aadExpected || meta.aad || "");
+    const pt = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
+      key,
+      unb64(payload.ct)
+    );
+    return dec.decode(pt);
+  } catch (e) {
+    // Legacy fallback: only try if no AAD was used originally
+    if (!meta.aad && aadExpected) {
+      const pt = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
+        key,
+        unb64(payload.ct)
+      );
+      return dec.decode(pt);
+    }
+    throw e;
+  }
+}
+
+async function migrateKeystoreIfNeeded() {
+  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  let changed = false;
+  for (const w of list) {
+    const c = w.crypto;
+    // Old shape had no v/kdf/iter – wrap it with defaults without touching ct/iv/salt
+    if (c && c.ct && !("v" in c)) {
+      w.crypto = { v: KEY_VERSION, ...DEFAULT_KDF, ...c };
+      changed = true;
+    }
+  }
+  if (changed) localStorage.setItem(LS_WALLETS, JSON.stringify(list));
+}
+
+// Initialize
+async function init() {
+  // Check if running as extension and handle CSP restrictions
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+    // Keep service worker alive
+    setInterval(() => {
+      chrome.runtime.sendMessage({ action: 'keepAlive' }, () => {
+        if (chrome.runtime.lastError) {
+          // Service worker was inactive, will restart automatically
+        }
+      });
+    }, 20000); // Every 20 seconds
+  }
+  
+  loadTheme();
+
+  await migrateKeystoreIfNeeded();
+
+  loadWallets();
+  await initProvider();
+  await loadCustomTokens();
+
+  // --- auto-unlock last wallet (with password prompt) ---
+  try {
+    const last = localStorage.getItem(LS_LAST);
+    if (last) {
+      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+      const entry = list.find(
+        (w) => w.address.toLowerCase() === last.toLowerCase()
+      );
+      if (entry) {
+        const label =
+          entry.label ||
+          entry.address.slice(0, 6) + "..." + entry.address.slice(-4);
+        const pass = prompt(`Unlock ${label}: enter your wallet password`);
+        if (pass) {
+          try {
+            const pk = await decryptPK(
+              entry.crypto,
+              pass,
+              entry.address.toLowerCase()
+            );
+
+            // Rewrap legacy keystores that were saved without AAD
+            if (!entry.crypto.aad) {
+              try {
+                const newPayload = await encryptPK(pk, pass, {
+                  aad: entry.address.toLowerCase(),
+                });
+                entry.crypto = newPayload;
+                const listNow = JSON.parse(
+                  localStorage.getItem(LS_WALLETS) || "[]"
+                ).map((w) =>
+                  w.address.toLowerCase() === entry.address.toLowerCase()
+                    ? entry
+                    : w
+                );
+                localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
+              } catch (e) {
+                console.warn("Keystore rewrap failed:", e);
+              }
+            }
+
+            wallet = new ethers.Wallet(pk, provider);
+            await displayWallet();
+
+            showToast("Wallet unlocked!");
+          } catch (e) {
+            console.warn("Auto-unlock failed (bad password)");
+            // keep LS_LAST so user can try from selector
+          }
+        }
+      } else {
+        // stale pointer, clean up
+        localStorage.removeItem(LS_LAST);
+      }
+    }
+  } catch (e) {
+    console.warn("Auto-unlock skipped:", e);
+  }
+
+  setupEventListeners();
+}
+
+async function loadCustomTokens() {
+  try {
+    const stored = localStorage.getItem("custom_tokens");
+    if (stored) {
+      customTokens = JSON.parse(stored);
+      // Merge with default tokens
+      TOKENS = { ...DEFAULT_TOKENS, ...customTokens };
+    }
+  } catch (err) {
+    customTokens = {};
+    TOKENS = { ...DEFAULT_TOKENS };
+  }
+}
+
+function saveCustomToken(address, token) {
+  customTokens[token.symbol] = token;
+  TOKENS[token.symbol] = token;
+  localStorage.setItem("custom_tokens", JSON.stringify(customTokens));
+}
+
+function loadTheme() {
+  const theme = localStorage.getItem("theme") || "light";
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("theme", next);
+}
+
+function loadRpcSettings() {
+  const customRpc = localStorage.getItem("custom_rpc");
+
+  document.querySelectorAll(".rpc-item").forEach((item) => {
+    item.classList.remove("active");
+    const itemRpc = item.dataset.rpc;
+
+    if (itemRpc === "custom" && currentRpc === customRpc) {
+      item.classList.add("active");
+    } else if (itemRpc === currentRpc) {
+      item.classList.add("active");
+    }
+  });
+
+  if (customRpc) {
+    document.getElementById("customRpcUrl").value = customRpc;
+  }
+}
+
+async function initProvider() {
+  try {
+    // Add timeout for RPC connections
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    
+    provider = new ethers.JsonRpcProvider(currentRpc);
+    await provider.getBlockNumber();
+    clearTimeout(timeoutId);
+
+    // Initialize zWallet contract
+    zWalletContract = new ethers.Contract(
+      ZWALLET_ADDRESS,
+      ZWALLET_ABI,
+      provider
+    );
+
+    console.log("Connected to:", currentRpc);
+    loadRpcSettings();
+    showToast("Connected to network");
+  } catch (err) {
+    console.error("RPC connection failed:", err);
+    if (typeof timeoutId !== 'undefined') clearTimeout(timeoutId);
+    // Try fallback
+    for (const rpc of [
+      "https://eth.llamarpc.com",
+      "https://ethereum.publicnode.com",
+    ]) {
+      try {
+        provider = new ethers.JsonRpcProvider(rpc);
+        await provider.getBlockNumber();
+        zWalletContract = new ethers.Contract(
+          ZWALLET_ADDRESS,
+          ZWALLET_ABI,
+          provider
+        );
+        currentRpc = rpc;
+        localStorage.setItem("rpc_endpoint", rpc);
+        loadRpcSettings();
+        break;
+      } catch (e) {
+        continue;
+      }
+    }
+    if (!provider) {
+      showToast("Network connection failed");
+    }
+  }
+}
+
+function loadWallets() {
+  const v2 = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  savedWallets = v2.map(({ address, label }) => ({ address, label }));
+  updateWalletSelectorFrom(v2);
+}
+
+async function saveWallet(address, privateKey) {
+  const pass = prompt("Create a password to encrypt this wallet:");
+  if (!pass) return;
+  const payload = await encryptPK(privateKey, pass, {
+    aad: address.toLowerCase(),
+  });
+  const entry = {
+    address,
+    label: address.slice(0, 6) + "..." + address.slice(-4),
+    crypto: payload,
+  };
+  const stored = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  if (!stored.find((w) => w.address === address)) {
+    stored.push(entry);
+    localStorage.setItem(LS_WALLETS, JSON.stringify(stored));
+    localStorage.setItem(LS_LAST, address);
+  }
+  updateWalletSelectorFrom(stored);
+}
+
+function deleteWallet(address) {
+  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]").filter(
+    (w) => w.address.toLowerCase() !== address.toLowerCase()
+  );
+  localStorage.setItem(LS_WALLETS, JSON.stringify(list));
+  updateWalletSelectorFrom(list);
+
+  const last = localStorage.getItem(LS_LAST);
+  if (last && last.toLowerCase() === address.toLowerCase()) {
+    localStorage.removeItem(LS_LAST);
+  }
+  if (wallet && wallet.address.toLowerCase() === address.toLowerCase()) {
+    wallet = null;
+    document.getElementById("walletSection").classList.add("hidden");
+    document.getElementById("balanceSection").classList.add("hidden");
+  }
+}
+
+function updateWalletSelector() {
+  const selector = document.getElementById("walletSelector");
+  const selectorSection = document.getElementById("walletSelectorSection");
+
+  selector.innerHTML = '<option value="">Select wallet...</option>';
+
+  if (savedWallets.length > 0) {
+    selectorSection.classList.remove("hidden");
+    savedWallets.forEach((w) => {
+      const option = document.createElement("option");
+      option.value = w.address;
+      option.textContent = w.label;
+      if (wallet && wallet.address === w.address) {
+        option.selected = true;
+      }
+      selector.appendChild(option);
+    });
+  } else {
+    selectorSection.classList.add("hidden");
+  }
+}
+
+function updateWalletSelectorFrom(list) {
+  savedWallets = list.map(({ address, label }) => ({ address, label }));
+  updateWalletSelector();
+}
+
+// Fetch all balances using zWallet contract's batchView
+async function fetchAllBalances() {
+  if (!wallet || !provider || !zWalletContract) return;
+
+  try {
+    // Get WETH price from CTC contract directly
+    let wethPrice = 0;
+    try {
+      const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
+      const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
+      wethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
+      ethPrice = wethPrice;
+      console.log("WETH/ETH price fetched:", wethPrice, "USDC per ETH");
+    } catch (err) {
+      console.error("Error fetching WETH price:", err);
+      ethPrice = 3500; // Fallback
+      wethPrice = ethPrice;
+    }
+
+    // Prepare token addresses and ids for batchView
+    const tokenAddresses = [];
+    const tokenIds = [];
+    const tokenSymbols = [];
+
+    for (const [symbol, token] of Object.entries(TOKENS)) {
+      if (token.isERC6909) {
+        tokenAddresses.push(token.address);
+        tokenIds.push(BigInt(token.id));
+      } else {
+        tokenAddresses.push(token.address || ethers.ZeroAddress);
+        tokenIds.push(0);
+      }
+      tokenSymbols.push(symbol);
+    }
+
+    // Call batchView to get all data in one call
+    const [
+      rawBalances,
+      balances,
+      names,
+      symbols,
+      decimals,
+      pricesETH,
+      pricesUSDC,
+      pricesETHStr,
+      pricesUSDCStr,
+    ] = await zWalletContract.batchView(
+      wallet.address,
+      tokenAddresses,
+      tokenIds
+    );
+
+    // Process the results
+    currentBalances = {};
+    tokenPrices = {};
+
+    for (let i = 0; i < tokenSymbols.length; i++) {
+      const symbol = tokenSymbols[i];
+      const token = TOKENS[symbol];
+
+      // Store balance
+      currentBalances[symbol] = {
+        raw: rawBalances[i],
+        formatted: ethers.formatUnits(rawBalances[i], decimals[i]),
+      };
+
+      // Store prices
+      let priceInEth = Number(pricesETH[i]) / 1e18;
+      let priceInUsd = Number(pricesUSDC[i]) / 1e6;
+
+      // Override ETH price with WETH price we fetched
+      if (symbol === "ETH") {
+        priceInUsd = wethPrice; // Use the WETH price in USDC
+        priceInEth = 1; // 1 ETH = 1 ETH always
+      }
+
+      tokenPrices[symbol] = {
+        eth: priceInEth,
+        usd: priceInUsd,
+      };
+
+      // Update token metadata if needed
+      if (!token.isCoin && (token.name === undefined || token.name === "")) {
+        token.name = names[i] || symbol;
+        token.symbol = symbols[i] || symbol;
+        token.decimals = decimals[i];
+      }
+    }
+
+    updateBalanceDisplay();
+  } catch (err) {
+    console.error("Error fetching balances with batchView:", err);
+    await fetchBalancesFallback();
+  }
+}
+
+async function fetchBalancesFallback() {
+  if (!wallet || !provider || !zWalletContract) return;
+
+  // Get WETH price from CTC contract directly
+  try {
+    const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
+    const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
+    ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
+    console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+  } catch (err) {
+    console.error("Error fetching WETH price:", err);
+    ethPrice = 3500; // Fallback
+  }
+
+  for (const [symbol, token] of Object.entries(TOKENS)) {
+    try {
+      const tokenAddress = token.address || ethers.ZeroAddress;
+      const tokenId = token.isERC6909 ? BigInt(token.id) : 0;
+
+      // Get balance
+      const [raw, bal] = await zWalletContract.getBalanceOf(
+        wallet.address,
+        tokenAddress,
+        tokenId
+      );
+
+      currentBalances[symbol] = {
+        raw: raw,
+        formatted: ethers.formatUnits(raw, token.decimals || 18),
+      };
+
+      // Get prices
+      if (symbol === "ETH") {
+        // For ETH, use the WETH price we already fetched
+        tokenPrices[symbol] = {
+          eth: 1, // 1 ETH = 1 ETH
+          usd: ethPrice, // Use WETH price in USDC
+        };
+      } else {
+        try {
+          const [priceETH] = await zWalletContract.checkPriceInETH(
+            tokenAddress
+          );
+          const [priceUSDC] = await zWalletContract.checkPriceInETHToUSDC(
+            tokenAddress
+          );
+
+          tokenPrices[symbol] = {
+            eth: Number(priceETH) / 1e18,
+            usd: Number(priceUSDC) / 1e6,
+          };
+        } catch {
+          tokenPrices[symbol] = { eth: 0, usd: 0 };
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to fetch ${symbol} data:`, err);
+      currentBalances[symbol] = { raw: 0n, formatted: "0" };
+      tokenPrices[symbol] = { eth: 0, usd: 0 };
+    }
+  }
+
+  updateBalanceDisplay();
+}
+
+function updateBalanceDisplay() {
+  const tokenGrid = document.getElementById("tokenGrid");
+  const sendTokenGrid = document.getElementById("sendTokenGrid");
+  tokenGrid.innerHTML = "";
+  sendTokenGrid.innerHTML = "";
+
+  let totalValue = 0;
+
+  for (const [symbol, token] of Object.entries(TOKENS)) {
+    const balance = currentBalances[symbol] || { formatted: "0" };
+    const price = tokenPrices[symbol] || { eth: 0, usd: 0 };
+    const value = parseFloat(balance.formatted) * price.usd;
+    totalValue += value;
+
+    // Create row for wallet tab
+    const walletRow = document.createElement("div");
+    walletRow.className = "token-row";
+    walletRow.dataset.symbol = symbol;
+
+    // Special display logic for ETH vs other tokens
+    let priceDisplay1 = "";
+    let priceDisplay2 = "";
+
+    if (symbol === "ETH") {
+      // For ETH: show USD price per ETH and total value
+      if (price.usd > 0) {
+        priceDisplay1 = `$${price.usd.toFixed(2)}/ETH`;
+        priceDisplay2 = `$${value.toFixed(2)}`;
+      } else {
+        priceDisplay1 = "Price unavailable";
+        priceDisplay2 = "$0.00";
+      }
+    } else {
+      // For other tokens: show ETH ratio and USD value
+      priceDisplay1 = `${price.eth.toFixed(6)} ETH`;
+      priceDisplay2 = `$${value.toFixed(2)}`;
+    }
+
+    walletRow.innerHTML = `
+  <div class="token-left">
+    <div class="token-icon">${TOKEN_LOGOS[symbol] || "💰"}</div>
+    <div class="token-details">
+      <div class="token-symbol">${esc(symbol)}</div>
+      <div class="token-name">${esc(token.name || symbol)}</div>
+    </div>
+  </div>
+  <div class="token-right">
+    <div class="token-balance">${Number(balance.formatted).toFixed(4)}</div>
+    <div class="token-prices">
+      <span class="eth-price">${esc(priceDisplay1)}</span>
+      <span class="usd-price">${esc(priceDisplay2)}</span>
+    </div>
+  </div>`;
+
+    tokenGrid.appendChild(walletRow);
+
+    // Create row for send tab
+    const sendRow = walletRow.cloneNode(true);
+    if (symbol === selectedToken) {
+      sendRow.classList.add("selected");
+    }
+    sendRow.addEventListener("click", () => selectToken(symbol));
+    sendTokenGrid.appendChild(sendRow);
+  }
+
+  document.getElementById(
+    "portfolioTotal"
+  ).textContent = `Total: $${totalValue.toFixed(2)}`;
+}
+
+function selectToken(symbol) {
+  selectedToken = symbol;
+  document.querySelectorAll("#sendTokenGrid .token-row").forEach((row) => {
+    row.classList.toggle("selected", row.dataset.symbol === symbol);
+  });
+  document.getElementById("selectedTokenLabel").textContent = symbol;
+  updateEstimatedTotal();
+}
+
+async function resolveENS(name) {
+  if (!name.endsWith(".eth")) return null;
+
+  try {
+    return await provider.resolveName(name);
+  } catch {
+    return null;
+  }
+}
+
+async function updateGasPrices() {
+  if (!provider) return;
+
+  try {
+    const feeData = await provider.getFeeData();
+
+    // Get current base fee and add buffer for next block
+    let baseFee = feeData.maxFeePerGas;
+    let priorityFee = feeData.maxPriorityFeePerGas;
+
+    // Fallback to reasonable defaults if not available
+    if (!baseFee || baseFee === 0n) {
+      baseFee = ethers.parseUnits("20", "gwei"); // 20 gwei fallback
+    }
+    if (!priorityFee || priorityFee === 0n) {
+      priorityFee = ethers.parseUnits("1.5", "gwei"); // 1.5 gwei fallback
+    }
+
+    // More conservative multipliers
+    gasPrices.slow = {
+      maxFeePerGas: (baseFee * 95n) / 100n, // 95% of base (was 90%)
+      maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"), // Fixed 1 gwei for slow
+    };
+
+    gasPrices.normal = {
+      maxFeePerGas: (baseFee * 110n) / 100n, // 110% buffer (was 100%)
+      maxPriorityFeePerGas: priorityFee, // Keep suggested priority
+    };
+
+    gasPrices.fast = {
+      maxFeePerGas: (baseFee * 125n) / 100n, // 125% buffer (was 120%)
+      maxPriorityFeePerGas: (priorityFee * 120n) / 100n, // 120% priority (was 150%)
+    };
+
+    // Cap maximum gas prices to prevent overpaying
+    const maxGasPrice = ethers.parseUnits("200", "gwei");
+    const maxPriorityPrice = ethers.parseUnits("10", "gwei");
+
+    for (const speed of ["slow", "normal", "fast"]) {
+      if (gasPrices[speed].maxFeePerGas > maxGasPrice) {
+        gasPrices[speed].maxFeePerGas = maxGasPrice;
+      }
+      if (gasPrices[speed].maxPriorityFeePerGas > maxPriorityPrice) {
+        gasPrices[speed].maxPriorityFeePerGas = maxPriorityPrice;
+      }
+    }
+
+    // Update display
+    document.getElementById("slowPrice").textContent = (
+      Number(gasPrices.slow.maxFeePerGas) / 1e9
+    ).toFixed(1);
+    document.getElementById("normalPrice").textContent = (
+      Number(gasPrices.normal.maxFeePerGas) / 1e9
+    ).toFixed(1);
+    document.getElementById("fastPrice").textContent = (
+      Number(gasPrices.fast.maxFeePerGas) / 1e9
+    ).toFixed(1);
+
+    await updateEstimatedTotal();
+  } catch (err) {
+    console.error("Gas price error:", err);
+
+    // Fallback to safe defaults on error
+    const fallbackGas = ethers.parseUnits("30", "gwei");
+    const fallbackPriority = ethers.parseUnits("2", "gwei");
+
+    gasPrices.slow = {
+      maxFeePerGas: ethers.parseUnits("20", "gwei"),
+      maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+    };
+    gasPrices.normal = {
+      maxFeePerGas: fallbackGas,
+      maxPriorityFeePerGas: fallbackPriority,
+    };
+    gasPrices.fast = {
+      maxFeePerGas: ethers.parseUnits("50", "gwei"),
+      maxPriorityFeePerGas: ethers.parseUnits("3", "gwei"),
+    };
+  }
+}
+
+async function updateEstimatedTotal() {
+  const amount = document.getElementById("amount").value || "0";
+  if (!wallet || !provider) {
+    document.getElementById("estimatedTotal").textContent = "--";
+    return;
+  }
+
+  try {
+    const token = TOKENS[selectedToken];
+    const gasLimit =
+      selectedToken === "ETH" ? 21000n : token?.isERC6909 ? 150000n : 100000n;
+
+    const gasPrice = gasPrices[selectedGasSpeed]?.maxFeePerGas || 20000000000n;
+    const gasCostEth = ethers.formatEther(gasLimit * gasPrice);
+    const gasCostUsd = parseFloat(gasCostEth) * ethPrice;
+
+    const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
+    const amountUsd = parseFloat(amount) * tokenPrice.usd;
+
+    document.getElementById(
+      "estimatedTotal"
+    ).textContent = `${amount} ${selectedToken} ($${amountUsd.toFixed(
+      2
+    )}) + Ξ${parseFloat(gasCostEth).toFixed(5)} gas ($${gasCostUsd.toFixed(
+      2
+    )})`;
+  } catch {
+    document.getElementById("estimatedTotal").textContent =
+      amount + " " + selectedToken;
+  }
+}
+
+async function calculateMaxAmount() {
+  if (!wallet) return "0";
+
+  const balance = currentBalances[selectedToken];
+  if (!balance) return "0";
+
+  if (selectedToken === "ETH") {
+    const gasLimit = 21000n;
+    const gasPrice = gasPrices[selectedGasSpeed]?.maxFeePerGas || 30000000000n;
+    const gasCost = (gasLimit * gasPrice * 110n) / 100n; // 110% buffer (was 120%)
+
+    if (balance.raw > gasCost) {
+      return ethers.formatEther(balance.raw - gasCost);
+    }
+    return "0";
+  }
+
+  return balance.formatted;
+}
+
+async function fetchTransactionHistory() {
+  if (!wallet || !provider) return;
+
+  const txList = document.getElementById("txList");
+  const loadingMsg = document.getElementById("txLoadingMessage");
+
+  loadingMsg.textContent = "Loading transactions...";
+  txList.classList.add("hidden");
+  txHistory = [];
+
+  // Use a Set to track unique transactions
+  const uniqueTxs = new Set();
+
+  try {
+    // Get block number for limiting search
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, currentBlock - 10000); // Last ~10k blocks
+
+    // Fetch token transfers for each token
+    for (const [symbol, token] of Object.entries(TOKENS)) {
+      if (!token.address) continue;
+
+      try {
+        // Sent tokens
+        const sentLogs = await provider.getLogs({
+          address: token.address,
+          fromBlock,
+          toBlock: currentBlock,
+          topics: [
+            ethers.id("Transfer(address,address,uint256)"),
+            ethers.zeroPadValue(wallet.address, 32),
+          ],
+        });
+
+        // Received tokens
+        const receivedLogs = await provider.getLogs({
+          address: token.address,
+          fromBlock,
+          toBlock: currentBlock,
+          topics: [
+            ethers.id("Transfer(address,address,uint256)"),
+            null,
+            ethers.zeroPadValue(wallet.address, 32),
+          ],
+        });
+
+        // Process sent with deduplication
+        for (const log of sentLogs) {
+          const txKey = `${log.transactionHash}-${log.logIndex}`;
+          if (!uniqueTxs.has(txKey)) {
+            uniqueTxs.add(txKey);
+            const amount = ethers.formatUnits(log.data, token.decimals);
+            txHistory.push({
+              type: "send",
+              token: symbol,
+              amount,
+              hash: log.transactionHash,
+              block: log.blockNumber,
+              to: "0x" + log.topics[2].slice(26),
+              logIndex: log.logIndex,
+            });
+          }
+        }
+
+        // Process received with deduplication
+        for (const log of receivedLogs) {
+          const txKey = `${log.transactionHash}-${log.logIndex}`;
+          if (!uniqueTxs.has(txKey)) {
+            uniqueTxs.add(txKey);
+            const amount = ethers.formatUnits(log.data, token.decimals);
+            txHistory.push({
+              type: "receive",
+              token: symbol,
+              amount,
+              hash: log.transactionHash,
+              block: log.blockNumber,
+              from: "0x" + log.topics[1].slice(26),
+              logIndex: log.logIndex,
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`Error fetching ${symbol} history:`, err);
+      }
+    }
+
+    // Sort by block number and log index
+    txHistory.sort((a, b) => {
+      if (b.block !== a.block) return b.block - a.block;
+      return (b.logIndex || 0) - (a.logIndex || 0);
+    });
+
+    // Display transactions
+    displayTransactions();
+  } catch (err) {
+    console.error("Error fetching history:", err);
+    loadingMsg.textContent = "Error loading transactions";
+  }
+}
+
+function displayTransactions() {
+  const txList = document.getElementById("txList");
+  const loadingMsg = document.getElementById("txLoadingMessage");
+
+  if (txHistory.length === 0) {
+    loadingMsg.textContent = "No transactions found";
+    txList.classList.add("hidden");
+    return;
+  }
+
+  loadingMsg.classList.add("hidden");
+  txList.classList.remove("hidden");
+  txList.innerHTML = "";
+
+  // Display max 50 most recent
+  const displayTxs = txHistory.slice(0, 50);
+
+  for (const tx of displayTxs) {
+    const item = document.createElement("div");
+    item.className = "tx-item";
+
+    const icon = TOKEN_LOGOS[tx.token]
+      ? `<div style="width: 20px; height: 20px;">${TOKEN_LOGOS[tx.token]}</div>`
+      : tx.token;
+
+    item.innerHTML = `
+                    <span class="tx-type ${tx.type}">${tx.type}</span>
+                    <div class="tx-details">
+                        <div class="tx-hash">${tx.hash.slice(0, 10)}...</div>
+                        <div style="font-size: 10px; color: var(--text-secondary);">
+                            ${
+                              tx.type === "send"
+                                ? "To: " + tx.to?.slice(0, 8) + "..."
+                                : "From: " + tx.from?.slice(0, 8) + "..."
+                            }
+                        </div>
+                    </div>
+                    <div class="tx-amount">
+                        ${tx.type === "send" ? "-" : "+"}${parseFloat(
+      tx.amount
+    ).toFixed(4)} ${tx.token}
+                    </div>
+                `;
+
+    item.addEventListener("click", () => {
+      // Use Chrome API to open in new tab for extension compatibility
+      if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'open_external',
+          url: `https://etherscan.io/tx/${tx.hash}`
+        });
+      } else {
+        window.open(
+          `https://etherscan.io/tx/${tx.hash}`,
+          "_blank",
+          "noopener,noreferrer"
+        );
+      }
+    });
+
+    txList.appendChild(item);
+  }
+}
+
+function esc(s) {
+  return String(s).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[c])
+  );
+}
+
+window.addEventListener("beforeunload", () => {
+  wallet = null;
+});
+function lockWallet() {
+  wallet = null;
+  showToast("Locked");
+}
+
+function showEtherscanLink(txHash) {
+  const status = document.getElementById("txStatus");
+  const link = document.createElement("a");
+  link.href = `#`;
+  link.className = "etherscan-link";
+  link.textContent = "View on Etherscan →";
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({
+        action: 'open_external',
+        url: `https://etherscan.io/tx/${txHash}`
+      });
+    } else {
+      window.open(`https://etherscan.io/tx/${txHash}`, '_blank', 'noopener,noreferrer');
+    }
+  });
+  status.appendChild(link);
+}
+
+function showToast(message) {
+  const toast = document.getElementById("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 2000);
+}
+
+async function copyToClipboard(text, type) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(type === "address" ? "Address copied!" : "Private key copied!");
+  } catch (err) {
+    // Fallback for older browsers or permission issues
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand("copy");
+      showToast(type === "address" ? "Address copied!" : "Private key copied!");
+    } catch (copyErr) {
+      console.error("Copy failed:", copyErr);
+      showToast("Copy failed - please copy manually");
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
+}
+
+function downloadPrivateKey() {
+  if (!wallet) return;
+
+  try {
+    const content =
+      `zWallet - Ethereum Wallet\n` +
+      `Date: ${new Date().toISOString()}\n` +
+      `Address: ${wallet.address}\n` +
+      `Private Key: ${wallet.privateKey}\n\n` +
+      `KEEP SECURE! NEVER SHARE THIS!`;
+
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `zWallet-key-${wallet.address.slice(2, 8)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast("Key downloaded!");
+  } catch (err) {
+    console.error("Download failed:", err);
+    showToast("Download failed");
+  }
+}
+
+async function displayWallet() {
+  document.getElementById("walletSection").classList.remove("hidden");
+  document.getElementById("balanceSection").classList.remove("hidden");
+
+  const address = wallet.address;
+  document.getElementById("address").textContent =
+    address.slice(0, 6) + "..." + address.slice(-4);
+  document.getElementById("address").title = address;
+
+  document.getElementById("privateKey").textContent =
+    "••••••••••••••••••••••••••••••••";
+
+  try {
+    const ensName = await provider.lookupAddress(address);
+    document.getElementById("ensName").textContent = ensName || "";
+  } catch {
+    document.getElementById("ensName").textContent = "";
+  }
+
+  // Immediately fetch balances and prices
+  await fetchAllBalances();
+  await updateGasPrices();
+
+  if (document.getElementById("autoRefresh").checked) {
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = setInterval(() => {
+      fetchAllBalances();
+      updateGasPrices();
+    }, 15000);
+  }
+}
+
+async function addCustomToken(tokenAddress) {
+  if (!zWalletContract) return null;
+
+  try {
+    // Validate address
+    if (!ethers.isAddress(tokenAddress)) {
+      throw new Error("Invalid address");
+    }
+
+    // Get metadata from zWallet contract
+    const [name, symbol, decimals] = await zWalletContract.getMetadata(
+      tokenAddress
+    );
+
+    if (!symbol || symbol === "") {
+      throw new Error("Could not fetch token metadata");
+    }
+
+    const token = {
+      address: tokenAddress,
+      symbol: symbol.toUpperCase(),
+      name: name || symbol,
+      decimals: decimals,
+    };
+
+    // Check if already exists
+    if (TOKENS[token.symbol]) {
+      throw new Error("Token already exists");
+    }
+
+    return token;
+  } catch (err) {
+    console.error("Error adding token:", err);
+    throw err;
+  }
+}
+
+async function sendTransaction() {
+  const toInput = document.getElementById("toAddress").value.trim();
+  const amount = document.getElementById("amount").value;
+  const status = document.getElementById("txStatus");
+
+  if (!toInput || !amount || !wallet) {
+    status.innerHTML = '<div class="status error">Fill all fields</div>';
+    return;
+  }
+
+  // Ensure wallet is connected to provider
+  if (!wallet.provider) {
+    wallet = wallet.connect(provider);
+  }
+
+  let toAddress = toInput;
+  if (toInput.endsWith(".eth")) {
+    status.innerHTML = '<div class="status">Resolving ENS...</div>';
+    toAddress = await resolveENS(toInput);
+    if (!toAddress) {
+      status.innerHTML = '<div class="status error">ENS not found</div>';
+      return;
+    }
+  }
+
+  if (!ethers.isAddress(toAddress)) {
+    status.innerHTML = '<div class="status error">Invalid address</div>';
+    return;
+  }
+
+  // Calculate values for confirmation
+  const token = TOKENS[selectedToken];
+  const gasSettings = gasPrices[selectedGasSpeed] || gasPrices.normal;
+  const gasLimit =
+    selectedToken === "ETH" ? 21000n : token.isERC6909 ? 150000n : 100000n;
+  const gasPrice = gasSettings.maxFeePerGas || 20000000000n;
+  const gasCost = gasLimit * gasPrice;
+  const gasCostEth = ethers.formatEther(gasCost);
+  const gasCostUsd = parseFloat(gasCostEth) * ethPrice;
+
+  const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
+  const amountUsd = parseFloat(amount) * tokenPrice.usd;
+  const totalUsd = amountUsd + gasCostUsd;
+
+  // Check balances before showing confirmation
+  const balance = currentBalances[selectedToken];
+  if (!balance || parseFloat(balance.formatted) < parseFloat(amount)) {
+    status.innerHTML = '<div class="status error">Insufficient balance</div>';
+    return;
+  }
+
+  // Check ETH balance for gas
+  const ethBalance = await provider.getBalance(wallet.address);
+  if (ethBalance < gasCost) {
+    status.innerHTML =
+      '<div class="status error">Insufficient ETH for gas</div>';
+    return;
+  }
+
+  // Populate confirmation modal
+  document.getElementById("confirmToken").textContent = selectedToken;
+  document.getElementById(
+    "confirmAmount"
+  ).textContent = `${amount} ${selectedToken}`;
+  document.getElementById("confirmTo").textContent = toInput.endsWith(".eth")
+    ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
+    : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
+  document.getElementById(
+    "confirmValueUSD"
+  ).textContent = `$${amountUsd.toFixed(2)}`;
+  document.getElementById("confirmGas").textContent = `Ξ${parseFloat(
+    gasCostEth
+  ).toFixed(5)} ($${gasCostUsd.toFixed(2)})`;
+  document.getElementById("confirmTotal").textContent = `$${totalUsd.toFixed(
+    2
+  )}`;
+
+  // Show modal
+  const modal = document.getElementById("txConfirmModal");
+  modal.classList.remove("hidden");
+
+  // Create promise for user confirmation
+  const userConfirmed = await new Promise((resolve) => {
+    const confirmBtn = document.getElementById("confirmSend");
+    const cancelBtn = document.getElementById("cancelSend");
+    const closeBtn = document.getElementById("modalClose");
+
+    const cleanup = () => {
+      confirmBtn.removeEventListener("click", handleConfirm);
+      cancelBtn.removeEventListener("click", handleCancel);
+      closeBtn.removeEventListener("click", handleCancel);
+      modal.classList.add("hidden");
+    };
+
+    const handleConfirm = () => {
+      cleanup();
+      resolve(true);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    confirmBtn.addEventListener("click", handleConfirm);
+    cancelBtn.addEventListener("click", handleCancel);
+    closeBtn.addEventListener("click", handleCancel);
+  });
+
+  if (!userConfirmed) {
+    status.innerHTML = '<div class="status">Transaction cancelled</div>';
+    return;
+  }
+
+  try {
+    status.innerHTML = '<div class="status">Preparing transaction...</div>';
+    document.getElementById("sendBtn").disabled = true;
+
+    let tx;
+    if (selectedToken === "ETH") {
+      // Send ETH directly - no calldata needed
+      tx = await wallet.sendTransaction({
+        to: toAddress,
+        value: ethers.parseEther(amount),
+        gasLimit: 21000,
+        maxFeePerGas: gasSettings.maxFeePerGas,
+        maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+      });
+    } else if (token.isERC6909) {
+      // For ERC6909 tokens
+      const amountWei = ethers.parseUnits(amount, token.decimals || 18);
+
+      // Get the transfer calldata from zWallet
+      const transferData = await zWalletContract.getERC6909Transfer(
+        toAddress,
+        BigInt(token.id),
+        amountWei
+      );
+
+      // Send to the TOKEN contract with the calldata
+      tx = await wallet.sendTransaction({
+        to: token.address,
+        data: transferData,
+        gasLimit: 150000,
+        maxFeePerGas: gasSettings.maxFeePerGas,
+        maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+      });
+    } else {
+      // For ERC20 tokens
+      const amountWei = ethers.parseUnits(amount, token.decimals || 18);
+
+      // Get the transfer calldata from zWallet
+      const transferData = await zWalletContract.getERC20Transfer(
+        toAddress,
+        amountWei
+      );
+
+      // Send to the TOKEN contract with the calldata
+      tx = await wallet.sendTransaction({
+        to: token.address,
+        data: transferData,
+        gasLimit: 100000,
+        maxFeePerGas: gasSettings.maxFeePerGas,
+        maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+      });
+    }
+
+    status.innerHTML = `<div class="status">TX sent: ${tx.hash.slice(
+      0,
+      10
+    )}...</div>`;
+    showToast("Transaction sent! Waiting for confirmation...");
+
+    const receipt = await tx.wait();
+    if (receipt.status === 1) {
+      status.innerHTML = '<div class="status success">✓ Success!</div>';
+      showEtherscanLink(tx.hash);
+      showToast("Transaction confirmed!");
+      await fetchAllBalances();
+      document.getElementById("toAddress").value = "";
+      document.getElementById("amount").value = "";
+    } else {
+      status.innerHTML = '<div class="status error">Transaction Failed</div>';
+      showEtherscanLink(tx.hash);
+    }
+  } catch (err) {
+    console.error("Transaction error:", err);
+    let errorMsg = "Transaction failed";
+
+    if (err.message.includes("insufficient funds")) {
+      errorMsg = "Insufficient funds for gas";
+    } else if (err.message.includes("user rejected")) {
+      errorMsg = "Transaction rejected";
+    } else if (err.message.includes("nonce")) {
+      errorMsg = "Nonce error - try again";
+    } else if (err.code === "UNKNOWN_ERROR" || err.code === -32603) {
+      errorMsg = "Network error - check balance and try again";
+    }
+
+    status.innerHTML = `<div class="status error">${errorMsg}</div>`;
+  } finally {
+    document.getElementById("sendBtn").disabled = false;
+  }
+}
+
+function setupEventListeners() {
+  // Theme toggle
+  document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+
+  // Tabs
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document
+        .querySelectorAll(".tab")
+        .forEach((t) => t.classList.remove("active"));
+      document
+        .querySelectorAll(".tab-content")
+        .forEach((c) => c.classList.remove("active"));
+
+      tab.classList.add("active");
+      const tabContent = document.getElementById(tab.dataset.tab + "-tab");
+      tabContent.classList.add("active");
+
+      // Load transactions when tab is opened
+      if (tab.dataset.tab === "txs" && wallet && txHistory.length === 0) {
+        fetchTransactionHistory();
+      }
+    });
+  });
+
+  // Transaction history button
+  document.getElementById("loadTxBtn").addEventListener("click", () => {
+    fetchTransactionHistory();
+  });
+
+  // Wallet management
+  document
+    .getElementById("walletSelector")
+    .addEventListener("change", async (e) => {
+      const addr = e.target.value;
+      if (!addr) return;
+      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+      const entry = list.find((w) => w.address === addr);
+      const pass = prompt("Enter your wallet password:");
+      try {
+        const pk = await decryptPK(
+          entry.crypto,
+          pass,
+          entry.address.toLowerCase()
+        );
+
+        // Rewrap legacy keystores that were saved without AAD
+        if (!entry.crypto.aad) {
+          try {
+            const newPayload = await encryptPK(pk, pass, {
+              aad: entry.address.toLowerCase(),
+            });
+            entry.crypto = newPayload;
+            const listNow = JSON.parse(
+              localStorage.getItem(LS_WALLETS) || "[]"
+            ).map((w) =>
+              w.address.toLowerCase() === entry.address.toLowerCase()
+                ? entry
+                : w
+            );
+            localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
+          } catch (e) {
+            console.warn("Keystore rewrap failed:", e);
+          }
+        }
+
+        wallet = new ethers.Wallet(pk, provider);
+        await displayWallet();
+
+        localStorage.setItem(LS_LAST, addr);
+        showToast("Wallet unlocked!");
+      } catch {
+        alert("Wrong password");
+        e.target.value = "";
+      }
+    });
+
+  document.getElementById("deleteWalletBtn").addEventListener("click", () => {
+    const selector = document.getElementById("walletSelector");
+    const address = selector.value;
+
+    if (address && confirm("Delete wallet?")) {
+      deleteWallet(address);
+      showToast("Wallet deleted");
+    }
+  });
+
+  document.getElementById("generateBtn").addEventListener("click", async () => {
+    wallet = ethers.Wallet.createRandom().connect(provider);
+    saveWallet(wallet.address, wallet.privateKey);
+    await displayWallet();
+    showToast("Wallet generated!");
+  });
+
+  document.getElementById("importBtn").addEventListener("click", () => {
+    document.getElementById("importSection").classList.toggle("hidden");
+    document.getElementById("privateKeyInput").focus();
+  });
+
+  document
+    .getElementById("confirmImportBtn")
+    .addEventListener("click", async () => {
+      const key = document.getElementById("privateKeyInput").value.trim();
+      if (!key) return;
+
+      try {
+        const formattedKey = key.startsWith("0x") ? key : "0x" + key;
+        wallet = new ethers.Wallet(formattedKey, provider);
+        saveWallet(wallet.address, wallet.privateKey);
+        await displayWallet();
+        document.getElementById("importSection").classList.add("hidden");
+        document.getElementById("privateKeyInput").value = "";
+        showToast("Wallet imported!");
+      } catch {
+        alert("Invalid private key");
+      }
+    });
+
+  document.getElementById("cancelImportBtn").addEventListener("click", () => {
+    document.getElementById("importSection").classList.add("hidden");
+    document.getElementById("privateKeyInput").value = "";
+  });
+
+  // Copy buttons
+  document.querySelectorAll(".copy-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!wallet) return;
+      const type = btn.dataset.copy;
+      if (type === "privateKey") {
+        if (!confirm("Reveal and copy private key?")) return;
+      }
+      await copyToClipboard(
+        type === "address" ? wallet.address : wallet.privateKey,
+        type
+      );
+    });
+  });
+
+  document
+    .getElementById("downloadKeyBtn")
+    .addEventListener("click", async () => {
+      if (!wallet) return;
+      if (!confirm("Download your PRIVATE KEY as plaintext file?")) return;
+      downloadPrivateKey();
+    });
+
+  document.getElementById("refreshBtn").addEventListener("click", async () => {
+    await fetchAllBalances();
+    showToast("Refreshed!");
+  });
+
+  // Add token functionality
+  document.getElementById("addTokenBtn").addEventListener("click", () => {
+    document.getElementById("addTokenSection").classList.toggle("hidden");
+    document.getElementById("newTokenAddress").focus();
+  });
+
+  document
+    .getElementById("confirmAddToken")
+    .addEventListener("click", async () => {
+      const address = document.getElementById("newTokenAddress").value.trim();
+      const symbolOverride = document
+        .getElementById("newTokenSymbol")
+        .value.trim();
+
+      if (!address) return;
+
+      try {
+        const token = await addCustomToken(address);
+
+        // Use override symbol if provided
+        if (symbolOverride) {
+          token.symbol = symbolOverride.toUpperCase();
+        }
+
+        saveCustomToken(address, token);
+
+        // Hide the form
+        document.getElementById("addTokenSection").classList.add("hidden");
+        document.getElementById("newTokenAddress").value = "";
+        document.getElementById("newTokenSymbol").value = "";
+
+        // Refresh balances to include new token
+        await fetchAllBalances();
+        showToast(`Added ${token.symbol}!`);
+      } catch (err) {
+        alert("Error adding token: " + err.message);
+      }
+    });
+
+  // Send functionality
+  document.getElementById("maxBtn").addEventListener("click", async () => {
+    const max = await calculateMaxAmount();
+    document.getElementById("amount").value = parseFloat(max).toFixed(6);
+    await updateEstimatedTotal();
+  });
+
+  document.getElementById("toAddress").addEventListener("input", async (e) => {
+    const value = e.target.value.trim();
+    const resolved = document.getElementById("resolvedAddress");
+
+    if (value.endsWith(".eth")) {
+      resolved.textContent = "Resolving...";
+      const address = await resolveENS(value);
+      if (address) {
+        resolved.textContent = `→ ${address.slice(0, 6)}...${address.slice(
+          -4
+        )}`;
+        resolved.style.color = "var(--success)";
+      } else {
+        resolved.textContent = "Not found";
+        resolved.style.color = "var(--error)";
+      }
+    } else {
+      resolved.textContent = "";
+    }
+
+    await updateEstimatedTotal();
+  });
+
+  document
+    .getElementById("amount")
+    .addEventListener("input", updateEstimatedTotal);
+
+  // Gas options
+  document.querySelectorAll(".gas-option").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      document
+        .querySelectorAll(".gas-option")
+        .forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      selectedGasSpeed = btn.dataset.speed;
+
+      const custom = document.getElementById("customGasSection");
+      custom.classList.toggle("hidden", selectedGasSpeed !== "custom");
+
+      updateEstimatedTotal();
+    });
+  });
+
+  document
+    .getElementById("customGasPrice")
+    .addEventListener("input", async () => {
+      if (selectedGasSpeed === "custom") {
+        const max = document.getElementById("customGasPrice").value;
+        const priority =
+          document.getElementById("customPriorityFee").value || "1";
+
+        if (max) {
+          gasPrices.custom = {
+            maxFeePerGas: ethers.parseUnits(max, "gwei"),
+            maxPriorityFeePerGas: ethers.parseUnits(priority, "gwei"),
+          };
+          await updateEstimatedTotal();
+        }
+      }
+    });
+
+  document.getElementById("sendBtn").addEventListener("click", sendTransaction);
+
+  // Settings
+  document.querySelectorAll(".rpc-item").forEach((item) => {
+    item.addEventListener("click", async () => {
+      const rpc = item.dataset.rpc;
+
+      if (rpc === "custom") {
+        document.getElementById("customRpcSection").classList.toggle("hidden");
+      } else {
+        currentRpc = rpc;
+        localStorage.setItem("rpc_endpoint", rpc);
+        await initProvider();
+
+        if (wallet) {
+          wallet = wallet.connect(provider);
+          await fetchAllBalances();
+        }
+      }
+    });
+  });
+
+  document
+    .getElementById("saveCustomRpc")
+    .addEventListener("click", async () => {
+      const url = document.getElementById("customRpcUrl").value.trim();
+      if (!url) return;
+
+      try {
+        const testProvider = new ethers.JsonRpcProvider(url);
+        await testProvider.getBlockNumber();
+
+        localStorage.setItem("custom_rpc", url);
+        currentRpc = url;
+        localStorage.setItem("rpc_endpoint", url);
+        provider = testProvider;
+        zWalletContract = new ethers.Contract(
+          ZWALLET_ADDRESS,
+          ZWALLET_ABI,
+          provider
+        );
+
+        if (wallet) {
+          wallet = wallet.connect(provider);
+          await fetchAllBalances();
+        }
+
+        showToast("Custom RPC saved!");
+        document.getElementById("customRpcSection").classList.add("hidden");
+        loadRpcSettings();
+      } catch {
+        alert("Invalid RPC URL");
+      }
+    });
+
+  document.getElementById("autoRefresh").addEventListener("change", (e) => {
+    if (e.target.checked) {
+      if (wallet) {
+        autoRefreshInterval = setInterval(() => {
+          fetchAllBalances();
+          updateGasPrices();
+        }, 15000);
+      }
+    } else {
+      clearInterval(autoRefreshInterval);
+    }
+    localStorage.setItem("auto_refresh", e.target.checked);
+  });
+
+  document.getElementById("exportWallets").addEventListener("click", () => {
+    try {
+      const data = localStorage.getItem(LS_WALLETS) || "[]";
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `zWallet-backup-${new Date().toISOString().split('T')[0]}.encrypted.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast("Encrypted wallets exported!");
+    } catch (err) {
+      console.error("Export failed:", err);
+      showToast("Export failed");
+    }
+  });
+
+  document.getElementById("clearData").addEventListener("click", () => {
+    if (
+      confirm(
+        "Delete all data, wallets, and custom tokens? This cannot be undone!"
+      )
+    ) {
+      localStorage.clear();
+      location.reload();
+    }
+  });
+
+  // Load auto-refresh setting
+  const autoRefresh = localStorage.getItem("auto_refresh") === "true";
+  document.getElementById("autoRefresh").checked = autoRefresh;
+}
+
+// Initialize app with proper error handling
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    init().catch((err) => {
+      console.error("Initialization error:", err);
+      // Show user-friendly error
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'status error';
+      errorDiv.textContent = 'Failed to initialize wallet. Please reload.';
+      document.body.appendChild(errorDiv);
+    });
+  });
+} else {
+  init().catch((err) => {
+    console.error("Initialization error:", err);
+  });
+}
