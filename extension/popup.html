@@ -1274,6 +1274,16 @@
             <div class="token-grid" id="sendTokenGrid">
               <!-- Populated dynamically -->
             </div>
+            <!-- IOU Mode Toggle for USDC -->
+            <div id="iouModeSection" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="iouModeToggle" style="width: 18px; height: 18px;">
+                <span style="font-weight: bold;">📄🪽 IOU Mode (Gasless USDC Transfer)</span>
+              </label>
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; display: none;" id="iouModeInfo">
+                Create a signed USDC transfer authorization (EIP-3009) that the recipient can claim later, paying the gas themselves.
+              </div>
+            </div>
           </div>
 
           <div class="section">
@@ -1300,7 +1310,7 @@
               <button class="max-btn" id="maxBtn">MAX</button>
             </div>
 
-            <div style="margin-top: 16px">
+            <div style="margin-top: 16px" id="gasFeeSection">
               <label>Gas Fee</label>
               <div class="gas-selector">
                 <button class="gas-option" data-speed="slow">
@@ -1358,6 +1368,9 @@
 
             <button id="sendBtn" style="width: 100%; margin-top: 12px">
               Send Transaction
+            </button>
+            <button id="createIouBtn" class="hidden" style="width: 100%; margin-top: 12px">
+              Create & Sign IOU 📄
             </button>
             <div id="txStatus"></div>
           </div>
@@ -1655,5 +1668,67 @@
         </div>
       </div>
     </div>
+
+    <!-- IOU Preview Modal -->
+    <div id="iouPreviewModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📄🪽 USDC IOU Preview</h3>
+          <button class="modal-close" id="iouModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="info-box" style="margin-bottom: 16px; background: #e8f5ff; border-color: #2196F3;">
+            <p style="margin-bottom: 8px; font-weight: bold;">🪽 Free! Gasless Transfer</p>
+            <p style="font-size: 11px;">You're creating a signed authorization that allows the recipient to claim USDC later. They will pay the gas when claiming.</p>
+          </div>
+          
+          <div class="confirm-row">
+            <span class="confirm-label">Type:</span>
+            <span class="confirm-value" id="iouType">Transfer Authorization</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">From:</span>
+            <span class="confirm-value mono" id="iouFrom"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">To:</span>
+            <span class="confirm-value mono" id="iouTo"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Amount:</span>
+            <span class="confirm-value" id="iouAmount"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Valid for:</span>
+            <span class="confirm-value" id="iouValidDays">30 days</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Expires:</span>
+            <span class="confirm-value" id="iouExpiry"></span>
+          </div>
+          
+          <!-- EIP-712 Data Preview -->
+          <div style="margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: bold; font-size: 12px;">EIP-712 Signature Data</label>
+              <button id="toggleIouData" style="padding: 4px 8px; font-size: 11px;">Show</button>
+            </div>
+            <div id="iouDataSection" class="hidden" style="margin-top: 8px;">
+              <textarea id="iouDataDisplay" readonly style="width: 100%; height: 120px; font-family: 'Courier New', monospace; font-size: 10px; resize: none;"></textarea>
+              <div style="margin-top: 8px; display: flex; gap: 8px;">
+                <button id="copyIouData" style="flex: 1; padding: 6px; font-size: 11px;">📋 Copy JSON</button>
+                <button id="downloadIou" style="flex: 1; padding: 6px; font-size: 11px;">💾 Download</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmIouBtn" class="btn-confirm">Sign IOU</button>
+          <button id="cancelIouBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
   </body>
 </html>

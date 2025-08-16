@@ -44,11 +44,7 @@ const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
 const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
 const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
 
-// CTC contract for price checking
-const CTC_ADDRESS = "0x0000000000cDC1F8d393415455E382c30FBc0a84";
-const CTC_ABI = [
-  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
-];
+// Price checking is now handled through zWallet contract which wraps CTC
 
 const LS_WALLETS = "eth_wallets_v2";
 const LS_LAST = "last_wallet_addr";
@@ -99,16 +95,56 @@ const DEFAULT_TOKENS = {
   },
 };
 
-// zWallet contract address and ABI
-const ZWALLET_ADDRESS = "0xF0cf3dD4A74dA18012Ec3FF83E9794440E80d095";
+// USDC EIP-3009 constants for IOU functionality  
+const USDC_EIP712_DOMAIN = Object.freeze({
+  name: "USD Coin",
+  version: "2",
+  chainId: 1,
+  verifyingContract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+});
+
+const EIP3009_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" }
+  ]
+};
+
+// zWallet contract address and ABI (v0.0.3)
+const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5";
 const ZWALLET_ABI = [
-  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, uint256[] pricesUSDC, string[] pricesETHStr, string[] pricesUSDCStr)",
-  "function getBalanceOf(address user, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
+  // Enhanced batch view with ENS and token type detection
+  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)",
+  // Individual getters
+  "function getBalanceOf(address owner, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
   "function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)",
+  "function getOwnerOf(address token, uint256 id) view returns (address owner)",
+  // Payload preparation
   "function getERC20Transfer(address to, uint256 amount) pure returns (bytes)",
+  "function getERC20Approve(address spender, uint256 amount) pure returns (bytes)",
   "function getERC6909Transfer(address to, uint256 id, uint256 amount) pure returns (bytes)",
+  "function getERC6909SetOperator(address spender, bool approved) pure returns (bytes)",
+  "function getERC721TransferFrom(address from, address to, uint256 tokenId) pure returns (bytes)",
+  // Token type detection
+  "function isERC721(address token) view returns (bool)",
+  "function isERC6909(address token) view returns (bool)",
+  // Allowance and operator checks
+  "function getAllowanceOf(address owner, address token, address spender) view returns (uint256 raw, uint256 allow)",
+  "function getIsOperatorOf(address owner, address token, address spender) view returns (bool)",
+  // Router approval helpers
+  "function checkERC20RouterApproval(address owner, address token, uint256 amount, bool max) view returns (bytes payload)",
+  "function checkERC6909RouterIsOperator(address owner, address token) view returns (bytes payload)",
+  // Price checking (via CTC)
+  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
   "function checkPriceInETH(address token) view returns (uint256 price, string priceStr)",
   "function checkPriceInETHToUSDC(address token) view returns (uint256 price, string priceStr)",
+  // ENS resolution
+  "function whatIsTheAddressOf(string calldata name) view returns (address owner, address receiver, bytes32 node)",
+  "function whatIsTheNameOf(address user) view returns (string ensName)",
 ];
 
 const ERC20_ABI = [
@@ -121,6 +157,7 @@ const ERC20_ABI = [
 let wallet = null;
 let provider = null;
 let zWalletContract = null;
+let zQuoterContract = null;
 let selectedGasSpeed = "normal";
 let currentBalances = {};
 let tokenPrices = {};
@@ -141,6 +178,9 @@ let gasPrices = {
   custom: null,
 };
 let TOKENS = { ...DEFAULT_TOKENS };
+// IOU state for signing
+let pendingIouMessage = null;
+let pendingIouAmount = null;
 
 // Event listener management for cleanup
 const eventListeners = new Map();
@@ -299,10 +339,14 @@ async function init() {
   
   loadTheme();
 
-  await migrateKeystoreIfNeeded();
-
+  // Parallelize initialization tasks
+  await Promise.all([
+    migrateKeystoreIfNeeded(),
+    initProvider()
+  ]);
+  
+  // These depend on provider being ready
   loadWallets();
-  await initProvider();
   await loadCustomTokens();
 
   // --- auto-unlock last wallet (with password prompt) ---
@@ -721,6 +765,13 @@ async function initProvider() {
       ZWALLET_ABI,
       provider
     );
+    
+    // Initialize zQuoter contract once
+    zQuoterContract = new ethers.Contract(
+      ZQUOTER_ADDRESS,
+      ZQUOTER_ABI,
+      provider
+    );
 
     console.log("Connected to:", currentRpc);
     loadRpcSettings();
@@ -739,6 +790,11 @@ async function initProvider() {
         zWalletContract = new ethers.Contract(
           ZWALLET_ADDRESS,
           ZWALLET_ABI,
+          provider
+        );
+        zQuoterContract = new ethers.Contract(
+          ZQUOTER_ADDRESS,
+          ZQUOTER_ABI,
           provider
         );
         currentRpc = rpc;
@@ -831,20 +887,6 @@ async function fetchAllBalances() {
   if (!wallet || !provider || !zWalletContract) return;
 
   try {
-    // Get WETH price from CTC contract directly
-    let wethPrice = 0;
-    try {
-      const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
-      const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
-      wethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-      ethPrice = wethPrice;
-      console.log("WETH/ETH price fetched:", wethPrice, "USDC per ETH");
-    } catch (err) {
-      console.error("Error fetching WETH price:", err);
-      ethPrice = 3500; // Fallback
-      wethPrice = ethPrice;
-    }
-
     // Prepare token addresses and ids for batchView
     const tokenAddresses = [];
     const tokenIds = [];
@@ -862,25 +904,49 @@ async function fetchAllBalances() {
     }
 
     // Call batchView to get all data in one call
-    const [
-      rawBalances,
-      balances,
-      names,
-      symbols,
-      decimals,
-      pricesETH,
-      pricesUSDC,
-      pricesETHStr,
-      pricesUSDCStr,
-    ] = await zWalletContract.batchView(
+    const batchResult = await zWalletContract.batchView(
       wallet.address,
       tokenAddresses,
       tokenIds
     );
+    
+    // Destructure the results we need
+    const ensName = batchResult[0];
+    // const tokensOut = batchResult[1]; // Not used currently
+    // const idsOut = batchResult[2]; // Not used currently
+    // const kinds = batchResult[3]; // Token type indicators: 0=ETH, 20=ERC20, 72=ERC721, 69=ERC6909
+    const rawBalances = batchResult[4];
+    // const balances = batchResult[5]; // We calculate our own formatted balances
+    const names = batchResult[6];
+    const symbols = batchResult[7];
+    const decimals = batchResult[8];
+    const pricesETH = batchResult[9];
+    // const pricesETHStr = batchResult[10]; // Not used currently
+    const pricesUSDC = batchResult[11];
+    // const pricesUSDCStr = batchResult[12]; // Not used currently
+    
+    // Update ENS name if found
+    if (ensName) {
+      console.log("ENS name found:", ensName);
+      // Display ENS name in the UI
+      const ensNameEl = document.getElementById("ensName");
+      if (ensNameEl) {
+        ensNameEl.textContent = ensName;
+      }
+    }
 
     // Process the results
     currentBalances = {};
     tokenPrices = {};
+    
+    // First, find ETH price from the results (it will be in ETH's pricesUSDC)
+    let ethPriceInUsd = 3500; // fallback
+    const ethIndex = tokenSymbols.indexOf("ETH");
+    if (ethIndex !== -1 && pricesUSDC[ethIndex]) {
+      ethPriceInUsd = Number(pricesUSDC[ethIndex]) / 1e6;
+      ethPrice = ethPriceInUsd; // Update global ethPrice
+      console.log("ETH price from batchView:", ethPriceInUsd, "USDC");
+    }
 
     for (let i = 0; i < tokenSymbols.length; i++) {
       const symbol = tokenSymbols[i];
@@ -892,23 +958,22 @@ async function fetchAllBalances() {
         formatted: ethers.formatUnits(rawBalances[i], decimals[i]),
       };
 
-      // Store prices
+      // Store prices - the contract already handles ETH/WETH/USDC special cases
       let priceInEth = Number(pricesETH[i]) / 1e18;
       let priceInUsd = Number(pricesUSDC[i]) / 1e6;
 
-      // Override stablecoin prices to exactly $1.00
-      if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
+      // Only override for stablecoins that aren't USDC (since USDC is handled by contract)
+      if (symbol === "USDT" || symbol === "DAI") {
         priceInUsd = 1.0; // Stablecoins are always $1
         // Calculate ETH price based on current ETH/USD rate
-        if (wethPrice > 0) {
-          priceInEth = 1.0 / wethPrice; // 1 USD worth of ETH
+        if (ethPriceInUsd > 0) {
+          priceInEth = 1.0 / ethPriceInUsd; // 1 USD worth of ETH
         }
       }
-      // Override ETH price with WETH price we fetched
-      else if (symbol === "ETH") {
-        priceInUsd = wethPrice; // Use the WETH price in USDC
-        priceInEth = 1; // 1 ETH = 1 ETH always
-      }
+      // The contract already correctly handles:
+      // - ETH: priceETH = 1, priceUSDC from WETH
+      // - WETH: priceETH = 1, priceUSDC from checkPrice
+      // - USDC: priceUSDC = 1, priceETH from checkPriceInETH
 
       tokenPrices[symbol] = {
         eth: priceInEth,
@@ -933,12 +998,15 @@ async function fetchAllBalances() {
 async function fetchBalancesFallback() {
   if (!wallet || !provider || !zWalletContract) return;
 
-  // Get WETH price from CTC contract directly
+  // Get WETH price using zWallet contract (it has price checking built in)
   try {
-    const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
-    const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
-    ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-    console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+    if (zWalletContract) {
+      const [priceUSDC] = await zWalletContract.checkPrice(WETH_ADDRESS);
+      ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
+      console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+    } else {
+      ethPrice = 3500; // Fallback if contract not ready
+    }
   } catch (err) {
     console.error("Error fetching WETH price:", err);
     ethPrice = 3500; // Fallback
@@ -950,7 +1018,7 @@ async function fetchBalancesFallback() {
       const tokenId = token.isERC6909 ? BigInt(token.id) : 0;
 
       // Get balance
-      const [raw, bal] = await zWalletContract.getBalanceOf(
+      const [raw] = await zWalletContract.getBalanceOf(
         wallet.address,
         tokenAddress,
         tokenId
@@ -961,21 +1029,18 @@ async function fetchBalancesFallback() {
         formatted: ethers.formatUnits(raw, token.decimals || 18),
       };
 
-      // Get prices
-      if (symbol === "ETH") {
-        // For ETH, use the WETH price we already fetched
-        tokenPrices[symbol] = {
-          eth: 1, // 1 ETH = 1 ETH
-          usd: ethPrice, // Use WETH price in USDC
-        };
-      } else if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
-        // Override stablecoin prices to exactly $1.00
+      // Get prices - let the contract handle ETH/USDC special cases
+      if (symbol === "USDT" || symbol === "DAI") {
+        // Only override non-USDC stablecoins to exactly $1.00
         tokenPrices[symbol] = {
           eth: ethPrice > 0 ? 1.0 / ethPrice : 0,
           usd: 1.0,
         };
       } else {
         try {
+          // The contract automatically handles:
+          // - ETH: returns priceETH = 1e18, priceUSDC from WETH
+          // - USDC: returns priceUSDC = 1e6, priceETH calculated
           const [priceETH] = await zWalletContract.checkPriceInETH(
             tokenAddress
           );
@@ -987,7 +1052,8 @@ async function fetchBalancesFallback() {
             eth: Number(priceETH) / 1e18,
             usd: Number(priceUSDC) / 1e6,
           };
-        } catch {
+        } catch (err) {
+          console.error(`Failed to fetch ${symbol} price:`, err);
           tokenPrices[symbol] = { eth: 0, usd: 0 };
         }
       }
@@ -1080,15 +1146,44 @@ function selectToken(symbol) {
     row.classList.toggle("selected", row.dataset.symbol === symbol);
   });
   document.getElementById("selectedTokenLabel").textContent = symbol;
+  
+  // Show/hide IOU mode for USDC
+  const iouModeSection = document.getElementById("iouModeSection");
+  const iouModeToggle = document.getElementById("iouModeToggle");
+  if (symbol === "USDC") {
+    iouModeSection?.classList.remove("hidden");
+  } else {
+    iouModeSection?.classList.add("hidden");
+    // Reset IOU mode if switching away from USDC
+    if (iouModeToggle && iouModeToggle.checked) {
+      iouModeToggle.checked = false;
+      // Trigger change event to reset UI
+      iouModeToggle.dispatchEvent(new Event("change"));
+    }
+  }
+  
   updateEstimatedTotal();
 }
 
 async function resolveENS(name) {
   if (!name.endsWith(".eth")) return null;
 
+  // Use zWallet contract's ENS resolution if available
+  if (zWalletContract) {
+    try {
+      const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
+      // Return receiver if set, otherwise owner
+      return receiver !== ethers.ZeroAddress ? receiver : owner !== ethers.ZeroAddress ? owner : null;
+    } catch (err) {
+      console.debug("Contract ENS resolution failed, falling back to provider:", err);
+    }
+  }
+
+  // Fallback to provider resolution
   try {
     return await provider.resolveName(name);
-  } catch {
+  } catch (err) {
+    console.debug("ENS resolution failed for", name, err);
     return null;
   }
 }
@@ -1140,16 +1235,20 @@ async function updateGasPrices() {
       }
     }
 
-    // Update display
-    document.getElementById("slowPrice").textContent = (
-      Number(gasPrices.slow.maxFeePerGas) / 1e9
-    ).toFixed(1);
-    document.getElementById("normalPrice").textContent = (
-      Number(gasPrices.normal.maxFeePerGas) / 1e9
-    ).toFixed(1);
-    document.getElementById("fastPrice").textContent = (
-      Number(gasPrices.fast.maxFeePerGas) / 1e9
-    ).toFixed(1);
+    // Update display with null checks
+    const slowPriceEl = document.getElementById("slowPrice");
+    const normalPriceEl = document.getElementById("normalPrice");
+    const fastPriceEl = document.getElementById("fastPrice");
+    
+    if (slowPriceEl) {
+      slowPriceEl.textContent = (Number(gasPrices.slow.maxFeePerGas) / 1e9).toFixed(1);
+    }
+    if (normalPriceEl) {
+      normalPriceEl.textContent = (Number(gasPrices.normal.maxFeePerGas) / 1e9).toFixed(1);
+    }
+    if (fastPriceEl) {
+      fastPriceEl.textContent = (Number(gasPrices.fast.maxFeePerGas) / 1e9).toFixed(1);
+    }
 
     await updateEstimatedTotal();
   } catch (err) {
@@ -1176,8 +1275,11 @@ async function updateGasPrices() {
 
 async function updateEstimatedTotal() {
   const amount = document.getElementById("amount").value || "0";
+  const estimatedTotalEl = document.getElementById("estimatedTotal");
+  if (!estimatedTotalEl) return;
+  
   if (!wallet || !provider) {
-    document.getElementById("estimatedTotal").textContent = "--";
+    estimatedTotalEl.textContent = "--";
     return;
   }
 
@@ -1193,16 +1295,14 @@ async function updateEstimatedTotal() {
     const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
     const amountUsd = parseFloat(amount) * tokenPrice.usd;
 
-    document.getElementById(
-      "estimatedTotal"
-    ).textContent = `${amount} ${selectedToken} ($${amountUsd.toFixed(
+    estimatedTotalEl.textContent = `${amount} ${selectedToken} ($${amountUsd.toFixed(
       2
     )}) + Ξ${parseFloat(gasCostEth).toFixed(5)} gas ($${gasCostUsd.toFixed(
       2
     )})`;
-  } catch {
-    document.getElementById("estimatedTotal").textContent =
-      amount + " " + selectedToken;
+  } catch (err) {
+    console.error("Error updating estimated total:", err);
+    estimatedTotalEl.textContent = amount + " " + selectedToken;
   }
 }
 
@@ -1815,16 +1915,14 @@ async function displayWallet() {
 
   // Private key display moved to Settings tab
 
-  try {
-    const ensName = await provider.lookupAddress(address);
-    document.getElementById("ensName").textContent = ensName || "";
-  } catch {
-    document.getElementById("ensName").textContent = "";
-  }
+  // ENS name is already fetched in batchView and displayed
+  // No need for additional lookup here
 
-  // Immediately fetch balances and prices
-  await fetchAllBalances();
-  await updateGasPrices();
+  // Fetch balances and gas prices in parallel
+  await Promise.all([
+    fetchAllBalances(),
+    updateGasPrices()
+  ]);
 
   if (document.getElementById("autoRefresh").checked) {
     clearInterval(autoRefreshInterval);
@@ -2140,6 +2238,174 @@ async function sendTransaction() {
     status.innerHTML = `<div class="status error">${errorMsg}</div>`;
   } finally {
     document.getElementById("sendBtn").disabled = false;
+  }
+}
+
+// IOU Functions for USDC EIP-3009
+async function createIOUSlip() {
+  const toInput = document.getElementById("toAddress").value.trim();
+  const amount = document.getElementById("amount").value;
+  const status = document.getElementById("txStatus");
+
+  if (!toInput || !amount || !wallet) {
+    status.innerHTML = '<div class="status error">Fill all fields</div>';
+    return;
+  }
+  
+  // Validate amount
+  const numAmount = parseFloat(amount);
+  if (isNaN(numAmount) || numAmount <= 0) {
+    status.innerHTML = '<div class="status error">Invalid amount</div>';
+    return;
+  }
+  
+  // Check for too many decimals for USDC (max 6)
+  const decimals = (amount.split('.')[1] || '').length;
+  if (decimals > 6) {
+    status.innerHTML = '<div class="status error">USDC supports max 6 decimals</div>';
+    return;
+  }
+
+  try {
+    // Resolve ENS if needed
+    let toAddress = toInput;
+    if (toInput.endsWith(".eth")) {
+      toAddress = await resolveENS(toInput);
+      if (!toAddress) {
+        status.innerHTML = '<div class="status error">ENS not found</div>';
+        return;
+      }
+    }
+
+    if (!ethers.isAddress(toAddress)) {
+      status.innerHTML = '<div class="status error">Invalid address</div>';
+      return;
+    }
+
+    // Prepare IOU data
+    const value = ethers.parseUnits(amount, 6); // USDC has 6 decimals
+    const validAfter = 0; // Can be used immediately
+    const validDays = 30; // Valid for 30 days by default
+    const now = Math.floor(Date.now() / 1000);
+    const validBefore = now + (validDays * 86400);
+    const nonce = ethers.hexlify(ethers.randomBytes(32));
+
+    // Update modal with preview
+    document.getElementById("iouFrom").textContent = `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`;
+    document.getElementById("iouTo").textContent = toInput.endsWith(".eth") 
+      ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
+      : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
+    document.getElementById("iouAmount").textContent = `${amount} USDC`;
+    document.getElementById("iouExpiry").textContent = new Date(validBefore * 1000).toLocaleString();
+
+    // Prepare EIP-712 message
+    const message = {
+      from: wallet.address,
+      to: toAddress,
+      value: value.toString(),
+      validAfter: String(validAfter),
+      validBefore: String(validBefore),
+      nonce: nonce
+    };
+
+    // Store message for signing
+    pendingIouMessage = message;
+    pendingIouAmount = amount;
+
+    // Show preview in modal
+    const iouData = {
+      type: "transfer",
+      from: wallet.address,
+      to: toAddress,
+      value: value.toString(),
+      amount: amount,
+      validAfter: validAfter,
+      validBefore: validBefore,
+      nonce: nonce,
+      created: new Date().toISOString(),
+      chainId: 1
+    };
+
+    document.getElementById("iouDataDisplay").value = JSON.stringify(iouData, null, 2);
+
+    // Show modal
+    document.getElementById("iouPreviewModal").classList.remove("hidden");
+
+  } catch (err) {
+    console.error("IOU creation error:", err);
+    status.innerHTML = '<div class="status error">Failed to create IOU</div>';
+  }
+}
+
+async function signAndDownloadIOU() {
+  try {
+    if (!pendingIouMessage || !wallet) {
+      throw new Error("No IOU message to sign");
+    }
+
+    const status = document.getElementById("txStatus");
+    status.innerHTML = '<div class="status">Signing IOU...</div>';
+
+    // Sign EIP-712 message
+    const types = { TransferWithAuthorization: EIP3009_TYPES.TransferWithAuthorization };
+    const signature = await wallet.signTypedData(USDC_EIP712_DOMAIN, types, pendingIouMessage);
+    
+    // Extract v, r, s from signature
+    const sig = ethers.Signature.from(signature);
+    const v = sig.v;
+    const r = sig.r;
+    const s = sig.s;
+
+    // Create complete IOU slip
+    const iouSlip = {
+      type: "transfer",
+      from: pendingIouMessage.from,
+      to: pendingIouMessage.to,
+      value: pendingIouMessage.value,
+      validAfter: Number(pendingIouMessage.validAfter),
+      validBefore: Number(pendingIouMessage.validBefore),
+      nonce: pendingIouMessage.nonce,
+      v: v,
+      r: r,
+      s: s,
+      amount: pendingIouAmount,
+      signature: signature,
+      created: new Date().toISOString(),
+      chainId: 1
+    };
+
+    // Download as JSON file
+    const blob = new Blob([JSON.stringify(iouSlip, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `usdc-iou-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Update display
+    document.getElementById("iouDataDisplay").value = JSON.stringify(iouSlip, null, 2);
+    
+    status.innerHTML = '<div class="status success">IOU signed and downloaded!</div>';
+    showToast("IOU created successfully! 📄🪽");
+
+    // Clear form
+    document.getElementById("toAddress").value = "";
+    document.getElementById("amount").value = "";
+
+    // Clean up
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+
+  } catch (err) {
+    console.error("IOU signing error:", err);
+    let errorMsg = "Failed to sign IOU";
+    
+    if (err.message.includes("user rejected") || err.message.includes("denied")) {
+      errorMsg = "Signature rejected";
+    }
+    
+    document.getElementById("txStatus").innerHTML = `<div class="status error">${errorMsg}</div>`;
   }
 }
 
@@ -2461,6 +2727,96 @@ function setupEventListeners() {
     });
 
   document.getElementById("sendBtn").addEventListener("click", sendTransaction);
+  
+  // IOU Mode functionality
+  document.getElementById("createIouBtn")?.addEventListener("click", createIOUSlip);
+  
+  document.getElementById("iouModeToggle")?.addEventListener("change", (e) => {
+    const isIouMode = e.target.checked;
+    const gasFeeSection = document.getElementById("gasFeeSection");
+    const sendBtn = document.getElementById("sendBtn");
+    const createIouBtn = document.getElementById("createIouBtn");
+    const iouModeInfo = document.getElementById("iouModeInfo");
+    
+    if (isIouMode) {
+      // Switch to IOU mode
+      gasFeeSection.style.display = "none";
+      sendBtn.classList.add("hidden");
+      createIouBtn.classList.remove("hidden");
+      iouModeInfo.style.display = "block";
+      
+      // Update gas display to show "Free!"
+      const estimatedTotalEl = document.getElementById("estimatedTotal");
+      if (estimatedTotalEl) {
+        estimatedTotalEl.innerHTML = '<span style="color: var(--success);">🪽 Free! (Gasless)</span>';
+      }
+    } else {
+      // Switch back to normal mode
+      gasFeeSection.style.display = "block";
+      sendBtn.classList.remove("hidden");
+      createIouBtn.classList.add("hidden");
+      iouModeInfo.style.display = "none";
+      
+      // Restore normal gas display
+      updateEstimatedTotal();
+    }
+  });
+  
+  // IOU Modal event listeners
+  document.getElementById("iouModalClose")?.addEventListener("click", () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    // Clean up pending data
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+  });
+  
+  document.getElementById("confirmIouBtn")?.addEventListener("click", async () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    await signAndDownloadIOU();
+  });
+  
+  document.getElementById("cancelIouBtn")?.addEventListener("click", () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    // Clean up pending data
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+  });
+  
+  document.getElementById("toggleIouData")?.addEventListener("click", (e) => {
+    const section = document.getElementById("iouDataSection");
+    if (section.classList.contains("hidden")) {
+      section.classList.remove("hidden");
+      e.target.textContent = "Hide";
+    } else {
+      section.classList.add("hidden");
+      e.target.textContent = "Show";
+    }
+  });
+  
+  document.getElementById("copyIouData")?.addEventListener("click", () => {
+    const data = document.getElementById("iouDataDisplay").value;
+    navigator.clipboard.writeText(data).then(() => {
+      showToast("IOU data copied! 📋");
+    }).catch(() => {
+      // Fallback for older browsers
+      const textarea = document.getElementById("iouDataDisplay");
+      textarea.select();
+      document.execCommand("copy");
+      showToast("IOU data copied! 📋");
+    });
+  });
+  
+  document.getElementById("downloadIou")?.addEventListener("click", () => {
+    const data = document.getElementById("iouDataDisplay").value;
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `usdc-iou-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("IOU downloaded! 💾");
+  });
 
   // Settings
   document.querySelectorAll(".rpc-item").forEach((item) => {
@@ -3178,13 +3534,16 @@ async function simulateSwap() {
     const truncated = parseFloat(amountIn).toFixed(maxDecimals);
     const swapAmount = ethers.parseUnits(truncated, maxDecimals);
     
-    // Create zQuoter contract instance
-    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+    // Use global zQuoter contract instance
+    if (!zQuoterContract) {
+      console.error("zQuoter contract not initialized");
+      return;
+    }
     
     let quotesResult, bestQuote, allQuotes;
     try {
       // Get quotes from zQuoter (exactOut = false for exactIn mode)
-      quotesResult = await quoter.getQuotes(
+      quotesResult = await zQuoterContract.getQuotes(
         false, // exactOut = false (we're doing exactIn)
         tokenInAddress,
         tokenOutAddress,
@@ -3280,8 +3639,10 @@ async function executeSwap() {
       if (!needsApproval) return;
     }
     
-    // Create zQuoter contract instance
-    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+    // Use global zQuoter contract instance
+    if (!zQuoterContract) {
+      throw new Error("zQuoter contract not initialized");
+    }
     
     // Get the swap calldata from buildBestSwap
     const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour deadline
@@ -3289,7 +3650,7 @@ async function executeSwap() {
     
     let swapData;
     try {
-      swapData = await quoter.buildBestSwap(
+      swapData = await zQuoterContract.buildBestSwap(
         wallet.address,
         false, // exactOut = false
         bestSwapRoute.tokenIn,
@@ -3433,19 +3794,39 @@ async function checkAndRequestApproval(token, amount) {
   try {
     // Handle ERC6909 tokens (like ZAMM)
     if (token.isERC6909) {
-      // Check operator approval for ERC6909
-      const erc6909Contract = new ethers.Contract(
-        token.address,
-        [
-          "function isOperator(address owner, address spender) view returns (bool)",
-          "function setOperator(address spender, bool approved) returns (bool)"
-        ],
-        provider
-      );
+      let needsApproval = false;
       
-      const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
+      // Use zWallet contract helper to check operator status
+      if (zWalletContract) {
+        try {
+          const isOperator = await zWalletContract.getIsOperatorOf(
+            wallet.address,
+            token.address,
+            ZROUTER_ADDRESS
+          );
+          needsApproval = !isOperator;
+        } catch {
+          // Fallback to direct check
+          const erc6909Contract = new ethers.Contract(
+            token.address,
+            ["function isOperator(address owner, address spender) view returns (bool)"],
+            provider
+          );
+          const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
+          needsApproval = !isApproved;
+        }
+      } else {
+        // Fallback to direct check
+        const erc6909Contract = new ethers.Contract(
+          token.address,
+          ["function isOperator(address owner, address spender) view returns (bool)"],
+          provider
+        );
+        const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
+        needsApproval = !isApproved;
+      }
       
-      if (isApproved) {
+      if (!needsApproval) {
         return true; // Already approved as operator
       }
       
@@ -3457,7 +3838,11 @@ async function checkAndRequestApproval(token, amount) {
       document.getElementById("swapStatus").innerHTML = '<div class="status">Setting operator approval...</div>';
       
       // Set operator approval for ERC6909
-      const approveContract = new ethers.Contract(token.address, erc6909Contract.interface, wallet);
+      const approveContract = new ethers.Contract(
+        token.address,
+        ["function setOperator(address spender, bool approved) returns (bool)"],
+        wallet
+      );
       const approveTx = await approveContract.setOperator(ZROUTER_ADDRESS, true);
       
       document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
@@ -3468,15 +3853,39 @@ async function checkAndRequestApproval(token, amount) {
       
     } else {
       // Standard ERC20 approval flow
-      const tokenContract = new ethers.Contract(
-        token.address,
-        ["function allowance(address owner, address spender) view returns (uint256)"],
-        provider
-      );
+      let needsApproval = false;
       
-      const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
+      // Use zWallet contract helper if available
+      if (zWalletContract) {
+        try {
+          const [rawAllowance] = await zWalletContract.getAllowanceOf(
+            wallet.address,
+            token.address,
+            ZROUTER_ADDRESS
+          );
+          needsApproval = rawAllowance < amount;
+        } catch {
+          // Fallback to direct check
+          const tokenContract = new ethers.Contract(
+            token.address,
+            ["function allowance(address owner, address spender) view returns (uint256)"],
+            provider
+          );
+          const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
+          needsApproval = allowance < amount;
+        }
+      } else {
+        // Fallback to direct check
+        const tokenContract = new ethers.Contract(
+          token.address,
+          ["function allowance(address owner, address spender) view returns (uint256)"],
+          provider
+        );
+        const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
+        needsApproval = allowance < amount;
+      }
       
-      if (allowance >= amount) {
+      if (!needsApproval) {
         return true; // Already approved
       }
       
