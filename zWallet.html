@@ -34,10 +34,12 @@
       @media (max-width: 480px) {
         body {
           padding: 10px;
+          font-size: 13px;
         }
         
         .window {
           border-radius: 0;
+          box-shadow: 2px 2px 0 var(--border);
         }
         
         .content {
@@ -261,25 +263,66 @@
         font-size: 13px;
         font-weight: bold;
         cursor: pointer;
-        transition: all 0.1s;
+        transition: all 0.15s ease;
         box-shadow: 2px 2px 0 var(--border);
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        position: relative;
+        transform: translate(0, 0);
+        overflow: hidden;
+      }
+
+      button::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+        transition: left 0.5s ease;
       }
 
       button:hover:not(:disabled) {
-        transform: translate(-1px, -1px);
-        box-shadow: 3px 3px 0 var(--border);
+        transform: translate(-2px, -2px);
+        box-shadow: 4px 4px 0 var(--border);
+      }
+
+      button:hover:not(:disabled)::before {
+        left: 100%;
       }
 
       button:active:not(:disabled) {
-        transform: translate(1px, 1px);
+        transform: translate(0, 0);
         box-shadow: 1px 1px 0 var(--border);
+        transition: all 0.05s ease;
       }
 
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+        filter: grayscale(0.3);
+      }
+
+      /* Button loading state */
+      button.loading {
+        pointer-events: none;
+        color: transparent;
+      }
+
+      button.loading::after {
+        content: "";
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        top: 50%;
+        left: 50%;
+        margin-left: -8px;
+        margin-top: -8px;
+        border: 2px solid var(--fg);
+        border-radius: 50%;
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
       }
 
       button + button {
@@ -753,17 +796,37 @@
         color: var(--bg);
       }
 
+      /* Modal Animations */
+      @keyframes modalFadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @keyframes modalSlideIn {
+        from {
+          transform: translateY(-20px) scale(0.97);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0) scale(1);
+          opacity: 1;
+        }
+      }
+
       .modal {
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(0, 0, 0, 0.6);
         display: flex;
         align-items: center;
         justify-content: center;
         z-index: 2000;
+        animation: modalFadeIn 0.2s ease;
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
       }
 
       .modal.hidden {
@@ -773,11 +836,13 @@
       .modal-content {
         background: var(--bg);
         border: 2px solid var(--border);
-        box-shadow: 4px 4px 0 var(--border);
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3), 4px 4px 0 var(--border);
         max-width: 420px;
         width: 90%;
         max-height: 80vh;
         overflow-y: auto;
+        animation: modalSlideIn 0.3s ease;
+        transform-origin: center;
       }
 
       .modal-header {
@@ -896,6 +961,15 @@
 
       .token-option:hover {
         background: var(--hover);
+      }
+      
+      .token-option-icon {
+        flex-shrink: 0;
+      }
+      
+      .token-option-icon svg {
+        width: 100%;
+        height: 100%;
       }
 
       .token-option-icon {
@@ -1157,20 +1231,26 @@ body {
 
           <div id="walletSection" class="section hidden">
             <h2>Account</h2>
-            <div class="info-box">
-              <button class="copy-btn" data-copy="address">Copy</button>
-              <strong>Address</strong>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div class="mono" id="address" style="flex: 1;"></div>
-                <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                    <polyline points="15 3 21 3 21 9"></polyline>
-                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                  </svg>
-                </a>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+              <img id="blockieAvatar" style="width: 64px; height: 64px; border-radius: 8px; border: 2px solid var(--border);" />
+              <div style="flex: 1;">
+                <div class="info-box" style="margin: 0;">
+                  <button class="copy-btn" data-copy="address">Copy</button>
+                  <button class="download-btn" id="qrBtn" style="right: 60px;">QR</button>
+                  <strong>Address</strong>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="mono" id="address" style="flex: 1;"></div>
+                    <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                      </svg>
+                    </a>
+                  </div>
+                  <div class="ens-indicator" id="ensName"></div>
+                </div>
               </div>
-              <div class="ens-indicator" id="ensName"></div>
             </div>
           </div>
 
@@ -1191,9 +1271,15 @@ body {
               />
               <input
                 type="text"
+                id="newTokenId"
+                placeholder="Token ID (for ERC6909, optional)"
+              />
+              <input
+                type="text"
                 id="newTokenSymbol"
                 placeholder="Symbol (optional)"
               />
+              <div id="tokenTypeIndicator" class="hidden" style="font-size: 12px; color: var(--text-secondary); margin: 4px 0;"></div>
               <button id="confirmAddToken">Add Token</button>
             </div>
             <button id="refreshBtn" style="width: 100%; margin-top: 8px">
@@ -1306,6 +1392,16 @@ body {
             <div class="token-grid" id="sendTokenGrid">
               <!-- Populated dynamically -->
             </div>
+            <!-- IOU Mode Toggle for USDC -->
+            <div id="iouModeSection" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="iouModeToggle" style="width: 18px; height: 18px;">
+                <span style="font-weight: bold;">📄🪽 IOU Mode (Gasless USDC Transfer)</span>
+              </label>
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; display: none;" id="iouModeInfo">
+                Create a signed USDC transfer authorization (EIP-3009) that the recipient can claim later, paying the gas themselves.
+              </div>
+            </div>
           </div>
 
           <div class="section">
@@ -1332,7 +1428,7 @@ body {
               <button class="max-btn" id="maxBtn">MAX</button>
             </div>
 
-            <div style="margin-top: 16px">
+            <div style="margin-top: 16px" id="gasFeeSection">
               <label>Gas Fee</label>
               <div class="gas-selector">
                 <button class="gas-option" data-speed="slow">
@@ -1390,6 +1486,9 @@ body {
 
             <button id="sendBtn" style="width: 100%; margin-top: 12px">
               Send Transaction
+            </button>
+            <button id="createIouBtn" class="hidden" style="width: 100%; margin-top: 12px">
+              Create & Sign IOU 📄
             </button>
             <div id="txStatus"></div>
           </div>
@@ -1466,6 +1565,28 @@ body {
           </div>
 
           <div class="section">
+            <h2>Web3 Integration</h2>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input
+                type="checkbox"
+                id="defaultWallet"
+                style="width: auto; margin-right: 8px"
+              />
+              <div>
+                <div style="font-weight: bold;">Make zWallet Default</div>
+                <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                  Automatically connect when dApps request MetaMask or other wallets
+                </div>
+              </div>
+            </label>
+            <div id="defaultWalletInfo" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+              <strong>⚡ Default Wallet Active</strong>
+              <p style="margin-top: 8px;">zWallet will intercept connection requests from other wallets. When sites try to connect to MetaMask, Coinbase, or WalletConnect, zWallet will respond instead.</p>
+              <p style="margin-top: 8px;">Refresh any open dApp tabs for changes to take effect.</p>
+            </div>
+          </div>
+
+          <div class="section">
             <h2>Private Key Management</h2>
             <div class="warning" style="margin-bottom: 12px;">
               ⚠️ Never share your private key with anyone
@@ -1502,6 +1623,160 @@ body {
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js" integrity="sha256-Jlrx7irtiV+Pl9aJ9t3aZ4iL6FcO6eYitSbJR4arfhI=" crossorigin="anonymous"></script>
     <script>
+// Minimal visual identifier for zWallet - combines blockie-style avatar with QR capability
+
+// Generate a simple blockie avatar using canvas
+function createBlockie(address, size = 64) {
+  const seed = parseInt(address.slice(2, 10), 16);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  
+  // Generate colors from address
+  const hue1 = (seed % 360);
+  const hue2 = ((seed >> 8) % 360);
+  
+  // Background gradient
+  const gradient = ctx.createLinearGradient(0, 0, size, size);
+  gradient.addColorStop(0, `hsl(${hue1}, 70%, 85%)`);
+  gradient.addColorStop(1, `hsl(${hue2}, 70%, 90%)`);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  
+  // Generate pattern
+  const gridSize = 5;
+  const cellSize = size / gridSize;
+  
+  for (let y = 0; y < gridSize; y++) {
+    for (let x = 0; x < Math.ceil(gridSize / 2); x++) {
+      const index = y * gridSize + x;
+      const value = (seed >> (index % 32)) & 3;
+      
+      if (value > 0) {
+        const colorIndex = value - 1;
+        const colors = [
+          `hsl(${hue1}, 70%, 50%)`,
+          `hsl(${hue2}, 70%, 40%)`,
+          `hsl(${(hue1 + hue2) / 2}, 60%, 45%)`
+        ];
+        
+        ctx.fillStyle = colors[colorIndex];
+        
+        // Draw circles for a softer look
+        const centerX = x * cellSize + cellSize / 2;
+        const centerY = y * cellSize + cellSize / 2;
+        const radius = cellSize * 0.4;
+        
+        // Left side
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Mirror on right side
+        const mirrorX = (gridSize - 1 - x) * cellSize + cellSize / 2;
+        ctx.beginPath();
+        ctx.arc(mirrorX, centerY, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  
+  return canvas.toDataURL();
+}
+
+// Simple QR code for addresses (minimal implementation)
+function generateSimpleQR(text, size = 256) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+  
+  // For simplicity, create a data matrix pattern based on the text
+  // This is a simplified version - for production use a proper QR library
+  const moduleCount = 21; // Simplified QR version 1
+  const cellSize = size / (moduleCount + 8); // Add quiet zone
+  const margin = cellSize * 4;
+  
+  // Create a simple hash-based pattern
+  const data = text.split('').map(c => c.charCodeAt(0));
+  
+  ctx.fillStyle = '#000000';
+  
+  // Position detection patterns (corners)
+  const drawPositionPattern = (row, col) => {
+    for (let r = -1; r <= 7; r++) {
+      for (let c = -1; c <= 7; c++) {
+        const absR = Math.abs(r <= 3 ? r : r - 6);
+        const absC = Math.abs(c <= 3 ? c : c - 6);
+        if (absR <= 1 || absC <= 1 || (absR === 2 && absC === 2)) {
+          ctx.fillRect(
+            margin + (col + c) * cellSize,
+            margin + (row + r) * cellSize,
+            cellSize,
+            cellSize
+          );
+        }
+      }
+    }
+  };
+  
+  drawPositionPattern(0, 0);
+  drawPositionPattern(0, moduleCount - 7);
+  drawPositionPattern(moduleCount - 7, 0);
+  
+  // Data area (simplified)
+  for (let row = 0; row < moduleCount; row++) {
+    for (let col = 0; col < moduleCount; col++) {
+      // Skip position patterns
+      if ((row < 8 && col < 8) || 
+          (row < 8 && col >= moduleCount - 8) ||
+          (row >= moduleCount - 8 && col < 8)) {
+        continue;
+      }
+      
+      // Generate deterministic pattern from address
+      const index = row * moduleCount + col;
+      const byte = data[index % data.length] || 0;
+      const bit = (byte >> (index % 8)) & 1;
+      
+      if (bit) {
+        ctx.fillRect(
+          margin + col * cellSize,
+          margin + row * cellSize,
+          cellSize,
+          cellSize
+        );
+      }
+    }
+  }
+  
+  // Add logo in center
+  const logoSize = cellSize * 5;
+  const logoX = (size - logoSize) / 2;
+  const logoY = (size - logoSize) / 2;
+  
+  // White background for logo
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(logoX - cellSize, logoY - cellSize, logoSize + cellSize * 2, logoSize + cellSize * 2);
+  
+  // Draw "zW" text as logo
+  ctx.fillStyle = '#000000';
+  ctx.font = `bold ${logoSize * 0.4}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('zW', size / 2, size / 2);
+  
+  return canvas.toDataURL();
+}
+
+// Export for use
+window.zWalletVisual = { createBlockie, generateSimpleQR };
+
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
   document.documentElement.classList.add("is-extension");
 }
@@ -1548,11 +1823,12 @@ const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
 const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
 const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
 
-// CTC contract for price checking
-const CTC_ADDRESS = "0x0000000000cDC1F8d393415455E382c30FBc0a84";
-const CTC_ABI = [
-  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
-];
+// ZAMM AMM Contracts for price fetching and swapping
+const ZAMM_0_ADDRESS = "0x00000000000008882D72EfA6cCE4B6a40b24C860"; // Original ZAMM AMM for swapping ZAMM token
+const ZAMM_1_ADDRESS = "0x000000000000040470635eb91b7ce4d132d616ed"; // New ZAMM AMM for all other ERC6909 ID swaps
+const ZAMM_POOL_ID = "22979666169544372205220120853398704213623237650449182409187385558845249460832"; // ZAMM/ETH pool ID
+
+// Price checking is now handled through zWallet contract which wraps CTC
 
 const LS_WALLETS = "eth_wallets_v2";
 const LS_LAST = "last_wallet_addr";
@@ -1603,16 +1879,56 @@ const DEFAULT_TOKENS = {
   },
 };
 
-// zWallet contract address and ABI
-const ZWALLET_ADDRESS = "0xF0cf3dD4A74dA18012Ec3FF83E9794440E80d095";
+// USDC EIP-3009 constants for IOU functionality  
+const USDC_EIP712_DOMAIN = Object.freeze({
+  name: "USD Coin",
+  version: "2",
+  chainId: 1,
+  verifyingContract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+});
+
+const EIP3009_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" }
+  ]
+};
+
+// zWallet contract address and ABI (v0.0.3)
+const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5";
 const ZWALLET_ABI = [
-  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, uint256[] pricesUSDC, string[] pricesETHStr, string[] pricesUSDCStr)",
-  "function getBalanceOf(address user, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
+  // Enhanced batch view with ENS and token type detection
+  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)",
+  // Individual getters
+  "function getBalanceOf(address owner, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
   "function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)",
+  "function getOwnerOf(address token, uint256 id) view returns (address owner)",
+  // Payload preparation
   "function getERC20Transfer(address to, uint256 amount) pure returns (bytes)",
+  "function getERC20Approve(address spender, uint256 amount) pure returns (bytes)",
   "function getERC6909Transfer(address to, uint256 id, uint256 amount) pure returns (bytes)",
+  "function getERC6909SetOperator(address spender, bool approved) pure returns (bytes)",
+  "function getERC721TransferFrom(address from, address to, uint256 tokenId) pure returns (bytes)",
+  // Token type detection
+  "function isERC721(address token) view returns (bool)",
+  "function isERC6909(address token) view returns (bool)",
+  // Allowance and operator checks
+  "function getAllowanceOf(address owner, address token, address spender) view returns (uint256 raw, uint256 allow)",
+  "function getIsOperatorOf(address owner, address token, address spender) view returns (bool)",
+  // Router approval helpers
+  "function checkERC20RouterApproval(address owner, address token, uint256 amount, bool max) view returns (bytes payload)",
+  "function checkERC6909RouterIsOperator(address owner, address token) view returns (bytes payload)",
+  // Price checking (via CTC)
+  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
   "function checkPriceInETH(address token) view returns (uint256 price, string priceStr)",
   "function checkPriceInETHToUSDC(address token) view returns (uint256 price, string priceStr)",
+  // ENS resolution
+  "function whatIsTheAddressOf(string calldata name) view returns (address owner, address receiver, bytes32 node)",
+  "function whatIsTheNameOf(address user) view returns (string ensName)",
 ];
 
 const ERC20_ABI = [
@@ -1621,10 +1937,16 @@ const ERC20_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ];
 
+// ZAMM AMM ABI for reading pool reserves
+const ZAMM_AMM_ABI = [
+  "function pools(uint256 poolId) view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 kLast, uint256 supply)",
+];
+
 // Global state
 let wallet = null;
 let provider = null;
 let zWalletContract = null;
+let zQuoterContract = null;
 let selectedGasSpeed = "normal";
 let currentBalances = {};
 let tokenPrices = {};
@@ -1645,6 +1967,9 @@ let gasPrices = {
   custom: null,
 };
 let TOKENS = { ...DEFAULT_TOKENS };
+// IOU state for signing
+let pendingIouMessage = null;
+let pendingIouAmount = null;
 
 // Event listener management for cleanup
 const eventListeners = new Map();
@@ -1694,7 +2019,7 @@ async function deriveKey(pass, salt, meta) {
   const kdf = (meta && meta.kdf) || "pbkdf2-sha256";
   if (kdf === "pbkdf2-sha256") {
     let iter = Number((meta && meta.iter) || 210000);
-    if (!Number.isFinite(iter)) iter = 210000;
+    if (!Number.isFinite(iter) || iter < 10000 || iter > 5000000) iter = 210000;
     iter = Math.min(Math.max(10_000, Math.floor(iter)), 5_000_000); // clamp
     const km = await crypto.subtle.importKey(
       "raw",
@@ -1793,7 +2118,7 @@ async function init() {
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
     // Keep service worker alive
     setInterval(() => {
-      chrome.runtime.sendMessage({ action: 'keepAlive' }, () => {
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'keepAlive' }, () => {
         if (chrome.runtime.lastError) {
           // Service worker was inactive, will restart automatically
         }
@@ -1803,10 +2128,14 @@ async function init() {
   
   loadTheme();
 
-  await migrateKeystoreIfNeeded();
-
+  // Parallelize initialization tasks
+  await Promise.all([
+    migrateKeystoreIfNeeded(),
+    initProvider()
+  ]);
+  
+  // These depend on provider being ready
   loadWallets();
-  await initProvider();
   await loadCustomTokens();
 
   // --- auto-unlock last wallet (with password prompt) ---
@@ -1870,8 +2199,64 @@ async function init() {
 
   setupEventListeners();
   
+  // Initialize keyboard shortcuts
+  initKeyboardShortcuts();
+  
   // Check if opened for dApp approval
   checkForDappRequest();
+}
+
+// Keyboard Shortcuts Handler
+function initKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    // Skip if user is typing in an input
+    if (e.target.matches('input, textarea, select')) return;
+    
+    // Tab navigation with number keys
+    if (e.key >= '1' && e.key <= '5' && !e.ctrlKey && !e.metaKey) {
+      const tabIndex = parseInt(e.key) - 1;
+      const tabs = document.querySelectorAll('.tab');
+      if (tabs[tabIndex]) {
+        tabs[tabIndex].click();
+      }
+    }
+    
+    // Ctrl/Cmd + shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      switch(e.key) {
+        case 's': // Send
+          e.preventDefault();
+          document.querySelector('.tab[data-tab="send"]')?.click();
+          break;
+        case 'w': // Swap
+          e.preventDefault();
+          document.querySelector('.tab[data-tab="swap"]')?.click();
+          break;
+        case 'r': // Refresh balances
+          e.preventDefault();
+          if (wallet) {
+            fetchAllBalances();
+            showToast('Refreshing balances...');
+          }
+          break;
+        case 'c': // Copy address
+          e.preventDefault();
+          if (wallet?.address) {
+            copyToClipboard(wallet.address, 'address');
+          }
+          break;
+      }
+    }
+  });
+  
+  // Add tooltip hints for shortcuts
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach((tab, index) => {
+    if (index < 5) {
+      const text = tab.textContent;
+      tab.title = `${text} (Press ${index + 1})`;
+    }
+  });
 }
 
 // Handle dApp requests when opened as popup
@@ -1904,7 +2289,7 @@ async function checkForDappRequest() {
   document.getElementById('signRequest')?.classList.add('hidden');
   
   // Get the request details from background script
-  chrome.runtime.sendMessage({ 
+  (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ 
     type: 'GET_REQUEST', 
     requestId: requestId 
   }, async (pendingRequest) => {
@@ -1955,13 +2340,13 @@ function handleConnectionRequest(requestId, pendingRequest) {
       }
       
       // Store connected site
-      chrome.storage.local.set({ 
+      (typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.set : (data, callback) => callback && callback())({ 
         [`connected_${pendingRequest.origin}`]: true,
         'current_wallet': wallet.address 
       });
       
       // Send response
-      chrome.runtime.sendMessage({
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
         type: 'USER_RESPONSE',
         requestId: requestId,
         response: { result: [wallet.address] }
@@ -1973,7 +2358,7 @@ function handleConnectionRequest(requestId, pendingRequest) {
   
   if (rejectBtn) {
     rejectBtn.onclick = () => {
-      chrome.runtime.sendMessage({
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
         type: 'USER_RESPONSE',
         requestId: requestId,
         response: { error: { code: 4001, message: 'User rejected connection' } }
@@ -2048,7 +2433,7 @@ async function handleTransactionRequest(requestId, pendingRequest) {
         });
         
         // Send response with transaction hash
-        chrome.runtime.sendMessage({
+        (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
           type: 'USER_RESPONSE',
           requestId: requestId,
           response: { result: tx.hash }
@@ -2057,7 +2442,7 @@ async function handleTransactionRequest(requestId, pendingRequest) {
         showToast(`Transaction sent: ${tx.hash.slice(0, 10)}...`);
         window.close();
       } catch (err) {
-        chrome.runtime.sendMessage({
+        (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
           type: 'USER_RESPONSE',
           requestId: requestId,
           response: { error: { code: -32000, message: err.message } }
@@ -2070,7 +2455,7 @@ async function handleTransactionRequest(requestId, pendingRequest) {
   
   if (rejectBtn) {
     rejectBtn.onclick = () => {
-      chrome.runtime.sendMessage({
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
         type: 'USER_RESPONSE',
         requestId: requestId,
         response: { error: { code: 4001, message: 'User rejected transaction' } }
@@ -2108,7 +2493,7 @@ function handleSignRequest(requestId, pendingRequest) {
       try {
         const signature = await wallet.signMessage(message);
         
-        chrome.runtime.sendMessage({
+        (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
           type: 'USER_RESPONSE',
           requestId: requestId,
           response: { result: signature }
@@ -2116,7 +2501,7 @@ function handleSignRequest(requestId, pendingRequest) {
         
         window.close();
       } catch (err) {
-        chrome.runtime.sendMessage({
+        (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
           type: 'USER_RESPONSE',
           requestId: requestId,
           response: { error: { code: -32000, message: err.message } }
@@ -2129,7 +2514,7 @@ function handleSignRequest(requestId, pendingRequest) {
   
   if (rejectBtn) {
     rejectBtn.onclick = () => {
-      chrome.runtime.sendMessage({
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
         type: 'USER_RESPONSE',
         requestId: requestId,
         response: { error: { code: 4001, message: 'User rejected signature' } }
@@ -2212,17 +2597,27 @@ function loadRpcSettings() {
 async function initProvider() {
   try {
     // Add timeout for RPC connections
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('RPC timeout')), 5000)
+    );
     
     provider = new ethers.JsonRpcProvider(currentRpc);
-    await provider.getBlockNumber();
-    clearTimeout(timeoutId);
+    await Promise.race([
+      provider.getBlockNumber(),
+      timeoutPromise
+    ]);
 
     // Initialize zWallet contract
     zWalletContract = new ethers.Contract(
       ZWALLET_ADDRESS,
       ZWALLET_ABI,
+      provider
+    );
+    
+    // Initialize zQuoter contract once
+    zQuoterContract = new ethers.Contract(
+      ZQUOTER_ADDRESS,
+      ZQUOTER_ABI,
       provider
     );
 
@@ -2231,7 +2626,6 @@ async function initProvider() {
     showToast("Connected to network");
   } catch (err) {
     console.error("RPC connection failed:", err);
-    if (typeof timeoutId !== 'undefined') clearTimeout(timeoutId);
     // Try fallback
     for (const rpc of [
       "https://eth.llamarpc.com",
@@ -2243,6 +2637,11 @@ async function initProvider() {
         zWalletContract = new ethers.Contract(
           ZWALLET_ADDRESS,
           ZWALLET_ABI,
+          provider
+        );
+        zQuoterContract = new ethers.Contract(
+          ZQUOTER_ADDRESS,
+          ZQUOTER_ABI,
           provider
         );
         currentRpc = rpc;
@@ -2330,25 +2729,51 @@ function updateWalletSelectorFrom(list) {
   updateWalletSelector();
 }
 
+// Fetch ZAMM price from the AMM pool using constant product formula
+async function fetchZAMMPrice() {
+  try {
+    // Use ZAMM_0 for ZAMM token price checking
+    const zammContract = new ethers.Contract(
+      ZAMM_0_ADDRESS,
+      ZAMM_AMM_ABI,
+      provider
+    );
+    
+    // Get pool reserves
+    const poolData = await zammContract.pools(ZAMM_POOL_ID);
+    const reserve0 = Number(poolData[0]); // ETH reserves
+    const reserve1 = Number(poolData[1]); // ZAMM reserves
+    
+    if (reserve0 === 0 || reserve1 === 0) {
+      console.log("ZAMM pool has no liquidity");
+      return { eth: 0, usd: 0 };
+    }
+    
+    // Calculate price using constant product formula
+    // Price of 1 ZAMM in ETH = reserve0 / reserve1
+    const zammPriceInEth = reserve0 / reserve1;
+    
+    // Calculate USD price based on ETH price
+    const zammPriceInUsd = zammPriceInEth * ethPrice;
+    
+    console.log(`ZAMM Price: ${zammPriceInEth} ETH, ${zammPriceInUsd}`);
+    console.log(`Pool reserves - ETH: ${reserve0}, ZAMM: ${reserve1}`);
+    
+    return {
+      eth: zammPriceInEth,
+      usd: zammPriceInUsd
+    };
+  } catch (err) {
+    console.error("Error fetching ZAMM price from pool:", err);
+    return { eth: 0, usd: 0 };
+  }
+}
+
 // Fetch all balances using zWallet contract's batchView
 async function fetchAllBalances() {
   if (!wallet || !provider || !zWalletContract) return;
 
   try {
-    // Get WETH price from CTC contract directly
-    let wethPrice = 0;
-    try {
-      const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
-      const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
-      wethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-      ethPrice = wethPrice;
-      console.log("WETH/ETH price fetched:", wethPrice, "USDC per ETH");
-    } catch (err) {
-      console.error("Error fetching WETH price:", err);
-      ethPrice = 3500; // Fallback
-      wethPrice = ethPrice;
-    }
-
     // Prepare token addresses and ids for batchView
     const tokenAddresses = [];
     const tokenIds = [];
@@ -2366,25 +2791,49 @@ async function fetchAllBalances() {
     }
 
     // Call batchView to get all data in one call
-    const [
-      rawBalances,
-      balances,
-      names,
-      symbols,
-      decimals,
-      pricesETH,
-      pricesUSDC,
-      pricesETHStr,
-      pricesUSDCStr,
-    ] = await zWalletContract.batchView(
+    const batchResult = await zWalletContract.batchView(
       wallet.address,
       tokenAddresses,
       tokenIds
     );
+    
+    // Destructure the results we need
+    const ensName = batchResult[0];
+    // const tokensOut = batchResult[1]; // Not used currently
+    // const idsOut = batchResult[2]; // Not used currently
+    // const kinds = batchResult[3]; // Token type indicators: 0=ETH, 20=ERC20, 72=ERC721, 69=ERC6909
+    const rawBalances = batchResult[4];
+    // const balances = batchResult[5]; // We calculate our own formatted balances
+    const names = batchResult[6];
+    const symbols = batchResult[7];
+    const decimals = batchResult[8];
+    const pricesETH = batchResult[9];
+    // const pricesETHStr = batchResult[10]; // Not used currently
+    const pricesUSDC = batchResult[11];
+    // const pricesUSDCStr = batchResult[12]; // Not used currently
+    
+    // Update ENS name if found
+    if (ensName) {
+      console.log("ENS name found:", ensName);
+      // Display ENS name in the UI
+      const ensNameEl = document.getElementById("ensName");
+      if (ensNameEl) {
+        ensNameEl.textContent = ensName;
+      }
+    }
 
     // Process the results
     currentBalances = {};
     tokenPrices = {};
+    
+    // First, find ETH price from the results (it will be in ETH's pricesUSDC)
+    let ethPriceInUsd = 3500; // fallback
+    const ethIndex = tokenSymbols.indexOf("ETH");
+    if (ethIndex !== -1 && pricesUSDC[ethIndex]) {
+      ethPriceInUsd = Number(pricesUSDC[ethIndex]) / 1e6;
+      ethPrice = ethPriceInUsd; // Update global ethPrice
+      console.log("ETH price from batchView:", ethPriceInUsd, "USDC");
+    }
 
     for (let i = 0; i < tokenSymbols.length; i++) {
       const symbol = tokenSymbols[i];
@@ -2396,23 +2845,27 @@ async function fetchAllBalances() {
         formatted: ethers.formatUnits(rawBalances[i], decimals[i]),
       };
 
-      // Store prices
+      // Store prices - the contract already handles ETH/WETH/USDC special cases
       let priceInEth = Number(pricesETH[i]) / 1e18;
       let priceInUsd = Number(pricesUSDC[i]) / 1e6;
 
-      // Override stablecoin prices to exactly $1.00
-      if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
+      // Only override for stablecoins that aren't USDC (since USDC is handled by contract)
+      if (symbol === "USDT" || symbol === "DAI") {
         priceInUsd = 1.0; // Stablecoins are always $1
         // Calculate ETH price based on current ETH/USD rate
-        if (wethPrice > 0) {
-          priceInEth = 1.0 / wethPrice; // 1 USD worth of ETH
+        if (ethPriceInUsd > 0) {
+          priceInEth = 1.0 / ethPriceInUsd; // 1 USD worth of ETH
         }
+      } else if (symbol === "ZAMM") {
+        // Fetch ZAMM price from the AMM pool
+        const zammPrice = await fetchZAMMPrice();
+        priceInEth = zammPrice.eth;
+        priceInUsd = zammPrice.usd;
       }
-      // Override ETH price with WETH price we fetched
-      else if (symbol === "ETH") {
-        priceInUsd = wethPrice; // Use the WETH price in USDC
-        priceInEth = 1; // 1 ETH = 1 ETH always
-      }
+      // The contract already correctly handles:
+      // - ETH: priceETH = 1, priceUSDC from WETH
+      // - WETH: priceETH = 1, priceUSDC from checkPrice
+      // - USDC: priceUSDC = 1, priceETH from checkPriceInETH
 
       tokenPrices[symbol] = {
         eth: priceInEth,
@@ -2437,12 +2890,15 @@ async function fetchAllBalances() {
 async function fetchBalancesFallback() {
   if (!wallet || !provider || !zWalletContract) return;
 
-  // Get WETH price from CTC contract directly
+  // Get WETH price using zWallet contract (it has price checking built in)
   try {
-    const ctcContract = new ethers.Contract(CTC_ADDRESS, CTC_ABI, provider);
-    const [priceUSDC, priceStr] = await ctcContract.checkPrice(WETH_ADDRESS);
-    ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-    console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+    if (zWalletContract) {
+      const [priceUSDC] = await zWalletContract.checkPrice(WETH_ADDRESS);
+      ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
+      console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+    } else {
+      ethPrice = 3500; // Fallback if contract not ready
+    }
   } catch (err) {
     console.error("Error fetching WETH price:", err);
     ethPrice = 3500; // Fallback
@@ -2454,7 +2910,7 @@ async function fetchBalancesFallback() {
       const tokenId = token.isERC6909 ? BigInt(token.id) : 0;
 
       // Get balance
-      const [raw, bal] = await zWalletContract.getBalanceOf(
+      const [raw] = await zWalletContract.getBalanceOf(
         wallet.address,
         tokenAddress,
         tokenId
@@ -2465,21 +2921,22 @@ async function fetchBalancesFallback() {
         formatted: ethers.formatUnits(raw, token.decimals || 18),
       };
 
-      // Get prices
-      if (symbol === "ETH") {
-        // For ETH, use the WETH price we already fetched
-        tokenPrices[symbol] = {
-          eth: 1, // 1 ETH = 1 ETH
-          usd: ethPrice, // Use WETH price in USDC
-        };
-      } else if (symbol === "USDC" || symbol === "USDT" || symbol === "DAI") {
-        // Override stablecoin prices to exactly $1.00
+      // Get prices - let the contract handle ETH/USDC special cases
+      if (symbol === "USDT" || symbol === "DAI") {
+        // Only override non-USDC stablecoins to exactly $1.00
         tokenPrices[symbol] = {
           eth: ethPrice > 0 ? 1.0 / ethPrice : 0,
           usd: 1.0,
         };
+      } else if (symbol === "ZAMM") {
+        // Fetch ZAMM price from the AMM pool
+        const zammPrice = await fetchZAMMPrice();
+        tokenPrices[symbol] = zammPrice;
       } else {
         try {
+          // The contract automatically handles:
+          // - ETH: returns priceETH = 1e18, priceUSDC from WETH
+          // - USDC: returns priceUSDC = 1e6, priceETH calculated
           const [priceETH] = await zWalletContract.checkPriceInETH(
             tokenAddress
           );
@@ -2491,7 +2948,8 @@ async function fetchBalancesFallback() {
             eth: Number(priceETH) / 1e18,
             usd: Number(priceUSDC) / 1e6,
           };
-        } catch {
+        } catch (err) {
+          console.error(`Failed to fetch ${symbol} price:`, err);
           tokenPrices[symbol] = { eth: 0, usd: 0 };
         }
       }
@@ -2512,6 +2970,7 @@ function updateBalanceDisplay() {
   sendTokenGrid.innerHTML = "";
 
   let totalValue = 0;
+  let totalETH = 0;
 
   // Use Object.keys to maintain insertion order
   const tokenKeys = Object.keys(TOKENS);
@@ -2521,6 +2980,13 @@ function updateBalanceDisplay() {
     const price = tokenPrices[symbol] || { eth: 0, usd: 0 };
     const value = parseFloat(balance.formatted) * price.usd;
     totalValue += value;
+    
+    // Calculate ETH value
+    if (symbol === "ETH") {
+      totalETH += parseFloat(balance.formatted);
+    } else {
+      totalETH += parseFloat(balance.formatted) * price.eth;
+    }
 
     // Create row for wallet tab
     const walletRow = document.createElement("div");
@@ -2575,7 +3041,8 @@ function updateBalanceDisplay() {
 
   document.getElementById(
     "portfolioTotal"
-  ).textContent = `Total: ${totalValue.toFixed(2)}`;
+  ).innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">${totalValue.toFixed(2)}</div>
+  <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
 }
 
 function selectToken(symbol) {
@@ -2584,15 +3051,44 @@ function selectToken(symbol) {
     row.classList.toggle("selected", row.dataset.symbol === symbol);
   });
   document.getElementById("selectedTokenLabel").textContent = symbol;
+  
+  // Show/hide IOU mode for USDC
+  const iouModeSection = document.getElementById("iouModeSection");
+  const iouModeToggle = document.getElementById("iouModeToggle");
+  if (symbol === "USDC") {
+    iouModeSection?.classList.remove("hidden");
+  } else {
+    iouModeSection?.classList.add("hidden");
+    // Reset IOU mode if switching away from USDC
+    if (iouModeToggle && iouModeToggle.checked) {
+      iouModeToggle.checked = false;
+      // Trigger change event to reset UI
+      iouModeToggle.dispatchEvent(new Event("change"));
+    }
+  }
+  
   updateEstimatedTotal();
 }
 
 async function resolveENS(name) {
   if (!name.endsWith(".eth")) return null;
 
+  // Use zWallet contract's ENS resolution if available
+  if (zWalletContract) {
+    try {
+      const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
+      // Return receiver if set, otherwise owner
+      return receiver !== ethers.ZeroAddress ? receiver : owner !== ethers.ZeroAddress ? owner : null;
+    } catch (err) {
+      console.debug("Contract ENS resolution failed, falling back to provider:", err);
+    }
+  }
+
+  // Fallback to provider resolution
   try {
     return await provider.resolveName(name);
-  } catch {
+  } catch (err) {
+    console.debug("ENS resolution failed for", name, err);
     return null;
   }
 }
@@ -2644,16 +3140,20 @@ async function updateGasPrices() {
       }
     }
 
-    // Update display
-    document.getElementById("slowPrice").textContent = (
-      Number(gasPrices.slow.maxFeePerGas) / 1e9
-    ).toFixed(1);
-    document.getElementById("normalPrice").textContent = (
-      Number(gasPrices.normal.maxFeePerGas) / 1e9
-    ).toFixed(1);
-    document.getElementById("fastPrice").textContent = (
-      Number(gasPrices.fast.maxFeePerGas) / 1e9
-    ).toFixed(1);
+    // Update display with null checks
+    const slowPriceEl = document.getElementById("slowPrice");
+    const normalPriceEl = document.getElementById("normalPrice");
+    const fastPriceEl = document.getElementById("fastPrice");
+    
+    if (slowPriceEl) {
+      slowPriceEl.textContent = (Number(gasPrices.slow.maxFeePerGas) / 1e9).toFixed(1);
+    }
+    if (normalPriceEl) {
+      normalPriceEl.textContent = (Number(gasPrices.normal.maxFeePerGas) / 1e9).toFixed(1);
+    }
+    if (fastPriceEl) {
+      fastPriceEl.textContent = (Number(gasPrices.fast.maxFeePerGas) / 1e9).toFixed(1);
+    }
 
     await updateEstimatedTotal();
   } catch (err) {
@@ -2680,8 +3180,11 @@ async function updateGasPrices() {
 
 async function updateEstimatedTotal() {
   const amount = document.getElementById("amount").value || "0";
+  const estimatedTotalEl = document.getElementById("estimatedTotal");
+  if (!estimatedTotalEl) return;
+  
   if (!wallet || !provider) {
-    document.getElementById("estimatedTotal").textContent = "--";
+    estimatedTotalEl.textContent = "--";
     return;
   }
 
@@ -2697,16 +3200,14 @@ async function updateEstimatedTotal() {
     const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
     const amountUsd = parseFloat(amount) * tokenPrice.usd;
 
-    document.getElementById(
-      "estimatedTotal"
-    ).textContent = `${amount} ${selectedToken} (${amountUsd.toFixed(
+    estimatedTotalEl.textContent = `${amount} ${selectedToken} (${amountUsd.toFixed(
       2
     )}) + Ξ${parseFloat(gasCostEth).toFixed(5)} gas (${gasCostUsd.toFixed(
       2
     )})`;
-  } catch {
-    document.getElementById("estimatedTotal").textContent =
-      amount + " " + selectedToken;
+  } catch (err) {
+    console.error("Error updating estimated total:", err);
+    estimatedTotalEl.textContent = amount + " " + selectedToken;
   }
 }
 
@@ -2733,7 +3234,7 @@ async function calculateMaxAmount() {
 async function fetchTransactionHistoryExtended() {
   if (!wallet || !provider) return;
 
-  const txList = document.getElementById("txList");
+  const txListElement = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
   const loadMoreBtn = document.getElementById("loadMoreTxBtn");
 
@@ -3163,8 +3664,8 @@ function displayTransactions() {
         const hash = hashLink.dataset.hash;
         
         // Use Chrome API to open in new tab for extension compatibility
-        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-          chrome.runtime.sendMessage({
+        if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
+          (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
             action: 'open_external',
             url: `https://etherscan.io/tx/${hash}`
           });
@@ -3214,8 +3715,8 @@ function showEtherscanLink(txHash) {
   link.textContent = "View on Etherscan →";
   link.addEventListener('click', (e) => {
     e.preventDefault();
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({
+    if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({
         action: 'open_external',
         url: `https://etherscan.io/tx/${txHash}`
       });
@@ -3226,11 +3727,141 @@ function showEtherscanLink(txHash) {
   status.appendChild(link);
 }
 
-function showToast(message) {
+function showToast(message, duration = 3000) {
   const toast = document.getElementById("toast");
+  if (!toast) return;
+  
   toast.textContent = message;
   toast.classList.add("show");
-  setTimeout(() => toast.classList.remove("show"), 2000);
+  setTimeout(() => toast.classList.remove("show"), duration);
+}
+
+// Show QR code modal
+function showQRModal(address) {
+  const modal = document.getElementById("qrModal");
+  const qrImage = document.getElementById("qrCodeImage");
+  const qrAddress = document.getElementById("qrAddress");
+  
+  if (!modal || !qrImage || !qrAddress) return;
+  
+  // Generate QR code
+  if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
+    const qrDataUrl = window.zWalletVisual.generateSimpleQR(`ethereum:${address}`, 256);
+    qrImage.src = qrDataUrl;
+  }
+  
+  // Display address
+  qrAddress.textContent = address;
+  
+  // Setup modal buttons
+  const closeBtn = document.getElementById("qrModalClose");
+  const downloadBtn = document.getElementById("downloadQR");
+  const copyBtn = document.getElementById("copyQRAddress");
+  
+  if (closeBtn) {
+    closeBtn.onclick = () => modal.classList.add("hidden");
+  }
+  
+  if (downloadBtn) {
+    downloadBtn.onclick = () => {
+      const link = document.createElement("a");
+      link.download = `zWallet-${address.slice(0, 8)}.png`;
+      link.href = qrImage.src;
+      link.click();
+    };
+  }
+  
+  if (copyBtn) {
+    copyBtn.onclick = () => copyToClipboard(address, "address");
+  }
+  
+  // Show modal
+  modal.classList.remove("hidden");
+  
+  // Close on outside click
+  modal.onclick = (e) => {
+    if (e.target === modal) {
+      modal.classList.add("hidden");
+    }
+  };
+}
+
+// Modal Management Helpers
+function showModal(modalId, options = {}) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  
+  // Remove hidden class with animation
+  modal.classList.remove('hidden');
+  
+  // Add ESC key listener
+  if (options.closeOnEsc !== false) {
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        hideModal(modalId);
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+  }
+  
+  // Focus first input if available
+  if (options.autoFocus !== false) {
+    setTimeout(() => {
+      const firstInput = modal.querySelector('input:not([type="hidden"]), textarea, select');
+      if (firstInput) firstInput.focus();
+    }, 100);
+  }
+}
+
+function hideModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  
+  modal.classList.add('hidden');
+}
+
+// Button Loading State Helper
+function setButtonLoading(buttonId, loading = true) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  
+  if (loading) {
+    button.classList.add('loading');
+    button.disabled = true;
+    button.dataset.originalText = button.textContent;
+  } else {
+    button.classList.remove('loading');
+    button.disabled = false;
+    if (button.dataset.originalText) {
+      button.textContent = button.dataset.originalText;
+    }
+  }
+}
+
+// Debounce Helper for Better Performance
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// Throttle Helper for Rate Limiting
+function throttle(func, limit) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
 }
 
 async function copyToClipboard(text, type) {
@@ -3316,19 +3947,31 @@ async function displayWallet() {
   if (etherscanLink) {
     etherscanLink.href = `https://etherscan.io/address/${address}`;
   }
+  
+  // Generate and display blockie avatar
+  if (window.zWalletVisual && window.zWalletVisual.createBlockie) {
+    const blockieAvatar = document.getElementById("blockieAvatar");
+    if (blockieAvatar) {
+      blockieAvatar.src = window.zWalletVisual.createBlockie(address, 128);
+    }
+  }
+  
+  // Setup QR button
+  const qrBtn = document.getElementById("qrBtn");
+  if (qrBtn) {
+    qrBtn.onclick = () => showQRModal(address);
+  }
 
   // Private key display moved to Settings tab
 
-  try {
-    const ensName = await provider.lookupAddress(address);
-    document.getElementById("ensName").textContent = ensName || "";
-  } catch {
-    document.getElementById("ensName").textContent = "";
-  }
+  // ENS name is already fetched in batchView and displayed
+  // No need for additional lookup here
 
-  // Immediately fetch balances and prices
-  await fetchAllBalances();
-  await updateGasPrices();
+  // Fetch balances and gas prices in parallel
+  await Promise.all([
+    fetchAllBalances(),
+    updateGasPrices()
+  ]);
 
   if (document.getElementById("autoRefresh").checked) {
     clearInterval(autoRefreshInterval);
@@ -3339,7 +3982,7 @@ async function displayWallet() {
   }
 }
 
-async function addCustomToken(tokenAddress) {
+async function addCustomToken(tokenAddress, tokenId = null) {
   if (!zWalletContract) return null;
 
   try {
@@ -3348,21 +3991,58 @@ async function addCustomToken(tokenAddress) {
       throw new Error("Invalid address");
     }
 
-    // Get metadata from zWallet contract
-    const [name, symbol, decimals] = await zWalletContract.getMetadata(
-      tokenAddress
-    );
+    let isERC6909 = false;
+    let token;
 
-    if (!symbol || symbol === "") {
-      throw new Error("Could not fetch token metadata");
+    // Check if token ID is provided, suggesting ERC6909
+    if (tokenId && tokenId !== "") {
+      // Check if it's actually ERC6909
+      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
+      
+      if (!isERC6909) {
+        throw new Error("Token ID provided but contract is not ERC6909");
+      }
+
+      // For ERC6909, we may not have per-ID metadata
+      const [name, symbol, decimals] = await zWalletContract.getMetadata(
+        tokenAddress
+      );
+
+      // Create unique symbol for this ID
+      const idSymbol = symbol ? `${symbol.toUpperCase()}_${tokenId}` : `ID_${tokenId}`;
+      
+      token = {
+        address: tokenAddress,
+        symbol: idSymbol,
+        name: name ? `${name} ID ${tokenId}` : `Token ID ${tokenId}`,
+        decimals: decimals || 18,
+        isERC6909: true,
+        id: tokenId,
+      };
+    } else {
+      // Check if it's ERC6909 without ID
+      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
+      
+      if (isERC6909) {
+        throw new Error("This is an ERC6909 contract - please provide a token ID");
+      }
+
+      // Standard ERC20 token
+      const [name, symbol, decimals] = await zWalletContract.getMetadata(
+        tokenAddress
+      );
+
+      if (!symbol || symbol === "") {
+        throw new Error("Could not fetch token metadata");
+      }
+
+      token = {
+        address: tokenAddress,
+        symbol: symbol.toUpperCase(),
+        name: name || symbol,
+        decimals: decimals,
+      };
     }
-
-    const token = {
-      address: tokenAddress,
-      symbol: symbol.toUpperCase(),
-      name: name || symbol,
-      decimals: decimals,
-    };
 
     // Check if already exists
     if (TOKENS[token.symbol]) {
@@ -3453,34 +4133,28 @@ async function sendTransaction() {
     2
   )}`;
 
-  // Prepare transaction calldata
+  // Prepare transaction calldata using zWallet helpers
   let calldata = '0x';
   if (selectedToken === 'ETH') {
     // ETH transfers have no calldata
     calldata = '0x';
   } else {
-    // ERC20 transfer calldata
     const token = TOKENS[selectedToken];
+    const amountWei = ethers.parseUnits(amount.toString(), token.decimals);
+    
     if (token.isERC6909) {
-      // ERC6909 transferFrom calldata
-      const iface = new ethers.Interface([
-        "function transferFrom(address from, address to, uint256 id, uint256 amount)"
-      ]);
-      calldata = iface.encodeFunctionData("transferFrom", [
-        wallet.address,
+      // Use zWallet helper for ERC6909 transfer
+      calldata = await zWalletContract.getERC6909Transfer(
         toAddress,
-        token.id,
-        ethers.parseUnits(amount.toString(), token.decimals)
-      ]);
+        BigInt(token.id),
+        amountWei
+      );
     } else {
-      // Standard ERC20 transfer calldata
-      const iface = new ethers.Interface([
-        "function transfer(address to, uint256 amount)"
-      ]);
-      calldata = iface.encodeFunctionData("transfer", [
+      // Use zWallet helper for ERC20 transfer
+      calldata = await zWalletContract.getERC20Transfer(
         toAddress,
-        ethers.parseUnits(amount.toString(), token.decimals)
-      ]);
+        amountWei
+      );
     }
   }
 
@@ -3647,6 +4321,174 @@ async function sendTransaction() {
   }
 }
 
+// IOU Functions for USDC EIP-3009
+async function createIOUSlip() {
+  const toInput = document.getElementById("toAddress").value.trim();
+  const amount = document.getElementById("amount").value;
+  const status = document.getElementById("txStatus");
+
+  if (!toInput || !amount || !wallet) {
+    status.innerHTML = '<div class="status error">Fill all fields</div>';
+    return;
+  }
+  
+  // Validate amount
+  const numAmount = parseFloat(amount);
+  if (isNaN(numAmount) || numAmount <= 0) {
+    status.innerHTML = '<div class="status error">Invalid amount</div>';
+    return;
+  }
+  
+  // Check for too many decimals for USDC (max 6)
+  const decimals = (amount.split('.')[1] || '').length;
+  if (decimals > 6) {
+    status.innerHTML = '<div class="status error">USDC supports max 6 decimals</div>';
+    return;
+  }
+
+  try {
+    // Resolve ENS if needed
+    let toAddress = toInput;
+    if (toInput.endsWith(".eth")) {
+      toAddress = await resolveENS(toInput);
+      if (!toAddress) {
+        status.innerHTML = '<div class="status error">ENS not found</div>';
+        return;
+      }
+    }
+
+    if (!ethers.isAddress(toAddress)) {
+      status.innerHTML = '<div class="status error">Invalid address</div>';
+      return;
+    }
+
+    // Prepare IOU data
+    const value = ethers.parseUnits(amount, 6); // USDC has 6 decimals
+    const validAfter = 0; // Can be used immediately
+    const validDays = 30; // Valid for 30 days by default
+    const now = Math.floor(Date.now() / 1000);
+    const validBefore = now + (validDays * 86400);
+    const nonce = ethers.hexlify(ethers.randomBytes(32));
+
+    // Update modal with preview
+    document.getElementById("iouFrom").textContent = `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`;
+    document.getElementById("iouTo").textContent = toInput.endsWith(".eth") 
+      ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
+      : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
+    document.getElementById("iouAmount").textContent = `${amount} USDC`;
+    document.getElementById("iouExpiry").textContent = new Date(validBefore * 1000).toLocaleString();
+
+    // Prepare EIP-712 message
+    const message = {
+      from: wallet.address,
+      to: toAddress,
+      value: value.toString(),
+      validAfter: String(validAfter),
+      validBefore: String(validBefore),
+      nonce: nonce
+    };
+
+    // Store message for signing
+    pendingIouMessage = message;
+    pendingIouAmount = amount;
+
+    // Show preview in modal
+    const iouData = {
+      type: "transfer",
+      from: wallet.address,
+      to: toAddress,
+      value: value.toString(),
+      amount: amount,
+      validAfter: validAfter,
+      validBefore: validBefore,
+      nonce: nonce,
+      created: new Date().toISOString(),
+      chainId: 1
+    };
+
+    document.getElementById("iouDataDisplay").value = JSON.stringify(iouData, null, 2);
+
+    // Show modal
+    document.getElementById("iouPreviewModal").classList.remove("hidden");
+
+  } catch (err) {
+    console.error("IOU creation error:", err);
+    status.innerHTML = '<div class="status error">Failed to create IOU</div>';
+  }
+}
+
+async function signAndDownloadIOU() {
+  try {
+    if (!pendingIouMessage || !wallet) {
+      throw new Error("No IOU message to sign");
+    }
+
+    const status = document.getElementById("txStatus");
+    status.innerHTML = '<div class="status">Signing IOU...</div>';
+
+    // Sign EIP-712 message
+    const types = { TransferWithAuthorization: EIP3009_TYPES.TransferWithAuthorization };
+    const signature = await wallet.signTypedData(USDC_EIP712_DOMAIN, types, pendingIouMessage);
+    
+    // Extract v, r, s from signature
+    const sig = ethers.Signature.from(signature);
+    const v = sig.v;
+    const r = sig.r;
+    const s = sig.s;
+
+    // Create complete IOU slip
+    const iouSlip = {
+      type: "transfer",
+      from: pendingIouMessage.from,
+      to: pendingIouMessage.to,
+      value: pendingIouMessage.value,
+      validAfter: Number(pendingIouMessage.validAfter),
+      validBefore: Number(pendingIouMessage.validBefore),
+      nonce: pendingIouMessage.nonce,
+      v: v,
+      r: r,
+      s: s,
+      amount: pendingIouAmount,
+      signature: signature,
+      created: new Date().toISOString(),
+      chainId: 1
+    };
+
+    // Download as JSON file
+    const blob = new Blob([JSON.stringify(iouSlip, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `usdc-iou-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Update display
+    document.getElementById("iouDataDisplay").value = JSON.stringify(iouSlip, null, 2);
+    
+    status.innerHTML = '<div class="status success">IOU signed and downloaded!</div>';
+    showToast("IOU created successfully! 📄🪽");
+
+    // Clear form
+    document.getElementById("toAddress").value = "";
+    document.getElementById("amount").value = "";
+
+    // Clean up
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+
+  } catch (err) {
+    console.error("IOU signing error:", err);
+    let errorMsg = "Failed to sign IOU";
+    
+    if (err.message.includes("user rejected") || err.message.includes("denied")) {
+      errorMsg = "Signature rejected";
+    }
+    
+    document.getElementById("txStatus").innerHTML = `<div class="status error">${errorMsg}</div>`;
+  }
+}
+
 function setupEventListeners() {
   // Theme toggle
   document.getElementById("themeToggle").addEventListener("click", toggleTheme);
@@ -3731,7 +4573,8 @@ function setupEventListeners() {
 
         localStorage.setItem(LS_LAST, addr);
         showToast("Wallet unlocked!");
-      } catch {
+      } catch (err) {
+        console.error("Unlock error:", err);
         alert("Wrong password");
         e.target.value = "";
       }
@@ -3834,10 +4677,38 @@ function setupEventListeners() {
     document.getElementById("newTokenAddress").focus();
   });
 
+  // Live detection of token type
+  document.getElementById("newTokenAddress")?.addEventListener("input", async (e) => {
+    const address = e.target.value.trim();
+    const indicator = document.getElementById("tokenTypeIndicator");
+    
+    if (!address || !ethers.isAddress(address)) {
+      indicator.classList.add("hidden");
+      return;
+    }
+    
+    try {
+      const isERC6909 = await zWalletContract.isERC6909(address);
+      if (isERC6909) {
+        indicator.textContent = "✓ ERC6909 detected - Token ID required";
+        indicator.style.color = "var(--success)";
+        document.getElementById("newTokenId").placeholder = "Token ID (required for ERC6909)";
+      } else {
+        indicator.textContent = "✓ ERC20 token detected";
+        indicator.style.color = "var(--text-secondary)";
+        document.getElementById("newTokenId").placeholder = "Token ID (for ERC6909, optional)";
+      }
+      indicator.classList.remove("hidden");
+    } catch (err) {
+      indicator.classList.add("hidden");
+    }
+  });
+
   document
     .getElementById("confirmAddToken")
     .addEventListener("click", async () => {
       const address = document.getElementById("newTokenAddress").value.trim();
+      const tokenId = document.getElementById("newTokenId").value.trim();
       const symbolOverride = document
         .getElementById("newTokenSymbol")
         .value.trim();
@@ -3845,22 +4716,37 @@ function setupEventListeners() {
       if (!address) return;
 
       try {
-        const token = await addCustomToken(address);
+        const token = await addCustomToken(address, tokenId);
 
         // Use override symbol if provided
         if (symbolOverride) {
-          token.symbol = symbolOverride.toUpperCase();
+          // For ERC6909, append ID to symbol
+          if (token.isERC6909) {
+            token.symbol = `${symbolOverride.toUpperCase()}_${token.id}`;
+          } else {
+            token.symbol = symbolOverride.toUpperCase();
+          }
         }
 
-        saveCustomToken(address, token);
+        // Generate unique key for storage
+        const storageKey = token.isERC6909 ? `${address}_${token.id}` : address;
+        saveCustomToken(storageKey, token);
 
         // Hide the form
         document.getElementById("addTokenSection").classList.add("hidden");
         document.getElementById("newTokenAddress").value = "";
+        document.getElementById("newTokenId").value = "";
         document.getElementById("newTokenSymbol").value = "";
+        document.getElementById("tokenTypeIndicator").classList.add("hidden");
 
         // Refresh balances to include new token
         await fetchAllBalances();
+        
+        // Refresh swap dropdowns to include new token
+        if (typeof initializeTokenDropdowns === 'function') {
+          initializeTokenDropdowns();
+        }
+        
         showToast(`Added ${token.symbol}!`);
       } catch (err) {
         alert("Error adding token: " + err.message);
@@ -3965,6 +4851,96 @@ function setupEventListeners() {
     });
 
   document.getElementById("sendBtn").addEventListener("click", sendTransaction);
+  
+  // IOU Mode functionality
+  document.getElementById("createIouBtn")?.addEventListener("click", createIOUSlip);
+  
+  document.getElementById("iouModeToggle")?.addEventListener("change", (e) => {
+    const isIouMode = e.target.checked;
+    const gasFeeSection = document.getElementById("gasFeeSection");
+    const sendBtn = document.getElementById("sendBtn");
+    const createIouBtn = document.getElementById("createIouBtn");
+    const iouModeInfo = document.getElementById("iouModeInfo");
+    
+    if (isIouMode) {
+      // Switch to IOU mode
+      gasFeeSection.style.display = "none";
+      sendBtn.classList.add("hidden");
+      createIouBtn.classList.remove("hidden");
+      iouModeInfo.style.display = "block";
+      
+      // Update gas display to show "Free!"
+      const estimatedTotalEl = document.getElementById("estimatedTotal");
+      if (estimatedTotalEl) {
+        estimatedTotalEl.innerHTML = '<span style="color: var(--success);">🪽 Free! (Gasless)</span>';
+      }
+    } else {
+      // Switch back to normal mode
+      gasFeeSection.style.display = "block";
+      sendBtn.classList.remove("hidden");
+      createIouBtn.classList.add("hidden");
+      iouModeInfo.style.display = "none";
+      
+      // Restore normal gas display
+      updateEstimatedTotal();
+    }
+  });
+  
+  // IOU Modal event listeners
+  document.getElementById("iouModalClose")?.addEventListener("click", () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    // Clean up pending data
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+  });
+  
+  document.getElementById("confirmIouBtn")?.addEventListener("click", async () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    await signAndDownloadIOU();
+  });
+  
+  document.getElementById("cancelIouBtn")?.addEventListener("click", () => {
+    document.getElementById("iouPreviewModal").classList.add("hidden");
+    // Clean up pending data
+    pendingIouMessage = null;
+    pendingIouAmount = null;
+  });
+  
+  document.getElementById("toggleIouData")?.addEventListener("click", (e) => {
+    const section = document.getElementById("iouDataSection");
+    if (section.classList.contains("hidden")) {
+      section.classList.remove("hidden");
+      e.target.textContent = "Hide";
+    } else {
+      section.classList.add("hidden");
+      e.target.textContent = "Show";
+    }
+  });
+  
+  document.getElementById("copyIouData")?.addEventListener("click", () => {
+    const data = document.getElementById("iouDataDisplay").value;
+    navigator.clipboard.writeText(data).then(() => {
+      showToast("IOU data copied! 📋");
+    }).catch(() => {
+      // Fallback for older browsers
+      const textarea = document.getElementById("iouDataDisplay");
+      textarea.select();
+      document.execCommand("copy");
+      showToast("IOU data copied! 📋");
+    });
+  });
+  
+  document.getElementById("downloadIou")?.addEventListener("click", () => {
+    const data = document.getElementById("iouDataDisplay").value;
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `usdc-iou-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("IOU downloaded! 💾");
+  });
 
   // Settings
   document.querySelectorAll(".rpc-item").forEach((item) => {
@@ -4014,7 +4990,8 @@ function setupEventListeners() {
         showToast("Custom RPC saved!");
         document.getElementById("customRpcSection").classList.add("hidden");
         loadRpcSettings();
-      } catch {
+      } catch (err) {
+        console.error("RPC test failed:", err);
         alert("Invalid RPC URL");
       }
     });
@@ -4032,6 +5009,50 @@ function setupEventListeners() {
     }
     localStorage.setItem("auto_refresh", e.target.checked);
   });
+
+  // Default wallet toggle handler
+  const defaultWalletToggle = document.getElementById("defaultWallet");
+  const defaultWalletInfo = document.getElementById("defaultWalletInfo");
+  
+  if (defaultWalletToggle) {
+    // Load saved setting
+    (typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.get : (keys, callback) => callback({}))(['zwalletDefault'], (result) => {
+      if (result.zwalletDefault) {
+        defaultWalletToggle.checked = true;
+        defaultWalletInfo.classList.remove('hidden');
+      }
+    });
+    
+    defaultWalletToggle.addEventListener("change", (e) => {
+      const isDefault = e.target.checked;
+      
+      // Save setting
+      (typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.set : (data, callback) => callback && callback())({ zwalletDefault: isDefault }, () => {
+        console.log('[zWallet] Default wallet setting:', isDefault);
+        
+        // Show/hide info box
+        if (isDefault) {
+          defaultWalletInfo.classList.remove('hidden');
+          showToast('⚡ Default wallet activated! Refresh dApp tabs.');
+        } else {
+          defaultWalletInfo.classList.add('hidden');
+          showToast('Default wallet mode disabled');
+        }
+        
+        // Notify all tabs about the setting change
+        (typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.query : (query, callback) => callback([]))({}, (tabs) => {
+          tabs.forEach(tab => {
+            (typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.sendMessage : () => Promise.reject('Not in extension'))(tab.id, {
+              type: 'SETTINGS_UPDATED',
+              isDefault: isDefault
+            }).catch(() => {
+              // Ignore errors for tabs without content script
+            });
+          });
+        });
+      });
+    });
+  }
 
   // Private Key Management in Settings
   document.getElementById("revealKeyBtn")?.addEventListener("click", () => {
@@ -4122,8 +5143,9 @@ function setupEventListeners() {
 // ============= SWAP FUNCTIONALITY =============
 const ZROUTER_ADDRESS = "0x0000000000404FECAf36E6184245475eE1254835";
 const ZROUTER_ABI = [
-  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
-  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
+  // swapVZ for ERC6909 tokens (ZAMM and others)
+  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
+  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
 ];
 
 // zQuoter ABI for getting best quotes
@@ -4132,11 +5154,107 @@ const ZQUOTER_ABI = [
   "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
 ];
 
-// Multicall3 contract (deployed on Ethereum mainnet)
-const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
-const MULTICALL3_ABI = [
-  "function tryAggregate(bool requireSuccess, (address target, bytes callData)[] calls) returns ((bool success, bytes returnData)[] returnData)"
-];
+// Note: Multicall3 is for batching view calls only, not state-changing transactions
+// Each approval must be a separate transaction
+
+// Helper to calculate pool ID for ERC6909 pairs
+function calculatePoolId(id0, id1, token0, token1, swapFee) {
+  // Pool key is keccak256(id0, id1, token0, token1, swapFee)
+  const abiCoder = new ethers.AbiCoder();
+  const encoded = abiCoder.encode(
+    ["uint256", "uint256", "address", "address", "uint256"],
+    [id0, id1, token0, token1, swapFee]
+  );
+  return ethers.keccak256(encoded);
+}
+
+// Calculate swap output for ERC6909 tokens using constant product formula
+async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
+  try {
+    const fromToken = TOKENS[tokenIn];
+    const toToken = TOKENS[tokenOut];
+    
+    // Check if this is an ERC6909 swap
+    if (!fromToken?.isERC6909 && !toToken?.isERC6909) {
+      return null; // Not an ERC6909 swap
+    }
+    
+    // For now, we only support ETH pairs with ERC6909
+    const isETHIn = tokenIn === "ETH";
+    const isETHOut = tokenOut === "ETH";
+    
+    if (!isETHIn && !isETHOut) {
+      return null; // Not an ETH pair
+    }
+    
+    // Determine which ZAMM contract to use
+    const isZAMM = (fromToken?.id === ZAMM_ID) || (toToken?.id === ZAMM_ID);
+    const zammAddress = isZAMM ? ZAMM_0_ADDRESS : ZAMM_1_ADDRESS;
+    
+    // Create contract instance
+    const zammContract = new ethers.Contract(
+      zammAddress,
+      ZAMM_AMM_ABI,
+      provider
+    );
+    
+    // Calculate pool ID - for ERC6909, we need the actual contract address
+    const token0 = isETHIn ? ethers.ZeroAddress : (fromToken.isERC6909 ? fromToken.address : fromToken.address);
+    const token1 = isETHOut ? ethers.ZeroAddress : (toToken.isERC6909 ? toToken.address : toToken.address);
+    const id0 = isETHIn ? 0n : BigInt(fromToken.id || 0);
+    const id1 = isETHOut ? 0n : BigInt(toToken.id || 0);
+    
+    // Sort tokens for pool key - addresses are compared as hex strings
+    const shouldSort = token0.toLowerCase() < token1.toLowerCase();
+    const sortedToken0 = shouldSort ? token0 : token1;
+    const sortedToken1 = shouldSort ? token1 : token0;
+    const sortedId0 = shouldSort ? id0 : id1;
+    const sortedId1 = shouldSort ? id1 : id0;
+    
+    // Determine swap direction (zeroForOne means swapping token0 for token1)
+    const zeroForOne = (tokenIn === "ETH" && shouldSort) || (tokenIn !== "ETH" && !shouldSort);
+    
+    // Default swap fee is 100 bps (1%)
+    const swapFee = 100;
+    
+    // Calculate pool ID
+    const poolId = calculatePoolId(sortedId0, sortedId1, sortedToken0, sortedToken1, swapFee);
+    
+    // Get pool reserves
+    const poolData = await zammContract.pools(poolId);
+    const reserve0 = Number(poolData[0]);
+    const reserve1 = Number(poolData[1]);
+    
+    if (reserve0 === 0 || reserve1 === 0) {
+      console.log("No liquidity in ERC6909 pool");
+      return null;
+    }
+    
+    // Calculate output using constant product formula with fee
+    // zeroForOne means we're swapping sorted token0 for sorted token1
+    const reserveIn = zeroForOne ? reserve0 : reserve1;
+    const reserveOut = zeroForOne ? reserve1 : reserve0;
+    
+    const amountInBigInt = BigInt(amountIn);
+    const amountInWithFee = amountInBigInt * BigInt(10000 - swapFee);
+    const numerator = amountInWithFee * BigInt(reserveOut);
+    const denominator = (BigInt(reserveIn) * 10000n) + amountInWithFee;
+    const amountOut = numerator / denominator;
+    
+    return {
+      amountOut,
+      poolId,
+      zammAddress,
+      swapFee,
+      reserve0,
+      reserve1,
+      zeroForOne
+    };
+  } catch (err) {
+    console.error("Error calculating ERC6909 swap output:", err);
+    return null;
+  }
+}
 
 // Swap state
 let swapFromToken = "ETH";
@@ -4166,32 +5284,26 @@ const V4_TICK_SPACINGS = {
 };
 
 async function setupSwapEventListeners() {
-  // Token selector dropdowns
-  // Initialize swap token displays
-  function updateSwapTokenDisplay(which) {
-    const token = which === 'from' ? swapFromToken : swapToToken;
-    const iconEl = document.getElementById(which === 'from' ? 'swapFromTokenIcon' : 'swapToTokenIcon');
-    const displayEl = document.getElementById(which === 'from' ? 'swapFromTokenDisplay' : 'swapToTokenDisplay');
-    
-    if (iconEl && displayEl) {
-      iconEl.innerHTML = TOKEN_LOGOS[token] || '💰';
-      displayEl.textContent = token;
-    }
-  }
   
   // Function to initialize token dropdowns with logos
   function initializeTokenDropdowns() {
-    const swapTokens = ['ETH', 'USDC', 'USDT', 'DAI', 'ENS'];
+    // Get all available tokens including custom ones
+    const swapTokens = Object.keys(TOKENS);
     
     // Populate from dropdown
     const fromDropdown = document.getElementById('swapFromDropdown');
     if (fromDropdown) {
-      fromDropdown.innerHTML = swapTokens.map(token => `
-        <div class="token-option" data-token="${token}">
-          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
-          <span class="token-option-symbol">${token}</span>
-        </div>
-      `).join('');
+      fromDropdown.innerHTML = swapTokens.map(symbol => {
+        const token = TOKENS[symbol];
+        const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
+        return `
+          <div class="token-option" data-token="${symbol}" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.2s;">
+            <div class="token-option-icon" style="width: 24px; height: 24px;">${logo}</div>
+            <span class="token-option-symbol" style="font-weight: 500;">${symbol}</span>
+            ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
+          </div>
+        `;
+      }).join('');
       
       // Add click handlers
       fromDropdown.querySelectorAll('.token-option').forEach(option => {
@@ -4201,6 +5313,24 @@ async function setupSwapEventListeners() {
           updateSwapTokenDisplay('from');
           updateSwapBalances();
           fromDropdown.classList.add('hidden');
+          
+          // Re-initialize to dropdown based on new from token
+          initializeTokenDropdowns();
+          
+          // Check if current to token is still valid
+          const fromToken = TOKENS[swapFromToken];
+          const toToken = TOKENS[swapToToken];
+          
+          if (fromToken?.isERC6909 && swapToToken !== 'ETH') {
+            // Force to ETH if from is ERC6909
+            swapToToken = 'ETH';
+            updateSwapTokenDisplay('to');
+          } else if (toToken?.isERC6909 && swapFromToken !== 'ETH') {
+            // If to is ERC6909 but from is not ETH, switch to ETH
+            swapToToken = 'ETH';
+            updateSwapTokenDisplay('to');
+          }
+          
           if (document.getElementById("swapFromAmount").value) {
             simulateSwap();
           }
@@ -4208,15 +5338,37 @@ async function setupSwapEventListeners() {
       });
     }
     
-    // Populate to dropdown
+    // Populate to dropdown - dynamically filter based on from token
     const toDropdown = document.getElementById('swapToDropdown');
     if (toDropdown) {
-      toDropdown.innerHTML = swapTokens.map(token => `
-        <div class="token-option" data-token="${token}">
-          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
-          <span class="token-option-symbol">${token}</span>
-        </div>
-      `).join('');
+      // If from token is ERC6909, only show ETH
+      // If from token is ETH, show all tokens
+      // If from token is ERC20, show ETH and other ERC20s (not ERC6909)
+      let toTokens;
+      const fromToken = TOKENS[swapFromToken];
+      
+      if (fromToken?.isERC6909) {
+        // ERC6909 can only swap with ETH
+        toTokens = ['ETH'];
+      } else if (swapFromToken === 'ETH') {
+        // ETH can swap with anything
+        toTokens = swapTokens;
+      } else {
+        // ERC20 can swap with ETH and other ERC20s, but not ERC6909
+        toTokens = swapTokens.filter(symbol => !TOKENS[symbol].isERC6909);
+      }
+      
+      toDropdown.innerHTML = toTokens.map(symbol => {
+        const token = TOKENS[symbol];
+        const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
+        return `
+          <div class="token-option" data-token="${symbol}" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.2s;">
+            <div class="token-option-icon" style="width: 24px; height: 24px;">${logo}</div>
+            <span class="token-option-symbol" style="font-weight: 500;">${symbol}</span>
+            ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
+          </div>
+        `;
+      }).join('');
       
       // Add click handlers
       toDropdown.querySelectorAll('.token-option').forEach(option => {
@@ -4272,6 +5424,16 @@ async function setupSwapEventListeners() {
   
   // Swap direction button
   document.getElementById("swapDirectionBtn")?.addEventListener("click", () => {
+    // Check if swap is valid before allowing
+    const fromToken = TOKENS[swapFromToken];
+    const toToken = TOKENS[swapToToken];
+    
+    // Don't allow swapping if it would create an invalid pair
+    if (fromToken?.isERC6909 && toToken?.isERC6909) {
+      showToast("Cannot swap between two ERC6909 tokens");
+      return;
+    }
+    
     // Swap tokens
     const temp = swapFromToken;
     swapFromToken = swapToToken;
@@ -4287,6 +5449,9 @@ async function setupSwapEventListeners() {
     updateSwapTokenDisplay('from');
     updateSwapTokenDisplay('to');
     updateSwapBalances();
+    
+    // Re-initialize dropdowns with new restrictions
+    initializeTokenDropdowns();
     
     if (fromAmount || toAmount) {
       simulateSwap();
@@ -4570,42 +5735,66 @@ async function setupSwapEventListeners() {
     document.getElementById("swapConfirmModal")?.classList.add("hidden");
   });
   
-  // Initialize swap display
+  // Initialize token dropdowns and display
+  initializeTokenDropdowns();
   updateSwapTokenDisplay();
   updateSwapBalances();
 }
 
 // Update swap token display
-function updateSwapTokenDisplay() {
-  // Update From token
-  const fromIcon = document.getElementById("swapFromIcon");
-  const fromSymbol = document.getElementById("swapFromSymbol");
-  if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
-  if (fromSymbol) fromSymbol.textContent = swapFromToken;
+function updateSwapTokenDisplay(which = 'both') {
+  if (which === 'from' || which === 'both') {
+    const fromIcon = document.getElementById("swapFromTokenIcon");
+    const fromDisplay = document.getElementById("swapFromTokenDisplay");
+    if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
+    if (fromDisplay) fromDisplay.textContent = swapFromToken;
+  }
   
-  // Update To token
-  const toIcon = document.getElementById("swapToIcon");
-  const toSymbol = document.getElementById("swapToSymbol");
-  if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
-  if (toSymbol) toSymbol.textContent = swapToToken;
+  if (which === 'to' || which === 'both') {
+    const toIcon = document.getElementById("swapToTokenIcon");
+    const toDisplay = document.getElementById("swapToTokenDisplay");
+    if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
+    if (toDisplay) toDisplay.textContent = swapToToken;
+  }
 }
 
-function updateSwapBalances() {
+async function updateSwapBalances() {
   const fromBalance = document.getElementById("swapFromBalance");
   const toBalance = document.getElementById("swapToBalance");
   
   if (fromBalance) {
     const balanceObj = currentBalances[swapFromToken];
     const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance);
-    fromBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+    const numBalance = parseFloat(balance) || 0;
+    fromBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
   }
   
   if (toBalance) {
     const balanceObj = currentBalances[swapToToken];
     const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance);
-    toBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+    const numBalance = parseFloat(balance) || 0;
+    toBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+  }
+  
+  // Check approval status for non-ETH tokens
+  if (swapFromToken !== "ETH" && zWalletContract && wallet) {
+    const token = TOKENS[swapFromToken];
+    if (token && token.address) {
+      try {
+        const approvalNeeded = token.isERC6909 
+          ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
+          : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
+        
+        // Add visual indicator if approval is needed
+        const indicator = document.getElementById("swapFromApprovalIndicator");
+        if (indicator) {
+          indicator.style.display = (approvalNeeded && approvalNeeded !== "0x") ? "inline" : "none";
+          indicator.title = "Approval required for first swap";
+        }
+      } catch (err) {
+        console.debug("Approval check failed:", err);
+      }
+    }
   }
 }
 
@@ -4682,13 +5871,51 @@ async function simulateSwap() {
     const truncated = parseFloat(amountIn).toFixed(maxDecimals);
     const swapAmount = ethers.parseUnits(truncated, maxDecimals);
     
-    // Create zQuoter contract instance
-    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+    // Check if this is an ERC6909 swap first
+    const erc6909Result = await calculateERC6909SwapOutput(swapFromToken, swapToToken, swapAmount);
     
-    let quotesResult, bestQuote, allQuotes;
+    if (erc6909Result) {
+      // This is an ERC6909 swap, use the calculated output
+      const outputAmount = erc6909Result.amountOut;
+      const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
+      
+      // Update UI with ERC6909 quote
+      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      document.getElementById("swapRoute").textContent = `ZAMM AMM (${erc6909Result.swapFee / 100}% fee)`;
+      document.getElementById("swapBtn").textContent = "Swap";
+      document.getElementById("swapBtn").disabled = false;
+      
+      // Store the route for execution
+      bestSwapRoute = {
+        isERC6909: true,
+        tokenIn: tokenInAddress,
+        tokenOut: tokenOutAddress,
+        idIn: fromToken?.id || 0,
+        idOut: toToken?.id || 0,
+        amountIn: swapAmount,
+        amountOut: outputAmount,
+        slippage: swapSlippage,
+        sourceName: "ZAMM AMM",
+        poolId: erc6909Result.poolId,
+        zammAddress: erc6909Result.zammAddress,
+        swapFee: erc6909Result.swapFee,
+        zeroForOne: erc6909Result.zeroForOne
+      };
+      
+      updateSwapUSDValues();
+      return;
+    }
+    
+    // Not an ERC6909 swap, use zQuoter for regular tokens
+    if (!zQuoterContract) {
+      console.error("zQuoter contract not initialized");
+      return;
+    }
+    
+    let quotesResult, bestQuote;
     try {
       // Get quotes from zQuoter (exactOut = false for exactIn mode)
-      quotesResult = await quoter.getQuotes(
+      quotesResult = await zQuoterContract.getQuotes(
         false, // exactOut = false (we're doing exactIn)
         tokenInAddress,
         tokenOutAddress,
@@ -4696,7 +5923,6 @@ async function simulateSwap() {
       );
       
       bestQuote = quotesResult.best;
-      allQuotes = quotesResult.quotes;
     } catch (quoterError) {
       console.error("Quoter error:", quoterError);
       // If quoter fails, show a more specific error
@@ -4771,8 +5997,13 @@ async function simulateSwap() {
 }
 
 async function executeSwap() {
-  if (!wallet || !bestSwapRoute) {
-    showToast("No swap route available");
+  if (!wallet) {
+    showToast("Please connect wallet first");
+    return;
+  }
+  
+  if (!bestSwapRoute) {
+    showToast("Please enter amount to get quote first");
     return;
   }
   
@@ -4784,32 +6015,76 @@ async function executeSwap() {
       if (!needsApproval) return;
     }
     
-    // Create zQuoter contract instance
-    const quoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
-    
-    // Get the swap calldata from buildBestSwap
+    let callData, msgValue;
     const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour deadline
-    const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
     
-    let swapData;
-    try {
-      swapData = await quoter.buildBestSwap(
-        wallet.address,
+    if (bestSwapRoute.isERC6909) {
+      // Handle ERC6909 swap using swapVZ
+      const fromToken = TOKENS[swapFromToken];
+      const toToken = TOKENS[swapToToken];
+      
+      // For ZAMM, use max deadline to use the old ZAMM_0 contract
+      const vzDeadline = fromToken?.id === ZAMM_ID || toToken?.id === ZAMM_ID 
+        ? ethers.MaxUint256 
+        : deadline;
+      
+      // Calculate minimum output with slippage
+      const minOutput = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
+      
+      // Create zRouter contract instance
+      const zRouter = new ethers.Contract(ZROUTER_ADDRESS, ZROUTER_ABI, wallet);
+      
+      // Build swapVZ calldata - need actual token addresses for ERC6909
+      const tokenInAddr = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
+      const tokenOutAddr = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+      const idIn = swapFromToken === "ETH" ? 0n : BigInt(fromToken.id || 0);
+      const idOut = swapToToken === "ETH" ? 0n : BigInt(toToken.id || 0);
+      
+      const swapVZCall = zRouter.interface.encodeFunctionData("swapVZ", [
+        wallet.address, // to
         false, // exactOut = false
-        bestSwapRoute.tokenIn,
-        bestSwapRoute.tokenOut,
-        bestSwapRoute.amountIn,
-        slippageBps,
-        deadline
-      );
-    } catch (err) {
-      console.error("Failed to build swap:", err);
-      showToast("Failed to prepare swap");
-      return;
+        bestSwapRoute.swapFee, // feeOrHook (100 bps = 1%)
+        tokenInAddr, // tokenIn
+        tokenOutAddr, // tokenOut
+        idIn, // idIn
+        idOut, // idOut
+        bestSwapRoute.amountIn, // swapAmount
+        minOutput, // amountLimit
+        vzDeadline // deadline
+      ]);
+      
+      callData = swapVZCall;
+      msgValue = swapFromToken === "ETH" ? bestSwapRoute.amountIn : 0n;
+      
+    } else {
+      // Use zQuoter for regular token swaps
+      if (!zQuoterContract) {
+        throw new Error("zQuoter contract not initialized");
+      }
+      
+      const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
+      
+      let swapData;
+      try {
+        swapData = await zQuoterContract.buildBestSwap(
+          wallet.address,
+          false, // exactOut = false
+          bestSwapRoute.tokenIn,
+          bestSwapRoute.tokenOut,
+          bestSwapRoute.amountIn,
+          slippageBps,
+          deadline
+        );
+      } catch (err) {
+        console.error("Failed to build swap:", err);
+        showToast("Failed to prepare swap");
+        return;
+      }
+      
+      // Extract the calldata and value
+      callData = swapData.callData;
+      msgValue = swapData.msgValue;
     }
-    
-    // Extract the calldata and value
-    const { callData, msgValue } = swapData;
     
     // Show confirmation modal
     const modal = document.getElementById("swapConfirmModal");
@@ -4937,19 +6212,19 @@ async function checkAndRequestApproval(token, amount) {
   try {
     // Handle ERC6909 tokens (like ZAMM)
     if (token.isERC6909) {
-      // Check operator approval for ERC6909
-      const erc6909Contract = new ethers.Contract(
-        token.address,
-        [
-          "function isOperator(address owner, address spender) view returns (bool)",
-          "function setOperator(address spender, bool approved) returns (bool)"
-        ],
-        provider
+      // Use zWallet contract helper to check if operator approval is needed
+      if (!zWalletContract) {
+        throw new Error("zWallet contract not initialized");
+      }
+      
+      // Get the approval payload if needed (returns empty bytes if already approved)
+      // This checks if zRouter is an operator for the user on the ERC6909 token contract
+      const approvalPayload = await zWalletContract.checkERC6909RouterIsOperator(
+        wallet.address,
+        token.address
       );
       
-      const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
-      
-      if (isApproved) {
+      if (!approvalPayload || approvalPayload === "0x") {
         return true; // Already approved as operator
       }
       
@@ -4960,9 +6235,16 @@ async function checkAndRequestApproval(token, amount) {
       
       document.getElementById("swapStatus").innerHTML = '<div class="status">Setting operator approval...</div>';
       
-      // Set operator approval for ERC6909
-      const approveContract = new ethers.Contract(token.address, erc6909Contract.interface, wallet);
-      const approveTx = await approveContract.setOperator(ZROUTER_ADDRESS, true);
+      // Execute the approval using the generated calldata
+      const approveTx = await wallet.sendTransaction({
+        to: token.address,
+        data: approvalPayload,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: approvalPayload
+        })
+      });
       
       document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
       await approveTx.wait();
@@ -4972,15 +6254,20 @@ async function checkAndRequestApproval(token, amount) {
       
     } else {
       // Standard ERC20 approval flow
-      const tokenContract = new ethers.Contract(
+      if (!zWalletContract) {
+        throw new Error("zWallet contract not initialized");
+      }
+      
+      // Use zWallet helper to check if approval is needed and get calldata
+      // The 'true' parameter means approve max amount to avoid future approvals
+      const approvalPayload = await zWalletContract.checkERC20RouterApproval(
+        wallet.address,
         token.address,
-        ["function allowance(address owner, address spender) view returns (uint256)"],
-        provider
+        amount,
+        true // Use max approval
       );
       
-      const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
-      
-      if (allowance >= amount) {
+      if (!approvalPayload || approvalPayload === "0x") {
         return true; // Already approved
       }
       
@@ -4991,14 +6278,16 @@ async function checkAndRequestApproval(token, amount) {
       
       document.getElementById("swapStatus").innerHTML = '<div class="status">Approving token...</div>';
       
-      const approveContract = new ethers.Contract(
-        token.address,
-        ["function approve(address spender, uint256 amount) returns (bool)"],
-        wallet
-      );
-      
-      // Approve max amount to avoid future approvals
-      const approveTx = await approveContract.approve(ZROUTER_ADDRESS, ethers.MaxUint256);
+      // Execute the approval using the generated calldata
+      const approveTx = await wallet.sendTransaction({
+        to: token.address,
+        data: approvalPayload,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: approvalPayload
+        })
+      });
       
       document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
       await approveTx.wait();
@@ -5013,6 +6302,136 @@ async function checkAndRequestApproval(token, amount) {
     showToast("Approval failed");
     return false;
   }
+}
+
+// Batch check approval status for multiple tokens
+async function batchCheckApprovals(tokens, amounts = []) {
+  if (!zWalletContract || !wallet) return {};
+  
+  const approvalStatus = {};
+  
+  try {
+    // Process tokens in parallel for efficiency
+    const promises = tokens.map(async (token, index) => {
+      const amount = amounts[index] || ethers.MaxUint256;
+      
+      if (token.isERC6909) {
+        // Check ERC6909 operator status
+        const payload = await zWalletContract.checkERC6909RouterIsOperator(
+          wallet.address,
+          token.address
+        );
+        approvalStatus[token.address] = {
+          needsApproval: payload && payload !== "0x",
+          type: 'operator',
+          payload
+        };
+      } else {
+        // Check ERC20 allowance
+        const payload = await zWalletContract.checkERC20RouterApproval(
+          wallet.address,
+          token.address,
+          amount,
+          true // Max approval
+        );
+        approvalStatus[token.address] = {
+          needsApproval: payload && payload !== "0x",
+          type: 'allowance',
+          payload
+        };
+      }
+    });
+    
+    await Promise.all(promises);
+  } catch (err) {
+    console.error("Batch approval check error:", err);
+  }
+  
+  return approvalStatus;
+}
+
+// Pre-generate approval calldata for multiple tokens
+async function prepareApprovalCalldata(token, amount = ethers.MaxUint256) {
+  if (!zWalletContract) return null;
+  
+  try {
+    if (token.isERC6909) {
+      return await zWalletContract.getERC6909SetOperator(ZROUTER_ADDRESS, true);
+    } else {
+      return await zWalletContract.getERC20Approve(ZROUTER_ADDRESS, amount);
+    }
+  } catch (err) {
+    console.error("Error preparing approval calldata:", err);
+    return null;
+  }
+}
+
+// Execute multiple approvals sequentially (each requires separate transaction)
+async function executeApprovalSequence(approvalData) {
+  if (!wallet || !provider) return false;
+  
+  const results = [];
+  
+  for (const approval of approvalData) {
+    try {
+      const tx = await wallet.sendTransaction({
+        to: approval.tokenAddress,
+        data: approval.calldata,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: approval.tokenAddress,
+          data: approval.calldata
+        })
+      });
+      
+      showToast(`Approving ${approval.token}...`);
+      await tx.wait();
+      results.push({ token: approval.token, success: true });
+    } catch (err) {
+      console.error(`Approval failed for ${approval.token}:`, err);
+      results.push({ token: approval.token, success: false, error: err.message });
+    }
+  }
+  
+  const successCount = results.filter(r => r.success).length;
+  if (successCount === approvalData.length) {
+    showToast("All token approvals completed!");
+  } else if (successCount > 0) {
+    showToast(`${successCount}/${approvalData.length} approvals completed`);
+  } else {
+    showToast("Approvals failed");
+  }
+  
+  return results;
+}
+
+// Helper to check and prepare all necessary approvals
+async function prepareAllNecessaryApprovals() {
+  if (!zWalletContract || !wallet) return [];
+  
+  const approvals = [];
+  const tokensToCheck = Object.values(TOKENS).filter(t => t.address && t.symbol !== "ETH");
+  
+  for (const token of tokensToCheck) {
+    try {
+      const payload = token.isERC6909
+        ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
+        : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
+      
+      if (payload && payload !== "0x") {
+        approvals.push({
+          token: token.symbol,
+          tokenAddress: token.address,
+          calldata: payload,
+          type: token.isERC6909 ? 'operator' : 'allowance'
+        });
+      }
+    } catch (err) {
+      console.debug(`Failed to check approval for ${token.symbol}:`, err);
+    }
+  }
+  
+  return approvals;
 }
 
 async function showApprovalModal(token, isERC6909) {
@@ -5288,5 +6707,87 @@ if (document.readyState === 'loading') {
         </div>
       </div>
     </div>
+
+    <!-- IOU Preview Modal -->
+    <div id="iouPreviewModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📄🪽 USDC IOU Preview</h3>
+          <button class="modal-close" id="iouModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="info-box" style="margin-bottom: 16px; background: #e8f5ff; border-color: #2196F3;">
+            <p style="margin-bottom: 8px; font-weight: bold;">🪽 Free! Gasless Transfer</p>
+            <p style="font-size: 11px;">You're creating a signed authorization that allows the recipient to claim USDC later. They will pay the gas when claiming.</p>
+          </div>
+          
+          <div class="confirm-row">
+            <span class="confirm-label">Type:</span>
+            <span class="confirm-value" id="iouType">Transfer Authorization</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">From:</span>
+            <span class="confirm-value mono" id="iouFrom"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">To:</span>
+            <span class="confirm-value mono" id="iouTo"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Amount:</span>
+            <span class="confirm-value" id="iouAmount"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Valid for:</span>
+            <span class="confirm-value" id="iouValidDays">30 days</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Expires:</span>
+            <span class="confirm-value" id="iouExpiry"></span>
+          </div>
+          
+          <!-- EIP-712 Data Preview -->
+          <div style="margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: bold; font-size: 12px;">EIP-712 Signature Data</label>
+              <button id="toggleIouData" style="padding: 4px 8px; font-size: 11px;">Show</button>
+            </div>
+            <div id="iouDataSection" class="hidden" style="margin-top: 8px;">
+              <textarea id="iouDataDisplay" readonly style="width: 100%; height: 120px; font-family: 'Courier New', monospace; font-size: 10px; resize: none;"></textarea>
+              <div style="margin-top: 8px; display: flex; gap: 8px;">
+                <button id="copyIouData" style="flex: 1; padding: 6px; font-size: 11px;">📋 Copy JSON</button>
+                <button id="downloadIou" style="flex: 1; padding: 6px; font-size: 11px;">💾 Download</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmIouBtn" class="btn-confirm">Sign IOU</button>
+          <button id="cancelIouBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qrModal" class="modal hidden">
+      <div class="modal-content" style="max-width: 360px;">
+        <div class="modal-header">
+          <h3>Wallet QR Code</h3>
+          <button class="modal-close" id="qrModalClose">×</button>
+        </div>
+        <div class="modal-body" style="text-align: center;">
+          <img id="qrCodeImage" style="width: 256px; height: 256px; margin: 0 auto 16px;" />
+          <div class="info-box" style="font-size: 11px;">
+            <strong>Scan to Send</strong>
+            <div id="qrAddress" class="mono" style="word-break: break-all; margin-top: 8px;"></div>
+          </div>
+          <div style="margin-top: 16px; display: flex; gap: 8px;">
+            <button id="downloadQR" style="flex: 1;">Download QR</button>
+            <button id="copyQRAddress" style="flex: 1;">Copy Address</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </body>
 </html>

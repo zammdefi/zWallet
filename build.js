@@ -9,7 +9,41 @@ console.log('🔨 Building smart standalone zWallet...');
 let html = fs.readFileSync(path.join(__dirname, 'extension', 'popup.html'), 'utf8');
 
 // Read the popup.js content
-const popupJs = fs.readFileSync(path.join(__dirname, 'extension', 'popup.js'), 'utf8');
+let popupJs = fs.readFileSync(path.join(__dirname, 'extension', 'popup.js'), 'utf8');
+
+// Read visual-id.js content if it exists
+let visualIdJs = '';
+const visualIdPath = path.join(__dirname, 'extension', 'visual-id.js');
+if (fs.existsSync(visualIdPath)) {
+  visualIdJs = fs.readFileSync(visualIdPath, 'utf8');
+}
+
+// Wrap Chrome API calls for standalone version
+popupJs = popupJs.replace(/chrome\.storage\.local\.(get|set)/g, (match, method) => {
+  if (method === 'get') {
+    return `(typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.get : (keys, callback) => callback({}))`;
+  } else {
+    return `(typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.set : (data, callback) => callback && callback())`;
+  }
+});
+
+// Handle chrome.tabs API
+popupJs = popupJs.replace(/chrome\.tabs\.query/g, 
+  `(typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.query : (query, callback) => callback([]))`
+);
+
+popupJs = popupJs.replace(/chrome\.tabs\.sendMessage/g,
+  `(typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.sendMessage : () => Promise.reject('Not in extension'))`
+);
+
+// Handle chrome.runtime API
+popupJs = popupJs.replace(/chrome\.runtime\.sendMessage/g,
+  `(typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})`
+);
+
+popupJs = popupJs.replace(/chrome\.runtime\.onMessage\.addListener/g,
+  `(typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.onMessage.addListener : () => {})`
+);
 
 // Remove extension-specific meta tags
 html = html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/gi, '');
@@ -20,11 +54,19 @@ html = html.replace(
   '<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js" integrity="sha256-Jlrx7irtiV+Pl9aJ9t3aZ4iL6FcO6eYitSbJR4arfhI=" crossorigin="anonymous"></script>'
 );
 
-// Replace popup.js script tag with inline content
+// Remove visual-id.js script tag first (if exists)
+html = html.replace(/<script src="visual-id\.js"><\/script>\s*/g, '');
+
+// Replace popup.js script tag with combined inline content
+// Include visual-id.js first if it exists, then popup.js
+const combinedJs = visualIdJs ? `${visualIdJs}\n\n${popupJs}` : popupJs;
 html = html.replace(
   /<script src="popup\.js"><\/script>/g,
-  `<script>\n${popupJs}\n</script>`
+  `<script>\n${combinedJs}\n</script>`
 );
+
+// Make sure we don't have duplicate script tags
+html = html.replace(/<script>\s*<\/script>/g, '');
 
 // Add favicon if icon.txt exists
 if (fs.existsSync(path.join(__dirname, 'icon.txt'))) {
