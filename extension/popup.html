@@ -964,6 +964,15 @@
       .token-option:hover {
         background: var(--hover);
       }
+      
+      .token-option-icon {
+        flex-shrink: 0;
+      }
+      
+      .token-option-icon svg {
+        width: 100%;
+        height: 100%;
+      }
 
       .token-option-icon {
         width: 24px;
@@ -1190,20 +1199,26 @@
 
           <div id="walletSection" class="section hidden">
             <h2>Account</h2>
-            <div class="info-box">
-              <button class="copy-btn" data-copy="address">Copy</button>
-              <strong>Address</strong>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div class="mono" id="address" style="flex: 1;"></div>
-                <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                    <polyline points="15 3 21 3 21 9"></polyline>
-                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                  </svg>
-                </a>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+              <img id="blockieAvatar" style="width: 64px; height: 64px; border-radius: 8px; border: 2px solid var(--border);" />
+              <div style="flex: 1;">
+                <div class="info-box" style="margin: 0;">
+                  <button class="copy-btn" data-copy="address">Copy</button>
+                  <button class="download-btn" id="qrBtn" style="right: 60px;">QR</button>
+                  <strong>Address</strong>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="mono" id="address" style="flex: 1;"></div>
+                    <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                      </svg>
+                    </a>
+                  </div>
+                  <div class="ens-indicator" id="ensName"></div>
+                </div>
               </div>
-              <div class="ens-indicator" id="ensName"></div>
             </div>
           </div>
 
@@ -1518,6 +1533,28 @@
           </div>
 
           <div class="section">
+            <h2>Web3 Integration</h2>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input
+                type="checkbox"
+                id="defaultWallet"
+                style="width: auto; margin-right: 8px"
+              />
+              <div>
+                <div style="font-weight: bold;">Make zWallet Default</div>
+                <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                  Automatically connect when dApps request MetaMask or other wallets
+                </div>
+              </div>
+            </label>
+            <div id="defaultWalletInfo" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+              <strong>⚡ Default Wallet Active</strong>
+              <p style="margin-top: 8px;">zWallet will intercept connection requests from other wallets. When sites try to connect to MetaMask, Coinbase, or WalletConnect, zWallet will respond instead.</p>
+              <p style="margin-top: 8px;">Refresh any open dApp tabs for changes to take effect.</p>
+            </div>
+          </div>
+
+          <div class="section">
             <h2>Private Key Management</h2>
             <div class="warning" style="margin-bottom: 12px;">
               ⚠️ Never share your private key with anyone
@@ -1553,6 +1590,7 @@
     <div id="toast" class="toast"></div>
 
     <script src="ethers.umd.min.js"></script>
+    <script src="visual-id.js"></script>
     <script src="popup.js"></script>
 
     <!-- Transaction Confirmation Modal -->
@@ -1800,6 +1838,26 @@
       </div>
     </div>
 
-    <script src="popup.js"></script>
+    <!-- QR Code Modal -->
+    <div id="qrModal" class="modal hidden">
+      <div class="modal-content" style="max-width: 360px;">
+        <div class="modal-header">
+          <h3>Wallet QR Code</h3>
+          <button class="modal-close" id="qrModalClose">×</button>
+        </div>
+        <div class="modal-body" style="text-align: center;">
+          <img id="qrCodeImage" style="width: 256px; height: 256px; margin: 0 auto 16px;" />
+          <div class="info-box" style="font-size: 11px;">
+            <strong>Scan to Send</strong>
+            <div id="qrAddress" class="mono" style="word-break: break-all; margin-top: 8px;"></div>
+          </div>
+          <div style="margin-top: 16px; display: flex; gap: 8px;">
+            <button id="downloadQR" style="flex: 1;">Download QR</button>
+            <button id="copyQRAddress" style="flex: 1;">Copy Address</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </body>
 </html>

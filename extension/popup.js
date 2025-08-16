@@ -1191,6 +1191,7 @@ function updateBalanceDisplay() {
   sendTokenGrid.innerHTML = "";
 
   let totalValue = 0;
+  let totalETH = 0;
 
   // Use Object.keys to maintain insertion order
   const tokenKeys = Object.keys(TOKENS);
@@ -1200,6 +1201,13 @@ function updateBalanceDisplay() {
     const price = tokenPrices[symbol] || { eth: 0, usd: 0 };
     const value = parseFloat(balance.formatted) * price.usd;
     totalValue += value;
+    
+    // Calculate ETH value
+    if (symbol === "ETH") {
+      totalETH += parseFloat(balance.formatted);
+    } else {
+      totalETH += parseFloat(balance.formatted) * price.eth;
+    }
 
     // Create row for wallet tab
     const walletRow = document.createElement("div");
@@ -1254,7 +1262,8 @@ function updateBalanceDisplay() {
 
   document.getElementById(
     "portfolioTotal"
-  ).textContent = `Total: $${totalValue.toFixed(2)}`;
+  ).innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">$${totalValue.toFixed(2)}</div>
+  <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
 }
 
 function selectToken(symbol) {
@@ -1948,6 +1957,56 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.remove("show"), duration);
 }
 
+// Show QR code modal
+function showQRModal(address) {
+  const modal = document.getElementById("qrModal");
+  const qrImage = document.getElementById("qrCodeImage");
+  const qrAddress = document.getElementById("qrAddress");
+  
+  if (!modal || !qrImage || !qrAddress) return;
+  
+  // Generate QR code
+  if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
+    const qrDataUrl = window.zWalletVisual.generateSimpleQR(`ethereum:${address}`, 256);
+    qrImage.src = qrDataUrl;
+  }
+  
+  // Display address
+  qrAddress.textContent = address;
+  
+  // Setup modal buttons
+  const closeBtn = document.getElementById("qrModalClose");
+  const downloadBtn = document.getElementById("downloadQR");
+  const copyBtn = document.getElementById("copyQRAddress");
+  
+  if (closeBtn) {
+    closeBtn.onclick = () => modal.classList.add("hidden");
+  }
+  
+  if (downloadBtn) {
+    downloadBtn.onclick = () => {
+      const link = document.createElement("a");
+      link.download = `zWallet-${address.slice(0, 8)}.png`;
+      link.href = qrImage.src;
+      link.click();
+    };
+  }
+  
+  if (copyBtn) {
+    copyBtn.onclick = () => copyToClipboard(address, "address");
+  }
+  
+  // Show modal
+  modal.classList.remove("hidden");
+  
+  // Close on outside click
+  modal.onclick = (e) => {
+    if (e.target === modal) {
+      modal.classList.add("hidden");
+    }
+  };
+}
+
 // Modal Management Helpers
 function showModal(modalId, options = {}) {
   const modal = document.getElementById(modalId);
@@ -2108,6 +2167,20 @@ async function displayWallet() {
   const etherscanLink = document.getElementById("etherscanLink");
   if (etherscanLink) {
     etherscanLink.href = `https://etherscan.io/address/${address}`;
+  }
+  
+  // Generate and display blockie avatar
+  if (window.zWalletVisual && window.zWalletVisual.createBlockie) {
+    const blockieAvatar = document.getElementById("blockieAvatar");
+    if (blockieAvatar) {
+      blockieAvatar.src = window.zWalletVisual.createBlockie(address, 128);
+    }
+  }
+  
+  // Setup QR button
+  const qrBtn = document.getElementById("qrBtn");
+  if (qrBtn) {
+    qrBtn.onclick = () => showQRModal(address);
   }
 
   // Private key display moved to Settings tab
@@ -3158,6 +3231,50 @@ function setupEventListeners() {
     localStorage.setItem("auto_refresh", e.target.checked);
   });
 
+  // Default wallet toggle handler
+  const defaultWalletToggle = document.getElementById("defaultWallet");
+  const defaultWalletInfo = document.getElementById("defaultWalletInfo");
+  
+  if (defaultWalletToggle) {
+    // Load saved setting
+    chrome.storage.local.get(['zwalletDefault'], (result) => {
+      if (result.zwalletDefault) {
+        defaultWalletToggle.checked = true;
+        defaultWalletInfo.classList.remove('hidden');
+      }
+    });
+    
+    defaultWalletToggle.addEventListener("change", (e) => {
+      const isDefault = e.target.checked;
+      
+      // Save setting
+      chrome.storage.local.set({ zwalletDefault: isDefault }, () => {
+        console.log('[zWallet] Default wallet setting:', isDefault);
+        
+        // Show/hide info box
+        if (isDefault) {
+          defaultWalletInfo.classList.remove('hidden');
+          showToast('⚡ Default wallet activated! Refresh dApp tabs.');
+        } else {
+          defaultWalletInfo.classList.add('hidden');
+          showToast('Default wallet mode disabled');
+        }
+        
+        // Notify all tabs about the setting change
+        chrome.tabs.query({}, (tabs) => {
+          tabs.forEach(tab => {
+            chrome.tabs.sendMessage(tab.id, {
+              type: 'SETTINGS_UPDATED',
+              isDefault: isDefault
+            }).catch(() => {
+              // Ignore errors for tabs without content script
+            });
+          });
+        });
+      });
+    });
+  }
+
   // Private Key Management in Settings
   document.getElementById("revealKeyBtn")?.addEventListener("click", () => {
     if (!wallet) {
@@ -3388,27 +3505,11 @@ const V4_TICK_SPACINGS = {
 };
 
 async function setupSwapEventListeners() {
-  // Token selector dropdowns
-  // Initialize swap token displays
-  function updateSwapTokenDisplay(which) {
-    const token = which === 'from' ? swapFromToken : swapToToken;
-    const iconEl = document.getElementById(which === 'from' ? 'swapFromTokenIcon' : 'swapToTokenIcon');
-    const displayEl = document.getElementById(which === 'from' ? 'swapFromTokenDisplay' : 'swapToTokenDisplay');
-    
-    if (iconEl && displayEl) {
-      iconEl.innerHTML = TOKEN_LOGOS[token] || '💰';
-      displayEl.textContent = token;
-    }
-  }
   
   // Function to initialize token dropdowns with logos
   function initializeTokenDropdowns() {
     // Get all available tokens including custom ones
-    const swapTokens = Object.keys(TOKENS).filter(symbol => {
-      const token = TOKENS[symbol];
-      // Include all tokens but note that ERC6909 swaps might need special handling
-      return true;
-    });
+    const swapTokens = Object.keys(TOKENS);
     
     // Populate from dropdown
     const fromDropdown = document.getElementById('swapFromDropdown');
@@ -3417,9 +3518,9 @@ async function setupSwapEventListeners() {
         const token = TOKENS[symbol];
         const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
         return `
-          <div class="token-option" data-token="${symbol}">
-            <div class="token-option-icon">${logo}</div>
-            <span class="token-option-symbol">${symbol}</span>
+          <div class="token-option" data-token="${symbol}" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.2s;">
+            <div class="token-option-icon" style="width: 24px; height: 24px;">${logo}</div>
+            <span class="token-option-symbol" style="font-weight: 500;">${symbol}</span>
             ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
           </div>
         `;
@@ -3482,9 +3583,9 @@ async function setupSwapEventListeners() {
         const token = TOKENS[symbol];
         const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
         return `
-          <div class="token-option" data-token="${symbol}">
-            <div class="token-option-icon">${logo}</div>
-            <span class="token-option-symbol">${symbol}</span>
+          <div class="token-option" data-token="${symbol}" style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background 0.2s;">
+            <div class="token-option-icon" style="width: 24px; height: 24px;">${logo}</div>
+            <span class="token-option-symbol" style="font-weight: 500;">${symbol}</span>
             ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
           </div>
         `;
@@ -3855,24 +3956,27 @@ async function setupSwapEventListeners() {
     document.getElementById("swapConfirmModal")?.classList.add("hidden");
   });
   
-  // Initialize swap display
+  // Initialize token dropdowns and display
+  initializeTokenDropdowns();
   updateSwapTokenDisplay();
   updateSwapBalances();
 }
 
 // Update swap token display
-function updateSwapTokenDisplay() {
-  // Update From token
-  const fromIcon = document.getElementById("swapFromIcon");
-  const fromSymbol = document.getElementById("swapFromSymbol");
-  if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
-  if (fromSymbol) fromSymbol.textContent = swapFromToken;
+function updateSwapTokenDisplay(which = 'both') {
+  if (which === 'from' || which === 'both') {
+    const fromIcon = document.getElementById("swapFromTokenIcon");
+    const fromDisplay = document.getElementById("swapFromTokenDisplay");
+    if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
+    if (fromDisplay) fromDisplay.textContent = swapFromToken;
+  }
   
-  // Update To token
-  const toIcon = document.getElementById("swapToIcon");
-  const toSymbol = document.getElementById("swapToSymbol");
-  if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
-  if (toSymbol) toSymbol.textContent = swapToToken;
+  if (which === 'to' || which === 'both') {
+    const toIcon = document.getElementById("swapToTokenIcon");
+    const toDisplay = document.getElementById("swapToTokenDisplay");
+    if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
+    if (toDisplay) toDisplay.textContent = swapToToken;
+  }
 }
 
 async function updateSwapBalances() {
@@ -4114,8 +4218,13 @@ async function simulateSwap() {
 }
 
 async function executeSwap() {
-  if (!wallet || !bestSwapRoute) {
-    showToast("No swap route available");
+  if (!wallet) {
+    showToast("Please connect wallet first");
+    return;
+  }
+  
+  if (!bestSwapRoute) {
+    showToast("Please enter amount to get quote first");
     return;
   }
   
