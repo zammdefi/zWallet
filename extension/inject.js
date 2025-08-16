@@ -4,8 +4,30 @@
   const pendingRequests = new Map();
   let isDefaultWallet = false;
   
+  // Strict origin checking for message handling
+  const ALLOWED_MESSAGE_TYPES = [
+    'ZWALLET_SETTINGS',
+    'ZWALLET_PROVIDER_RESPONSE', 
+    'ZWALLET_PROVIDER_EVENT'
+  ];
+  
   // Check if we should be the default wallet
   window.addEventListener('message', (event) => {
+    // Only accept messages from the same origin (injected script to content script)
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    
+    // Validate message structure
+    if (!event.data || typeof event.data !== 'object' || !event.data.type) {
+      return;
+    }
+    
+    // Only process known message types
+    if (!ALLOWED_MESSAGE_TYPES.includes(event.data.type)) {
+      return;
+    }
+    
     if (event.data.type === 'ZWALLET_SETTINGS') {
       isDefaultWallet = event.data.isDefault;
       if (isDefaultWallet) {
@@ -14,11 +36,26 @@
     }
   });
   
-  // Request current settings
-  window.postMessage({ type: 'ZWALLET_GET_SETTINGS' }, '*');
+  // Request current settings - use window.location.origin for same-origin
+  window.postMessage({ type: 'ZWALLET_GET_SETTINGS' }, window.location.origin);
 
-  // Listen for responses from content script
+  // Listen for responses from content script with strict validation
   window.addEventListener('message', (event) => {
+    // Only accept messages from the same origin
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    
+    // Validate message structure
+    if (!event.data || typeof event.data !== 'object' || !event.data.type) {
+      return;
+    }
+    
+    // Only process known message types
+    if (!ALLOWED_MESSAGE_TYPES.includes(event.data.type)) {
+      return;
+    }
+    
     if (event.data.type === 'ZWALLET_PROVIDER_RESPONSE') {
       const callback = pendingRequests.get(event.data.id);
       if (callback) {
@@ -100,7 +137,7 @@
         try {
           callback(...args);
         } catch (err) {
-          console.error('Provider event error:', err);
+          
         }
       });
       return true;
@@ -141,7 +178,7 @@
             type: 'ZWALLET_PROVIDER_REQUEST',
             id: id,
             data: args
-          }, '*');
+          }, window.location.origin);
         } catch (err) {
           pendingRequests.delete(id);
           reject({
@@ -264,53 +301,47 @@
     const originalOpen = window.open;
     window.open = function(...args) {
       const url = args[0];
-      if (url && typeof url === 'string') {
-        // Check if it's a MetaMask or other wallet connection
-        if (url.includes('metamask.io') || 
-            url.includes('connect.metamask.io') ||
-            url.includes('wallet.coinbase.com') ||
-            url.includes('walletconnect.org')) {
-          
-          // If we're set as default, intercept and use our wallet
-          if (isDefaultWallet) {
-            console.log('[zWallet] Intercepting wallet connection');
-            // Trigger our connection flow instead
-            provider.request({ method: 'eth_requestAccounts' })
-              .then(accounts => {
-                // Emit connected event
-                provider.emit('connect', { chainId: provider.chainId });
-                provider.emit('accountsChanged', accounts);
-              })
-              .catch(err => {
-                console.error('[zWallet] Connection failed:', err);
-              });
-            return null; // Don't open the original popup
-          }
+      if (url && typeof url === 'string' && isDefaultWallet) {
+        // Check if it's a wallet connection URL
+        const walletPatterns = ['metamask.io', 'connect.metamask.io', 'wallet.coinbase.com', 'walletconnect.org'];
+        if (walletPatterns.some(pattern => url.includes(pattern))) {
+          // Trigger our connection flow instead
+          provider.request({ method: 'eth_requestAccounts' })
+            .then(accounts => {
+              provider.emit('connect', { chainId: provider.chainId });
+              provider.emit('accountsChanged', accounts);
+            })
+            .catch(() => {
+              // Connection cancelled
+            });
+          return null; // Don't open the original popup
         }
       }
       return originalOpen.apply(window, args);
     };
   }
   
-  // Initial injection
+  // Initial injection and event dispatch
   if (!window.ethereum || !window.ethereum.isZWallet) {
     window.ethereum = provider;
     
-    // Dispatch events to notify dApps
-    window.dispatchEvent(new Event('ethereum#initialized'));
-    
-    // For EIP-6963 provider discovery
-    window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
-      detail: {
-        info: {
-          uuid: '350670db-19fa-4704-a166-e52e178b59d4',
-          name: 'zWallet',
-          icon: 'data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cG9seWdvbiBwb2ludHM9IjUwLDIwIDMwLDYwIDUwLDQ1IiBmaWxsPSIjRkY2QjlEIiAvPjxwb2x5Z29uIHBvaW50cz0iNTAsMjAgNTAsNDUgNzAsNjAiIGZpbGw9IiMwMEQ0RkYiIC8+PHBvbHlnb24gcG9pbnRzPSIzMCw2MCA1MCw0NSA1MCw2MCIgZmlsbD0iI0ZGRTA2NiIgLz48cG9seWdvbiBwb2ludHM9IjUwLDQ1IDcwLDYwIDUwLDYwIiBmaWxsPSIjNjZEOUE2IiAvPjxwb2x5Z29uIHBvaW50cz0iMzAsNjAgNTAsNjAgNTAsODAiIGZpbGw9IiNGRjlGNDAiIC8+PHBvbHlnb24gcG9pbnRzPSI1MCw2MCA3MCw2MCA1MCw4MCIgZmlsbD0iI0I5NjdEQiIgLz48L3N2Zz4=',
-          rdns: 'com.zwallet'
-        },
-        provider: provider
-      }
-    }));
+    // Batch event dispatching with micro-task
+    Promise.resolve().then(() => {
+      window.dispatchEvent(new Event('ethereum#initialized'));
+      
+      // For EIP-6963 provider discovery
+      window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+        detail: {
+          info: {
+            uuid: '350670db-19fa-4704-a166-e52e178b59d4',
+            name: 'zWallet',
+            icon: 'data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cG9seWdvbiBwb2ludHM9IjUwLDIwIDMwLDYwIDUwLDQ1IiBmaWxsPSIjRkY2QjlEIiAvPjxwb2x5Z29uIHBvaW50cz0iNTAsMjAgNTAsNDUgNzAsNjAiIGZpbGw9IiMwMEQ0RkYiIC8+PHBvbHlnb24gcG9pbnRzPSIzMCw2MCA1MCw0NSA1MCw2MCIgZmlsbD0iI0ZGRTA2NiIgLz48cG9seWdvbiBwb2ludHM9IjUwLDQ1IDcwLDYwIDUwLDYwIiBmaWxsPSIjNjZEOUE2IiAvPjxwb2x5Z29uIHBvaW50cz0iMzAsNjAgNTAsNjAgNTAsODAiIGZpbGw9IiNGRjlGNDAiIC8+PHBvbHlnb24gcG9pbnRzPSI1MCw2MCA3MCw2MCA1MCw4MCIgZmlsbD0iI0I5NjdEQiIgLz48L3N2Zz4=',
+            rdns: 'com.zwallet'
+          },
+          provider: provider
+        }
+      }));
+    });
   }
   
   // Set up interception

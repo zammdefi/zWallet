@@ -1175,7 +1175,7 @@ body {
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.2</span>
+          <span>zWallet v0.0.3</span>
         </div>
         <div class="title-right">
           <button class="icon-btn" id="themeToggle" title="Toggle theme">
@@ -1345,10 +1345,7 @@ body {
             
             <!-- Slippage Settings -->
             <div class="swap-settings" style="margin-bottom: 16px;">
-              <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Slippage Tolerance</span>
-                <button id="slippageSettingsBtn" style="padding: 4px 8px; font-size: 11px; margin-bottom: 4px;">⚙️</button>
-              </label>
+              <label>Slippage Tolerance</label>
               <div class="slippage-selector" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
                 <button class="slippage-option" data-slippage="0.1">0.1%</button>
                 <button class="slippage-option active" data-slippage="0.5">0.5%</button>
@@ -1781,6 +1778,194 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
   document.documentElement.classList.add("is-extension");
 }
 
+// Secure password modal handler
+let passwordModalCallback = null;
+let passwordModalReject = null;
+
+function initPasswordModal() {
+  const modal = document.getElementById('passwordModal');
+  const form = document.getElementById('passwordForm');
+  const passwordInput = document.getElementById('passwordInput');
+  const confirmPasswordInput = document.getElementById('confirmPasswordInput');
+  const confirmGroup = document.getElementById('confirmPasswordGroup');
+  const strengthDiv = document.getElementById('passwordStrength');
+  const errorDiv = document.getElementById('passwordError');
+  
+  // Toggle password visibility
+  document.getElementById('togglePassword')?.addEventListener('click', () => {
+    const input = document.getElementById('passwordInput');
+    const icon = document.getElementById('eyeIcon');
+    if (input.type === 'password') {
+      input.type = 'text';
+      icon.setAttribute('d', 'M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24');
+    } else {
+      input.type = 'password';
+      icon.setAttribute('d', 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z');
+    }
+  });
+  
+  document.getElementById('toggleConfirmPassword')?.addEventListener('click', () => {
+    const input = document.getElementById('confirmPasswordInput');
+    const icon = document.getElementById('confirmEyeIcon');
+    if (input.type === 'password') {
+      input.type = 'text';
+      icon.setAttribute('d', 'M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24');
+    } else {
+      input.type = 'password';
+      icon.setAttribute('d', 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z');
+    }
+  });
+  
+  // Password strength checker
+  passwordInput?.addEventListener('input', (e) => {
+    if (confirmGroup.style.display !== 'none') {
+      const strength = checkPasswordStrength(e.target.value);
+      updatePasswordStrength(strength);
+    }
+  });
+  
+  // Form submission
+  form?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const password = passwordInput.value;
+    const confirmPassword = confirmPasswordInput.value;
+    
+    // Clear inputs immediately for security
+    passwordInput.value = '';
+    confirmPasswordInput.value = '';
+    
+    // Validation
+    if (confirmGroup.style.display !== 'none' && password !== confirmPassword) {
+      showPasswordError("Passwords don't match");
+      return;
+    }
+    
+    if (confirmGroup.style.display !== 'none' && password.length < 8) {
+      showPasswordError("Password must be at least 8 characters");
+      return;
+    }
+    
+    // Close modal
+    modal.style.display = 'none';
+    errorDiv.style.display = 'none';
+    
+    // Callback with password
+    if (passwordModalCallback) {
+      passwordModalCallback(password);
+      passwordModalCallback = null;
+      passwordModalReject = null;
+    }
+  });
+  
+  // Cancel button
+  document.getElementById('cancelPassword')?.addEventListener('click', () => {
+    passwordInput.value = '';
+    confirmPasswordInput.value = '';
+    modal.style.display = 'none';
+    errorDiv.style.display = 'none';
+    
+    if (passwordModalReject) {
+      passwordModalReject(new Error('User cancelled'));
+      passwordModalCallback = null;
+      passwordModalReject = null;
+    }
+  });
+  
+  // Close on background click (mobile-friendly)
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      document.getElementById('cancelPassword').click();
+    }
+  });
+}
+
+function checkPasswordStrength(password) {
+  let strength = 0;
+  if (password.length >= 8) strength++;
+  if (password.length >= 12) strength++;
+  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) strength++;
+  if (/[0-9]/.test(password)) strength++;
+  if (/[^a-zA-Z0-9]/.test(password)) strength++;
+  return strength;
+}
+
+function updatePasswordStrength(strength) {
+  const bar = document.getElementById('strengthBar');
+  const text = document.getElementById('strengthText');
+  const div = document.getElementById('passwordStrength');
+  
+  div.style.display = 'block';
+  
+  const colors = ['#ff4444', '#ff8844', '#ffaa44', '#88cc44', '#44cc44'];
+  const texts = ['Very Weak', 'Weak', 'Fair', 'Good', 'Strong'];
+  
+  bar.style.width = `${(strength / 5) * 100}%`;
+  bar.style.background = colors[Math.min(strength - 1, 4)] || colors[0];
+  text.textContent = texts[Math.min(strength - 1, 4)] || texts[0];
+}
+
+function showPasswordError(message) {
+  const errorDiv = document.getElementById('passwordError');
+  errorDiv.textContent = message;
+  errorDiv.style.display = 'block';
+  setTimeout(() => {
+    errorDiv.style.display = 'none';
+  }, 3000);
+}
+
+// Input sanitization helper
+function sanitizeInput(input) {
+  if (typeof input !== 'string') return '';
+  // Remove any HTML/script tags
+  return input.replace(/<[^>]*>/g, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+=/gi, '')
+    .trim();
+}
+
+// HTML escape for display
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Secure password prompt replacement
+function securePasswordPrompt(title, message, requireConfirm = false) {
+  return new Promise((resolve, reject) => {
+    const modal = document.getElementById('passwordModal');
+    const titleEl = document.getElementById('passwordModalTitle');
+    const messageEl = document.getElementById('passwordModalMessage');
+    const confirmGroup = document.getElementById('confirmPasswordGroup');
+    const strengthDiv = document.getElementById('passwordStrength');
+    const passwordInput = document.getElementById('passwordInput');
+    const confirmPasswordInput = document.getElementById('confirmPasswordInput');
+    
+    // Reset state
+    passwordInput.value = '';
+    confirmPasswordInput.value = '';
+    document.getElementById('passwordError').style.display = 'none';
+    
+    // Set content
+    titleEl.textContent = title || 'Enter Password';
+    messageEl.textContent = message || '';
+    
+    // Show/hide confirm field
+    confirmGroup.style.display = requireConfirm ? 'block' : 'none';
+    strengthDiv.style.display = requireConfirm ? 'block' : 'none';
+    
+    // Show modal with flex display for centering
+    modal.style.display = 'flex';
+    
+    // Focus input (important for mobile)
+    setTimeout(() => passwordInput.focus(), 100);
+    
+    // Set callbacks
+    passwordModalCallback = resolve;
+    passwordModalReject = reject;
+  });
+}
+
 // Generate dynamic coin SVG
 function generateCoinSVG(id) {
   const isDark = document.documentElement.getAttribute("data-theme") === "dark";
@@ -2150,10 +2335,9 @@ async function init() {
         const label =
           entry.label ||
           entry.address.slice(0, 6) + "..." + entry.address.slice(-4);
-        const pass = prompt(`Unlock ${label}: enter your wallet password`);
-        if (pass) {
-          try {
-            const pk = await decryptPK(
+        try {
+          const pass = await securePasswordPrompt('Unlock Wallet', `Enter password to unlock ${label}:`);
+          const pk = await decryptPK(
               entry.crypto,
               pass,
               entry.address.toLowerCase()
@@ -2175,7 +2359,7 @@ async function init() {
                 );
                 localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
               } catch (e) {
-                console.warn("Keystore rewrap failed:", e);
+                
               }
             }
 
@@ -2184,17 +2368,16 @@ async function init() {
 
             showToast("Wallet unlocked!");
           } catch (e) {
-            console.warn("Auto-unlock failed (bad password)");
+            
             // keep LS_LAST so user can try from selector
           }
-        }
       } else {
         // stale pointer, clean up
         localStorage.removeItem(LS_LAST);
       }
     }
   } catch (e) {
-    console.warn("Auto-unlock skipped:", e);
+    
   }
 
   setupEventListeners();
@@ -2621,11 +2804,11 @@ async function initProvider() {
       provider
     );
 
-    console.log("Connected to:", currentRpc);
+    // Connected to RPC
     loadRpcSettings();
     showToast("Connected to network");
   } catch (err) {
-    console.error("RPC connection failed:", err);
+    
     // Try fallback
     for (const rpc of [
       "https://eth.llamarpc.com",
@@ -2665,7 +2848,7 @@ function loadWallets() {
 }
 
 async function saveWallet(address, privateKey) {
-  const pass = prompt("Create a password to encrypt this wallet:");
+  const pass = await securePasswordPrompt('Create Password', 'Create a strong password to encrypt your wallet:', true);
   if (!pass) return;
   const payload = await encryptPK(privateKey, pass, {
     aad: address.toLowerCase(),
@@ -2745,7 +2928,7 @@ async function fetchZAMMPrice() {
     const reserve1 = Number(poolData[1]); // ZAMM reserves
     
     if (reserve0 === 0 || reserve1 === 0) {
-      console.log("ZAMM pool has no liquidity");
+      // ZAMM pool has no liquidity
       return { eth: 0, usd: 0 };
     }
     
@@ -2756,15 +2939,14 @@ async function fetchZAMMPrice() {
     // Calculate USD price based on ETH price
     const zammPriceInUsd = zammPriceInEth * ethPrice;
     
-    console.log(`ZAMM Price: ${zammPriceInEth} ETH, ${zammPriceInUsd}`);
-    console.log(`Pool reserves - ETH: ${reserve0}, ZAMM: ${reserve1}`);
+    // Price and reserves calculated
     
     return {
       eth: zammPriceInEth,
       usd: zammPriceInUsd
     };
   } catch (err) {
-    console.error("Error fetching ZAMM price from pool:", err);
+    
     return { eth: 0, usd: 0 };
   }
 }
@@ -2814,7 +2996,7 @@ async function fetchAllBalances() {
     
     // Update ENS name if found
     if (ensName) {
-      console.log("ENS name found:", ensName);
+      // ENS name resolved
       // Display ENS name in the UI
       const ensNameEl = document.getElementById("ensName");
       if (ensNameEl) {
@@ -2832,7 +3014,7 @@ async function fetchAllBalances() {
     if (ethIndex !== -1 && pricesUSDC[ethIndex]) {
       ethPriceInUsd = Number(pricesUSDC[ethIndex]) / 1e6;
       ethPrice = ethPriceInUsd; // Update global ethPrice
-      console.log("ETH price from batchView:", ethPriceInUsd, "USDC");
+      
     }
 
     for (let i = 0; i < tokenSymbols.length; i++) {
@@ -2882,7 +3064,7 @@ async function fetchAllBalances() {
 
     updateBalanceDisplay();
   } catch (err) {
-    console.error("Error fetching balances with batchView:", err);
+    
     await fetchBalancesFallback();
   }
 }
@@ -2895,12 +3077,12 @@ async function fetchBalancesFallback() {
     if (zWalletContract) {
       const [priceUSDC] = await zWalletContract.checkPrice(WETH_ADDRESS);
       ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-      console.log("WETH/ETH price (fallback):", ethPrice, "USDC per ETH");
+      
     } else {
       ethPrice = 3500; // Fallback if contract not ready
     }
   } catch (err) {
-    console.error("Error fetching WETH price:", err);
+    
     ethPrice = 3500; // Fallback
   }
 
@@ -2949,12 +3131,12 @@ async function fetchBalancesFallback() {
             usd: Number(priceUSDC) / 1e6,
           };
         } catch (err) {
-          console.error(`Failed to fetch ${symbol} price:`, err);
+          
           tokenPrices[symbol] = { eth: 0, usd: 0 };
         }
       }
     } catch (err) {
-      console.error(`Failed to fetch ${symbol} data:`, err);
+      
       currentBalances[symbol] = { raw: 0n, formatted: "0" };
       tokenPrices[symbol] = { eth: 0, usd: 0 };
     }
@@ -3157,7 +3339,7 @@ async function updateGasPrices() {
 
     await updateEstimatedTotal();
   } catch (err) {
-    console.error("Gas price error:", err);
+    
 
     // Fallback to safe defaults on error
     const fallbackGas = ethers.parseUnits("30", "gwei");
@@ -3206,7 +3388,7 @@ async function updateEstimatedTotal() {
       2
     )})`;
   } catch (err) {
-    console.error("Error updating estimated total:", err);
+    
     estimatedTotalEl.textContent = amount + " " + selectedToken;
   }
 }
@@ -3239,7 +3421,7 @@ async function fetchTransactionHistoryExtended() {
   const loadMoreBtn = document.getElementById("loadMoreTxBtn");
 
   if (!loadingMsg) {
-    console.error("Loading message element not found");
+    
     return;
   }
 
@@ -3413,7 +3595,7 @@ async function fetchTransactionHistoryExtended() {
 
     displayTransactions();
   } catch (err) {
-    console.error("Error fetching extended history:", err);
+    
     if (loadingMsg) loadingMsg.textContent = "Error loading extended history";
     if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
   }
@@ -3518,7 +3700,7 @@ async function fetchTransactionHistory() {
               }
             }
           }).catch(err => {
-            console.error(`Error fetching ${symbol} history:`, err);
+            
           })
         );
       } else {
@@ -3580,7 +3762,7 @@ async function fetchTransactionHistory() {
               }
             }
           }).catch(err => {
-            console.error(`Error fetching ${symbol} history:`, err);
+            
           })
         );
       }
@@ -3598,7 +3780,7 @@ async function fetchTransactionHistory() {
     // Display transactions
     displayTransactions();
   } catch (err) {
-    console.error("Error fetching history:", err);
+    
     loadingMsg.textContent = "Error loading transactions";
   }
 }
@@ -3609,7 +3791,7 @@ function displayTransactions() {
   const loadMoreBtn = document.getElementById("loadMoreTxBtn");
 
   if (!txList || !loadingMsg) {
-    console.error("Transaction display elements not found");
+    
     return;
   }
 
@@ -3866,25 +4048,58 @@ function throttle(func, limit) {
 
 async function copyToClipboard(text, type) {
   try {
-    await navigator.clipboard.writeText(text);
-    showToast(type === "address" ? "Address copied!" : "Private key copied!");
-  } catch (err) {
-    // Fallback for older browsers or permission issues
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    textarea.style.pointerEvents = "none";
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand("copy");
+    // Try modern Clipboard API first
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
       showToast(type === "address" ? "Address copied!" : "Private key copied!");
-    } catch (copyErr) {
-      console.error("Copy failed:", copyErr);
-      showToast("Copy failed - please copy manually");
-    } finally {
+    } else {
+      // Fallback for non-secure contexts or older browsers
+      // Create a temporary textarea element
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-999999px";
+      textarea.style.top = "-999999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      
+      // Try to copy using the selection
+      const successful = document.execCommand('copy');
       document.body.removeChild(textarea);
+      
+      if (successful) {
+        showToast(type === "address" ? "Address copied!" : "Private key copied!");
+      } else {
+        throw new Error("Copy command failed");
+      }
+    }
+  } catch (err) {
+    // Final fallback - show the text for manual copying
+    showToast("Copy failed - please copy manually");
+    
+    // For private keys, we could show a modal with the text selected
+    if (type === "privateKey") {
+      // Create a modal to show the private key for manual copying
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--bg-secondary);
+        padding: 20px;
+        border-radius: 8px;
+        z-index: 10000;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      `;
+      modal.innerHTML = `
+        <p style="margin-bottom: 10px;">Copy your private key:</p>
+        <input type="text" value="${escapeHtml(text)}" readonly style="width: 100%; padding: 8px;" />
+        <button onclick="this.parentElement.remove()" style="margin-top: 10px; width: 100%;">Close</button>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector('input').select();
     }
   }
 }
@@ -3893,14 +4108,8 @@ async function exportEncryptedKey() {
   if (!wallet) return;
 
   try {
-    const password = prompt("Enter a password to encrypt your private key:");
+    const password = await securePasswordPrompt('Create Password', 'Create a strong password to encrypt your imported wallet:', true);
     if (!password) return;
-    
-    const confirmPassword = prompt("Confirm password:");
-    if (password !== confirmPassword) {
-      alert("Passwords don't match!");
-      return;
-    }
 
     // Encrypt the private key
     const encrypted = await encryptPK(wallet.privateKey, password, {
@@ -3928,7 +4137,7 @@ async function exportEncryptedKey() {
 
     showToast("Encrypted key exported!");
   } catch (err) {
-    console.error("Export failed:", err);
+    
     showToast("Export failed");
   }
 }
@@ -4051,7 +4260,7 @@ async function addCustomToken(tokenAddress, tokenId = null) {
 
     return token;
   } catch (err) {
-    console.error("Error adding token:", err);
+    
     throw err;
   }
 }
@@ -4234,6 +4443,9 @@ async function sendTransaction() {
     status.innerHTML = '<div class="status">Preparing transaction...</div>';
     document.getElementById("sendBtn").disabled = true;
 
+    // Get the current nonce to prevent replay attacks
+    const nonce = await wallet.getNonce();
+    
     let tx;
     if (selectedToken === "ETH") {
       // Send ETH directly - no calldata needed
@@ -4243,6 +4455,7 @@ async function sendTransaction() {
         gasLimit: 21000,
         maxFeePerGas: gasSettings.maxFeePerGas,
         maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+        nonce: nonce,
       });
     } else if (token.isERC6909) {
       // For ERC6909 tokens
@@ -4262,6 +4475,7 @@ async function sendTransaction() {
         gasLimit: 150000,
         maxFeePerGas: gasSettings.maxFeePerGas,
         maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+        nonce: nonce,
       });
     } else {
       // For ERC20 tokens
@@ -4280,6 +4494,7 @@ async function sendTransaction() {
         gasLimit: 100000,
         maxFeePerGas: gasSettings.maxFeePerGas,
         maxPriorityFeePerGas: gasSettings.maxPriorityFeePerGas,
+        nonce: nonce,
       });
     }
 
@@ -4293,7 +4508,22 @@ async function sendTransaction() {
     if (receipt.status === 1) {
       status.innerHTML = '<div class="status success">✓ Success!</div>';
       showEtherscanLink(tx.hash);
-      showToast("Transaction confirmed!");
+      
+      // Special message for USDC IOUs
+      if (selectedToken === "USDC") {
+        showToast("USDC IOU sent! Receiver can manage at iousdc.eth.limo");
+        // Add clickable link in status
+        status.innerHTML += `
+          <div style="margin-top: 8px; font-size: 12px;">
+            Receiver can manage IOUs at 
+            <a href="https://iousdc.eth.limo" target="_blank" style="color: var(--accent); text-decoration: underline;">
+              iousdc.eth.limo
+            </a>
+          </div>`;
+      } else {
+        showToast("Transaction confirmed!");
+      }
+      
       await fetchAllBalances();
       document.getElementById("toAddress").value = "";
       document.getElementById("amount").value = "";
@@ -4302,7 +4532,7 @@ async function sendTransaction() {
       showEtherscanLink(tx.hash);
     }
   } catch (err) {
-    console.error("Transaction error:", err);
+    // Log error securely without exposing sensitive info
     let errorMsg = "Transaction failed";
 
     if (err.message.includes("insufficient funds")) {
@@ -4412,7 +4642,7 @@ async function createIOUSlip() {
     document.getElementById("iouPreviewModal").classList.remove("hidden");
 
   } catch (err) {
-    console.error("IOU creation error:", err);
+    
     status.innerHTML = '<div class="status error">Failed to create IOU</div>';
   }
 }
@@ -4478,7 +4708,7 @@ async function signAndDownloadIOU() {
     pendingIouAmount = null;
 
   } catch (err) {
-    console.error("IOU signing error:", err);
+    
     let errorMsg = "Failed to sign IOU";
     
     if (err.message.includes("user rejected") || err.message.includes("denied")) {
@@ -4526,7 +4756,7 @@ function setupEventListeners() {
       try {
         await fetchTransactionHistoryExtended();
       } catch (err) {
-        console.error("Error loading extended history:", err);
+        
         showToast("Failed to load transactions");
       }
     });
@@ -4540,8 +4770,9 @@ function setupEventListeners() {
       if (!addr) return;
       const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
       const entry = list.find((w) => w.address === addr);
-      const pass = prompt("Enter your wallet password:");
+      // For multi-wallet, ask for password to unlock the specific wallet
       try {
+        const pass = await securePasswordPrompt('Unlock Wallet', `Enter password for ${addr.slice(0,6)}...${addr.slice(-4)} to send transaction:`);
         const pk = await decryptPK(
           entry.crypto,
           pass,
@@ -4564,7 +4795,7 @@ function setupEventListeners() {
             );
             localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
           } catch (e) {
-            console.warn("Keystore rewrap failed:", e);
+            
           }
         }
 
@@ -4574,7 +4805,7 @@ function setupEventListeners() {
         localStorage.setItem(LS_LAST, addr);
         showToast("Wallet unlocked!");
       } catch (err) {
-        console.error("Unlock error:", err);
+        
         alert("Wrong password");
         e.target.value = "";
       }
@@ -4597,7 +4828,7 @@ function setupEventListeners() {
       await displayWallet();
       showToast("Wallet generated!");
     } catch (err) {
-      console.error("Error generating wallet:", err);
+      
       alert("Failed to generate wallet: " + err.message);
     }
   });
@@ -4634,7 +4865,7 @@ function setupEventListeners() {
         document.getElementById("privateKeyInput").value = "";
         showToast("Wallet imported!");
       } catch (err) {
-        console.error("Import error:", err);
+        
         alert("Invalid private key: " + (err.message || "Unknown error"));
       }
     });
@@ -4666,7 +4897,7 @@ function setupEventListeners() {
       await fetchAllBalances();
       showToast("Refreshed!");
     } catch (err) {
-      console.error("Error refreshing balances:", err);
+      
       showToast("Failed to refresh");
     }
   });
@@ -4760,7 +4991,7 @@ function setupEventListeners() {
       document.getElementById("amount").value = parseFloat(max).toFixed(6);
       await updateEstimatedTotal();
     } catch (err) {
-      console.error("Error calculating max amount:", err);
+      
       showToast("Failed to calculate max");
     }
   });
@@ -4793,7 +5024,7 @@ function setupEventListeners() {
             }
           }
         } catch (err) {
-          console.error("ENS resolution error:", err);
+          
           resolved.textContent = "Error resolving";
           resolved.style.color = "var(--error)";
         }
@@ -4917,17 +5148,44 @@ function setupEventListeners() {
     }
   });
   
-  document.getElementById("copyIouData")?.addEventListener("click", () => {
+  document.getElementById("copyIouData")?.addEventListener("click", async () => {
     const data = document.getElementById("iouDataDisplay").value;
-    navigator.clipboard.writeText(data).then(() => {
-      showToast("IOU data copied! 📋");
-    }).catch(() => {
-      // Fallback for older browsers
-      const textarea = document.getElementById("iouDataDisplay");
-      textarea.select();
-      document.execCommand("copy");
-      showToast("IOU data copied! 📋");
-    });
+    
+    try {
+      // Try modern Clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(data);
+        showToast("IOU data copied! 📋");
+      } else {
+        // Fallback for non-secure contexts or older browsers
+        const textarea = document.getElementById("iouDataDisplay");
+        textarea.focus();
+        textarea.select();
+        
+        // Create a temporary textarea for copying
+        const tempTextarea = document.createElement("textarea");
+        tempTextarea.value = data;
+        tempTextarea.style.position = "fixed";
+        tempTextarea.style.left = "-999999px";
+        tempTextarea.style.top = "-999999px";
+        document.body.appendChild(tempTextarea);
+        tempTextarea.focus();
+        tempTextarea.select();
+        
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            showToast("IOU data copied! 📋");
+          } else {
+            throw new Error("Copy failed");
+          }
+        } finally {
+          document.body.removeChild(tempTextarea);
+        }
+      }
+    } catch (err) {
+      showToast("Please select and copy the IOU data manually");
+    }
   });
   
   document.getElementById("downloadIou")?.addEventListener("click", () => {
@@ -4991,7 +5249,7 @@ function setupEventListeners() {
         document.getElementById("customRpcSection").classList.add("hidden");
         loadRpcSettings();
       } catch (err) {
-        console.error("RPC test failed:", err);
+        
         alert("Invalid RPC URL");
       }
     });
@@ -5028,7 +5286,7 @@ function setupEventListeners() {
       
       // Save setting
       (typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.set : (data, callback) => callback && callback())({ zwalletDefault: isDefault }, () => {
-        console.log('[zWallet] Default wallet setting:', isDefault);
+        
         
         // Show/hide info box
         if (isDefault) {
@@ -5097,7 +5355,7 @@ function setupEventListeners() {
     try {
       await exportEncryptedKey();
     } catch (err) {
-      console.error("Export error:", err);
+      
       alert("Failed to export key: " + err.message);
     }
   });
@@ -5116,7 +5374,7 @@ function setupEventListeners() {
       URL.revokeObjectURL(url);
       showToast("Encrypted wallets exported!");
     } catch (err) {
-      console.error("Export failed:", err);
+      
       showToast("Export failed");
     }
   });
@@ -5226,7 +5484,7 @@ async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
     const reserve1 = Number(poolData[1]);
     
     if (reserve0 === 0 || reserve1 === 0) {
-      console.log("No liquidity in ERC6909 pool");
+      
       return null;
     }
     
@@ -5251,7 +5509,7 @@ async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
       zeroForOne
     };
   } catch (err) {
-    console.error("Error calculating ERC6909 swap output:", err);
+    
     return null;
   }
 }
@@ -5570,7 +5828,7 @@ async function setupSwapEventListeners() {
         // For ETH, we need to account for gas fees more accurately
         const balanceObj = currentBalances["ETH"];
         if (!balanceObj || !balanceObj.formatted) {
-          console.log("No ETH balance found");
+          
           showToast("No ETH balance");
           return;
         }
@@ -5606,9 +5864,9 @@ async function setupSwapEventListeners() {
             gasBuffer = Math.max(gasBuffer, 0.005);
           }
           
-          console.log(`ETH Balance: ${balanceETH}, Gas Buffer: ${gasBuffer.toFixed(6)}`);
+          
         } catch (err) {
-          console.error("Error estimating gas:", err);
+          
           // Fallback to conservative buffer if gas estimation fails
           if (balanceETH < 0.01) {
             gasBuffer = 0.002;
@@ -5637,7 +5895,7 @@ async function setupSwapEventListeners() {
         // For tokens, use the formatted balance from currentBalances
         const balanceObj = currentBalances[swapFromToken];
         if (!balanceObj || !balanceObj.formatted) {
-          console.log(`No balance found for ${swapFromToken}`);
+          
           showToast(`No ${swapFromToken} balance`);
           return;
         }
@@ -5683,7 +5941,7 @@ async function setupSwapEventListeners() {
         updateSwapUSDValues();
       }
     } catch (err) {
-      console.error("Error getting max amount:", err);
+      
       showToast("Failed to calculate max");
     }
   });
@@ -5840,7 +6098,7 @@ async function simulateSwap() {
   
   // Prevent concurrent simulations
   if (isSimulating) {
-    console.log("Simulation already in progress, skipping...");
+    
     return;
   }
   
@@ -5908,7 +6166,7 @@ async function simulateSwap() {
     
     // Not an ERC6909 swap, use zQuoter for regular tokens
     if (!zQuoterContract) {
-      console.error("zQuoter contract not initialized");
+      
       return;
     }
     
@@ -5924,7 +6182,7 @@ async function simulateSwap() {
       
       bestQuote = quotesResult.best;
     } catch (quoterError) {
-      console.error("Quoter error:", quoterError);
+      
       // If quoter fails, show a more specific error
       document.getElementById("swapRoute").textContent = "Quoter unavailable";
       document.getElementById("swapBtn").textContent = "Network error";
@@ -5944,7 +6202,7 @@ async function simulateSwap() {
     
     // Format the output amount
     const outputAmount = ethers.formatUnits(bestQuote.amountOut, toToken?.decimals || 18);
-    console.log(`Quote received: ${amountIn} ${swapFromToken} -> ${outputAmount} ${swapToToken}`);
+    
     document.getElementById("swapToAmount").value = parseFloat(outputAmount).toFixed(6);
     
     // Update USD values
@@ -5987,7 +6245,7 @@ async function simulateSwap() {
     document.getElementById("swapBtn").disabled = false;
     
   } catch (err) {
-    console.error("Swap simulation error:", err);
+    
     document.getElementById("swapRoute").textContent = "Error";
     document.getElementById("swapBtn").textContent = "Try again";
     document.getElementById("swapBtn").disabled = false;
@@ -6076,7 +6334,7 @@ async function executeSwap() {
           deadline
         );
       } catch (err) {
-        console.error("Failed to build swap:", err);
+        
         showToast("Failed to prepare swap");
         return;
       }
@@ -6161,17 +6419,21 @@ async function executeSwap() {
     });
     
     if (!userConfirmed) {
-      console.log("Swap cancelled by user");
+      
       return;
     }
     
     // Execute the swap
     document.getElementById("swapStatus").innerHTML = '<div style="color: var(--warning)">Sending transaction...</div>';
     
+    // Get current nonce for replay protection
+    const nonce = await wallet.getNonce();
+    
     const tx = await wallet.sendTransaction({
       to: ZROUTER_ADDRESS,
       data: callData,
-      value: msgValue
+      value: msgValue,
+      nonce: nonce
     });
     
     document.getElementById("swapStatus").innerHTML = `<div style="color: var(--info)">Transaction sent: ${tx.hash.slice(0, 10)}...</div>`;
@@ -6201,7 +6463,7 @@ async function executeSwap() {
     }
     
   } catch (err) {
-    console.error("Swap error:", err);
+    
     document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ ${err.message || "Swap failed"}</div>`;
     showToast(`Swap failed: ${err.message || "Unknown error"}`);
   }
@@ -6297,7 +6559,7 @@ async function checkAndRequestApproval(token, amount) {
     }
     
   } catch (err) {
-    console.error("Approval error:", err);
+    
     document.getElementById("swapStatus").innerHTML = '<div class="status error">Approval failed</div>';
     showToast("Approval failed");
     return false;
@@ -6344,7 +6606,7 @@ async function batchCheckApprovals(tokens, amounts = []) {
     
     await Promise.all(promises);
   } catch (err) {
-    console.error("Batch approval check error:", err);
+    
   }
   
   return approvalStatus;
@@ -6361,7 +6623,7 @@ async function prepareApprovalCalldata(token, amount = ethers.MaxUint256) {
       return await zWalletContract.getERC20Approve(ZROUTER_ADDRESS, amount);
     }
   } catch (err) {
-    console.error("Error preparing approval calldata:", err);
+    
     return null;
   }
 }
@@ -6388,7 +6650,7 @@ async function executeApprovalSequence(approvalData) {
       await tx.wait();
       results.push({ token: approval.token, success: true });
     } catch (err) {
-      console.error(`Approval failed for ${approval.token}:`, err);
+      
       results.push({ token: approval.token, success: false, error: err.message });
     }
   }
@@ -6506,8 +6768,9 @@ async function showApprovalModal(token, isERC6909) {
 // Initialize app with proper error handling
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
+    initPasswordModal();
     init().catch((err) => {
-      console.error("Initialization error:", err);
+      
       // Show user-friendly error
       const errorDiv = document.createElement('div');
       errorDiv.className = 'status error';
@@ -6517,7 +6780,7 @@ if (document.readyState === 'loading') {
   });
 } else {
   init().catch((err) => {
-    console.error("Initialization error:", err);
+    
   });
 }
 
@@ -6786,6 +7049,88 @@ if (document.readyState === 'loading') {
             <button id="copyQRAddress" style="flex: 1;">Copy Address</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Secure Password Modal -->
+    <div id="passwordModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.95); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center;">
+      <div class="modal-content" style="background: rgba(30, 30, 40, 0.98); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8); border-radius: 12px; padding: 24px; max-width: 400px; width: 90%; max-height: 90vh; overflow-y: auto; position: relative;">
+        <h3 id="passwordModalTitle" style="margin: 0 0 16px 0; color: var(--text-primary);">Enter Password</h3>
+        <p id="passwordModalMessage" style="margin: 0 0 16px 0; color: var(--text-secondary); font-size: 14px;"></p>
+        
+        <form id="passwordForm" autocomplete="off">
+          <!-- Primary password input -->
+          <div style="position: relative; margin-bottom: 16px;">
+            <input 
+              type="password" 
+              id="passwordInput" 
+              placeholder="Enter password"
+              autocomplete="new-password"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+              required
+            />
+            <button 
+              type="button" 
+              id="togglePassword"
+              style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px;"
+              aria-label="Toggle password visibility"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path id="eyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Confirm password input (hidden by default) -->
+          <div id="confirmPasswordGroup" style="position: relative; margin-bottom: 16px; display: none;">
+            <input 
+              type="password" 
+              id="confirmPasswordInput" 
+              placeholder="Confirm password"
+              autocomplete="new-password"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+            />
+            <button 
+              type="button" 
+              id="toggleConfirmPassword"
+              style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px;"
+              aria-label="Toggle confirm password visibility"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path id="confirmEyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Password strength indicator -->
+          <div id="passwordStrength" style="margin-bottom: 16px; display: none;">
+            <div style="height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden;">
+              <div id="strengthBar" style="height: 100%; width: 0%; transition: all 0.3s; background: var(--accent);"></div>
+            </div>
+            <p id="strengthText" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;"></p>
+          </div>
+          
+          <!-- Error message -->
+          <div id="passwordError" style="color: #ff4444; font-size: 14px; margin-bottom: 16px; display: none;"></div>
+          
+          <!-- Buttons -->
+          <div style="display: flex; gap: 12px;">
+            <button type="button" id="cancelPassword" style="flex: 1; padding: 12px; border: 1px solid var(--border); background: transparent; color: var(--text-primary); border-radius: 8px; font-size: 16px; cursor: pointer;">
+              Cancel
+            </button>
+            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer;">
+              Submit
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 

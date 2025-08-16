@@ -7,10 +7,6 @@ let pendingRequests = {};
 let accountCache = null;
 let chainId = '0x1'; // Default to mainnet
 
-// Listen for extension installation
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('zWallet extension installed');
-});
 
 // Handle messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -56,8 +52,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function handleProviderRequest(request, sender, sendResponse) {
   const origin = new URL(sender.tab.url).origin;
   
-  // Log for debugging
-  console.log('[zWallet] Provider request:', request.method, 'from', origin);
+  // Validate origin format
+  if (!origin || origin === 'null') {
+    sendResponse({ error: { code: -32602, message: 'Invalid origin' } });
+    return;
+  }
   
   switch (request.method) {
     case 'eth_requestAccounts':
@@ -71,8 +70,13 @@ async function handleProviderRequest(request, sender, sendResponse) {
         const requestId = Date.now().toString();
         pendingRequests[requestId] = { sendResponse, request, origin };
         
+        const popupUrl = new URL(chrome.runtime.getURL('popup.html'));
+        popupUrl.searchParams.set('request', requestId);
+        popupUrl.searchParams.set('type', 'connect');
+        popupUrl.searchParams.set('origin', origin);
+        
         chrome.windows.create({
-          url: chrome.runtime.getURL(`popup.html?request=${requestId}&type=connect&origin=${encodeURIComponent(origin)}`),
+          url: popupUrl.toString(),
           type: 'popup',
           width: 450,
           height: 650
@@ -85,8 +89,13 @@ async function handleProviderRequest(request, sender, sendResponse) {
       const requestId = Date.now().toString();
       pendingRequests[requestId] = { sendResponse, request, origin };
       
+      const txPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
+      txPopupUrl.searchParams.set('request', requestId);
+      txPopupUrl.searchParams.set('type', 'transaction');
+      txPopupUrl.searchParams.set('origin', origin);
+      
       chrome.windows.create({
-        url: chrome.runtime.getURL(`popup.html?request=${requestId}&type=transaction&origin=${encodeURIComponent(origin)}`),
+        url: txPopupUrl.toString(),
         type: 'popup',
         width: 450,
         height: 700
@@ -140,8 +149,13 @@ async function handleProviderRequest(request, sender, sendResponse) {
       const signRequestId = Date.now().toString();
       pendingRequests[signRequestId] = { sendResponse, request, origin };
       
+      const signPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
+      signPopupUrl.searchParams.set('request', signRequestId);
+      signPopupUrl.searchParams.set('type', 'sign');
+      signPopupUrl.searchParams.set('origin', origin);
+      
       chrome.windows.create({
-        url: chrome.runtime.getURL(`popup.html?request=${signRequestId}&type=sign&origin=${encodeURIComponent(origin)}`),
+        url: signPopupUrl.toString(),
         type: 'popup',
         width: 450,
         height: 650
@@ -174,8 +188,13 @@ async function handleProviderRequest(request, sender, sendResponse) {
         const signRequestId = Date.now().toString();
         pendingRequests[signRequestId] = { sendResponse, request, origin };
         
+        const fallbackPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
+        fallbackPopupUrl.searchParams.set('request', signRequestId);
+        fallbackPopupUrl.searchParams.set('type', 'sign');
+        fallbackPopupUrl.searchParams.set('origin', origin);
+        
         chrome.windows.create({
-          url: chrome.runtime.getURL(`popup.html?request=${signRequestId}&type=sign&origin=${encodeURIComponent(origin)}`),
+          url: fallbackPopupUrl.toString(),
           type: 'popup',
           width: 450,
           height: 650
@@ -248,8 +267,13 @@ function handleWatchAsset(request, origin, sendResponse) {
     const requestId = Date.now().toString();
     pendingRequests[requestId] = { sendResponse, request, origin };
     
+    const assetPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
+    assetPopupUrl.searchParams.set('request', requestId);
+    assetPopupUrl.searchParams.set('type', 'watchAsset');
+    assetPopupUrl.searchParams.set('origin', origin);
+    
     chrome.windows.create({
-      url: chrome.runtime.getURL(`popup.html?request=${requestId}&type=watchAsset&origin=${encodeURIComponent(origin)}`),
+      url: assetPopupUrl.toString(),
       type: 'popup',
       width: 450,
       height: 500
@@ -306,7 +330,6 @@ async function getAccounts() {
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local' && changes.current_wallet) {
     const newAccount = changes.current_wallet.newValue;
-    const oldAccount = accountCache;
     accountCache = newAccount;
     
     // Notify all connected sites of account change
