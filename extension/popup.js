@@ -44,6 +44,11 @@ const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
 const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
 const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
 
+// ZAMM AMM Contracts for price fetching and swapping
+const ZAMM_0_ADDRESS = "0x00000000000008882D72EfA6cCE4B6a40b24C860"; // Original ZAMM AMM for swapping ZAMM token
+const ZAMM_1_ADDRESS = "0x000000000000040470635eb91b7ce4d132d616ed"; // New ZAMM AMM for all other ERC6909 ID swaps
+const ZAMM_POOL_ID = "22979666169544372205220120853398704213623237650449182409187385558845249460832"; // ZAMM/ETH pool ID
+
 // Price checking is now handled through zWallet contract which wraps CTC
 
 const LS_WALLETS = "eth_wallets_v2";
@@ -153,6 +158,11 @@ const ERC20_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ];
 
+// ZAMM AMM ABI for reading pool reserves
+const ZAMM_AMM_ABI = [
+  "function pools(uint256 poolId) view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 kLast, uint256 supply)",
+];
+
 // Global state
 let wallet = null;
 let provider = null;
@@ -230,7 +240,7 @@ async function deriveKey(pass, salt, meta) {
   const kdf = (meta && meta.kdf) || "pbkdf2-sha256";
   if (kdf === "pbkdf2-sha256") {
     let iter = Number((meta && meta.iter) || 210000);
-    if (!Number.isFinite(iter)) iter = 210000;
+    if (!Number.isFinite(iter) || iter < 10000 || iter > 5000000) iter = 210000;
     iter = Math.min(Math.max(10_000, Math.floor(iter)), 5_000_000); // clamp
     const km = await crypto.subtle.importKey(
       "raw",
@@ -410,8 +420,64 @@ async function init() {
 
   setupEventListeners();
   
+  // Initialize keyboard shortcuts
+  initKeyboardShortcuts();
+  
   // Check if opened for dApp approval
   checkForDappRequest();
+}
+
+// Keyboard Shortcuts Handler
+function initKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    // Skip if user is typing in an input
+    if (e.target.matches('input, textarea, select')) return;
+    
+    // Tab navigation with number keys
+    if (e.key >= '1' && e.key <= '5' && !e.ctrlKey && !e.metaKey) {
+      const tabIndex = parseInt(e.key) - 1;
+      const tabs = document.querySelectorAll('.tab');
+      if (tabs[tabIndex]) {
+        tabs[tabIndex].click();
+      }
+    }
+    
+    // Ctrl/Cmd + shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      switch(e.key) {
+        case 's': // Send
+          e.preventDefault();
+          document.querySelector('.tab[data-tab="send"]')?.click();
+          break;
+        case 'w': // Swap
+          e.preventDefault();
+          document.querySelector('.tab[data-tab="swap"]')?.click();
+          break;
+        case 'r': // Refresh balances
+          e.preventDefault();
+          if (wallet) {
+            fetchAllBalances();
+            showToast('Refreshing balances...');
+          }
+          break;
+        case 'c': // Copy address
+          e.preventDefault();
+          if (wallet?.address) {
+            copyToClipboard(wallet.address, 'address');
+          }
+          break;
+      }
+    }
+  });
+  
+  // Add tooltip hints for shortcuts
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach((tab, index) => {
+    if (index < 5) {
+      const text = tab.textContent;
+      tab.title = `${text} (Press ${index + 1})`;
+    }
+  });
 }
 
 // Handle dApp requests when opened as popup
@@ -752,12 +818,15 @@ function loadRpcSettings() {
 async function initProvider() {
   try {
     // Add timeout for RPC connections
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('RPC timeout')), 5000)
+    );
     
     provider = new ethers.JsonRpcProvider(currentRpc);
-    await provider.getBlockNumber();
-    clearTimeout(timeoutId);
+    await Promise.race([
+      provider.getBlockNumber(),
+      timeoutPromise
+    ]);
 
     // Initialize zWallet contract
     zWalletContract = new ethers.Contract(
@@ -778,7 +847,6 @@ async function initProvider() {
     showToast("Connected to network");
   } catch (err) {
     console.error("RPC connection failed:", err);
-    if (typeof timeoutId !== 'undefined') clearTimeout(timeoutId);
     // Try fallback
     for (const rpc of [
       "https://eth.llamarpc.com",
@@ -882,6 +950,46 @@ function updateWalletSelectorFrom(list) {
   updateWalletSelector();
 }
 
+// Fetch ZAMM price from the AMM pool using constant product formula
+async function fetchZAMMPrice() {
+  try {
+    // Use ZAMM_0 for ZAMM token price checking
+    const zammContract = new ethers.Contract(
+      ZAMM_0_ADDRESS,
+      ZAMM_AMM_ABI,
+      provider
+    );
+    
+    // Get pool reserves
+    const poolData = await zammContract.pools(ZAMM_POOL_ID);
+    const reserve0 = Number(poolData[0]); // ETH reserves
+    const reserve1 = Number(poolData[1]); // ZAMM reserves
+    
+    if (reserve0 === 0 || reserve1 === 0) {
+      console.log("ZAMM pool has no liquidity");
+      return { eth: 0, usd: 0 };
+    }
+    
+    // Calculate price using constant product formula
+    // Price of 1 ZAMM in ETH = reserve0 / reserve1
+    const zammPriceInEth = reserve0 / reserve1;
+    
+    // Calculate USD price based on ETH price
+    const zammPriceInUsd = zammPriceInEth * ethPrice;
+    
+    console.log(`ZAMM Price: ${zammPriceInEth} ETH, $${zammPriceInUsd}`);
+    console.log(`Pool reserves - ETH: ${reserve0}, ZAMM: ${reserve1}`);
+    
+    return {
+      eth: zammPriceInEth,
+      usd: zammPriceInUsd
+    };
+  } catch (err) {
+    console.error("Error fetching ZAMM price from pool:", err);
+    return { eth: 0, usd: 0 };
+  }
+}
+
 // Fetch all balances using zWallet contract's batchView
 async function fetchAllBalances() {
   if (!wallet || !provider || !zWalletContract) return;
@@ -969,6 +1077,11 @@ async function fetchAllBalances() {
         if (ethPriceInUsd > 0) {
           priceInEth = 1.0 / ethPriceInUsd; // 1 USD worth of ETH
         }
+      } else if (symbol === "ZAMM") {
+        // Fetch ZAMM price from the AMM pool
+        const zammPrice = await fetchZAMMPrice();
+        priceInEth = zammPrice.eth;
+        priceInUsd = zammPrice.usd;
       }
       // The contract already correctly handles:
       // - ETH: priceETH = 1, priceUSDC from WETH
@@ -1036,6 +1149,10 @@ async function fetchBalancesFallback() {
           eth: ethPrice > 0 ? 1.0 / ethPrice : 0,
           usd: 1.0,
         };
+      } else if (symbol === "ZAMM") {
+        // Fetch ZAMM price from the AMM pool
+        const zammPrice = await fetchZAMMPrice();
+        tokenPrices[symbol] = zammPrice;
       } else {
         try {
           // The contract automatically handles:
@@ -1329,7 +1446,7 @@ async function calculateMaxAmount() {
 async function fetchTransactionHistoryExtended() {
   if (!wallet || !provider) return;
 
-  const txList = document.getElementById("txList");
+  const txListElement = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
   const loadMoreBtn = document.getElementById("loadMoreTxBtn");
 
@@ -1822,11 +1939,91 @@ function showEtherscanLink(txHash) {
   status.appendChild(link);
 }
 
-function showToast(message) {
+function showToast(message, duration = 3000) {
   const toast = document.getElementById("toast");
+  if (!toast) return;
+  
   toast.textContent = message;
   toast.classList.add("show");
-  setTimeout(() => toast.classList.remove("show"), 2000);
+  setTimeout(() => toast.classList.remove("show"), duration);
+}
+
+// Modal Management Helpers
+function showModal(modalId, options = {}) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  
+  // Remove hidden class with animation
+  modal.classList.remove('hidden');
+  
+  // Add ESC key listener
+  if (options.closeOnEsc !== false) {
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        hideModal(modalId);
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+  }
+  
+  // Focus first input if available
+  if (options.autoFocus !== false) {
+    setTimeout(() => {
+      const firstInput = modal.querySelector('input:not([type="hidden"]), textarea, select');
+      if (firstInput) firstInput.focus();
+    }, 100);
+  }
+}
+
+function hideModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  
+  modal.classList.add('hidden');
+}
+
+// Button Loading State Helper
+function setButtonLoading(buttonId, loading = true) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  
+  if (loading) {
+    button.classList.add('loading');
+    button.disabled = true;
+    button.dataset.originalText = button.textContent;
+  } else {
+    button.classList.remove('loading');
+    button.disabled = false;
+    if (button.dataset.originalText) {
+      button.textContent = button.dataset.originalText;
+    }
+  }
+}
+
+// Debounce Helper for Better Performance
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// Throttle Helper for Rate Limiting
+function throttle(func, limit) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
 }
 
 async function copyToClipboard(text, type) {
@@ -1933,7 +2130,7 @@ async function displayWallet() {
   }
 }
 
-async function addCustomToken(tokenAddress) {
+async function addCustomToken(tokenAddress, tokenId = null) {
   if (!zWalletContract) return null;
 
   try {
@@ -1942,21 +2139,58 @@ async function addCustomToken(tokenAddress) {
       throw new Error("Invalid address");
     }
 
-    // Get metadata from zWallet contract
-    const [name, symbol, decimals] = await zWalletContract.getMetadata(
-      tokenAddress
-    );
+    let isERC6909 = false;
+    let token;
 
-    if (!symbol || symbol === "") {
-      throw new Error("Could not fetch token metadata");
+    // Check if token ID is provided, suggesting ERC6909
+    if (tokenId && tokenId !== "") {
+      // Check if it's actually ERC6909
+      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
+      
+      if (!isERC6909) {
+        throw new Error("Token ID provided but contract is not ERC6909");
+      }
+
+      // For ERC6909, we may not have per-ID metadata
+      const [name, symbol, decimals] = await zWalletContract.getMetadata(
+        tokenAddress
+      );
+
+      // Create unique symbol for this ID
+      const idSymbol = symbol ? `${symbol.toUpperCase()}_${tokenId}` : `ID_${tokenId}`;
+      
+      token = {
+        address: tokenAddress,
+        symbol: idSymbol,
+        name: name ? `${name} ID ${tokenId}` : `Token ID ${tokenId}`,
+        decimals: decimals || 18,
+        isERC6909: true,
+        id: tokenId,
+      };
+    } else {
+      // Check if it's ERC6909 without ID
+      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
+      
+      if (isERC6909) {
+        throw new Error("This is an ERC6909 contract - please provide a token ID");
+      }
+
+      // Standard ERC20 token
+      const [name, symbol, decimals] = await zWalletContract.getMetadata(
+        tokenAddress
+      );
+
+      if (!symbol || symbol === "") {
+        throw new Error("Could not fetch token metadata");
+      }
+
+      token = {
+        address: tokenAddress,
+        symbol: symbol.toUpperCase(),
+        name: name || symbol,
+        decimals: decimals,
+      };
     }
-
-    const token = {
-      address: tokenAddress,
-      symbol: symbol.toUpperCase(),
-      name: name || symbol,
-      decimals: decimals,
-    };
 
     // Check if already exists
     if (TOKENS[token.symbol]) {
@@ -2047,34 +2281,28 @@ async function sendTransaction() {
     2
   )}`;
 
-  // Prepare transaction calldata
+  // Prepare transaction calldata using zWallet helpers
   let calldata = '0x';
   if (selectedToken === 'ETH') {
     // ETH transfers have no calldata
     calldata = '0x';
   } else {
-    // ERC20 transfer calldata
     const token = TOKENS[selectedToken];
+    const amountWei = ethers.parseUnits(amount.toString(), token.decimals);
+    
     if (token.isERC6909) {
-      // ERC6909 transferFrom calldata
-      const iface = new ethers.Interface([
-        "function transferFrom(address from, address to, uint256 id, uint256 amount)"
-      ]);
-      calldata = iface.encodeFunctionData("transferFrom", [
-        wallet.address,
+      // Use zWallet helper for ERC6909 transfer
+      calldata = await zWalletContract.getERC6909Transfer(
         toAddress,
-        token.id,
-        ethers.parseUnits(amount.toString(), token.decimals)
-      ]);
+        BigInt(token.id),
+        amountWei
+      );
     } else {
-      // Standard ERC20 transfer calldata
-      const iface = new ethers.Interface([
-        "function transfer(address to, uint256 amount)"
-      ]);
-      calldata = iface.encodeFunctionData("transfer", [
+      // Use zWallet helper for ERC20 transfer
+      calldata = await zWalletContract.getERC20Transfer(
         toAddress,
-        ethers.parseUnits(amount.toString(), token.decimals)
-      ]);
+        amountWei
+      );
     }
   }
 
@@ -2493,7 +2721,8 @@ function setupEventListeners() {
 
         localStorage.setItem(LS_LAST, addr);
         showToast("Wallet unlocked!");
-      } catch {
+      } catch (err) {
+        console.error("Unlock error:", err);
         alert("Wrong password");
         e.target.value = "";
       }
@@ -2596,10 +2825,38 @@ function setupEventListeners() {
     document.getElementById("newTokenAddress").focus();
   });
 
+  // Live detection of token type
+  document.getElementById("newTokenAddress")?.addEventListener("input", async (e) => {
+    const address = e.target.value.trim();
+    const indicator = document.getElementById("tokenTypeIndicator");
+    
+    if (!address || !ethers.isAddress(address)) {
+      indicator.classList.add("hidden");
+      return;
+    }
+    
+    try {
+      const isERC6909 = await zWalletContract.isERC6909(address);
+      if (isERC6909) {
+        indicator.textContent = "✓ ERC6909 detected - Token ID required";
+        indicator.style.color = "var(--success)";
+        document.getElementById("newTokenId").placeholder = "Token ID (required for ERC6909)";
+      } else {
+        indicator.textContent = "✓ ERC20 token detected";
+        indicator.style.color = "var(--text-secondary)";
+        document.getElementById("newTokenId").placeholder = "Token ID (for ERC6909, optional)";
+      }
+      indicator.classList.remove("hidden");
+    } catch (err) {
+      indicator.classList.add("hidden");
+    }
+  });
+
   document
     .getElementById("confirmAddToken")
     .addEventListener("click", async () => {
       const address = document.getElementById("newTokenAddress").value.trim();
+      const tokenId = document.getElementById("newTokenId").value.trim();
       const symbolOverride = document
         .getElementById("newTokenSymbol")
         .value.trim();
@@ -2607,22 +2864,37 @@ function setupEventListeners() {
       if (!address) return;
 
       try {
-        const token = await addCustomToken(address);
+        const token = await addCustomToken(address, tokenId);
 
         // Use override symbol if provided
         if (symbolOverride) {
-          token.symbol = symbolOverride.toUpperCase();
+          // For ERC6909, append ID to symbol
+          if (token.isERC6909) {
+            token.symbol = `${symbolOverride.toUpperCase()}_${token.id}`;
+          } else {
+            token.symbol = symbolOverride.toUpperCase();
+          }
         }
 
-        saveCustomToken(address, token);
+        // Generate unique key for storage
+        const storageKey = token.isERC6909 ? `${address}_${token.id}` : address;
+        saveCustomToken(storageKey, token);
 
         // Hide the form
         document.getElementById("addTokenSection").classList.add("hidden");
         document.getElementById("newTokenAddress").value = "";
+        document.getElementById("newTokenId").value = "";
         document.getElementById("newTokenSymbol").value = "";
+        document.getElementById("tokenTypeIndicator").classList.add("hidden");
 
         // Refresh balances to include new token
         await fetchAllBalances();
+        
+        // Refresh swap dropdowns to include new token
+        if (typeof initializeTokenDropdowns === 'function') {
+          initializeTokenDropdowns();
+        }
+        
         showToast(`Added ${token.symbol}!`);
       } catch (err) {
         alert("Error adding token: " + err.message);
@@ -2866,7 +3138,8 @@ function setupEventListeners() {
         showToast("Custom RPC saved!");
         document.getElementById("customRpcSection").classList.add("hidden");
         loadRpcSettings();
-      } catch {
+      } catch (err) {
+        console.error("RPC test failed:", err);
         alert("Invalid RPC URL");
       }
     });
@@ -2974,8 +3247,9 @@ function setupEventListeners() {
 // ============= SWAP FUNCTIONALITY =============
 const ZROUTER_ADDRESS = "0x0000000000404FECAf36E6184245475eE1254835";
 const ZROUTER_ABI = [
-  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
-  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
+  // swapVZ for ERC6909 tokens (ZAMM and others)
+  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
+  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
 ];
 
 // zQuoter ABI for getting best quotes
@@ -2984,11 +3258,107 @@ const ZQUOTER_ABI = [
   "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
 ];
 
-// Multicall3 contract (deployed on Ethereum mainnet)
-const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
-const MULTICALL3_ABI = [
-  "function tryAggregate(bool requireSuccess, (address target, bytes callData)[] calls) returns ((bool success, bytes returnData)[] returnData)"
-];
+// Note: Multicall3 is for batching view calls only, not state-changing transactions
+// Each approval must be a separate transaction
+
+// Helper to calculate pool ID for ERC6909 pairs
+function calculatePoolId(id0, id1, token0, token1, swapFee) {
+  // Pool key is keccak256(id0, id1, token0, token1, swapFee)
+  const abiCoder = new ethers.AbiCoder();
+  const encoded = abiCoder.encode(
+    ["uint256", "uint256", "address", "address", "uint256"],
+    [id0, id1, token0, token1, swapFee]
+  );
+  return ethers.keccak256(encoded);
+}
+
+// Calculate swap output for ERC6909 tokens using constant product formula
+async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
+  try {
+    const fromToken = TOKENS[tokenIn];
+    const toToken = TOKENS[tokenOut];
+    
+    // Check if this is an ERC6909 swap
+    if (!fromToken?.isERC6909 && !toToken?.isERC6909) {
+      return null; // Not an ERC6909 swap
+    }
+    
+    // For now, we only support ETH pairs with ERC6909
+    const isETHIn = tokenIn === "ETH";
+    const isETHOut = tokenOut === "ETH";
+    
+    if (!isETHIn && !isETHOut) {
+      return null; // Not an ETH pair
+    }
+    
+    // Determine which ZAMM contract to use
+    const isZAMM = (fromToken?.id === ZAMM_ID) || (toToken?.id === ZAMM_ID);
+    const zammAddress = isZAMM ? ZAMM_0_ADDRESS : ZAMM_1_ADDRESS;
+    
+    // Create contract instance
+    const zammContract = new ethers.Contract(
+      zammAddress,
+      ZAMM_AMM_ABI,
+      provider
+    );
+    
+    // Calculate pool ID - for ERC6909, we need the actual contract address
+    const token0 = isETHIn ? ethers.ZeroAddress : (fromToken.isERC6909 ? fromToken.address : fromToken.address);
+    const token1 = isETHOut ? ethers.ZeroAddress : (toToken.isERC6909 ? toToken.address : toToken.address);
+    const id0 = isETHIn ? 0n : BigInt(fromToken.id || 0);
+    const id1 = isETHOut ? 0n : BigInt(toToken.id || 0);
+    
+    // Sort tokens for pool key - addresses are compared as hex strings
+    const shouldSort = token0.toLowerCase() < token1.toLowerCase();
+    const sortedToken0 = shouldSort ? token0 : token1;
+    const sortedToken1 = shouldSort ? token1 : token0;
+    const sortedId0 = shouldSort ? id0 : id1;
+    const sortedId1 = shouldSort ? id1 : id0;
+    
+    // Determine swap direction (zeroForOne means swapping token0 for token1)
+    const zeroForOne = (tokenIn === "ETH" && shouldSort) || (tokenIn !== "ETH" && !shouldSort);
+    
+    // Default swap fee is 100 bps (1%)
+    const swapFee = 100;
+    
+    // Calculate pool ID
+    const poolId = calculatePoolId(sortedId0, sortedId1, sortedToken0, sortedToken1, swapFee);
+    
+    // Get pool reserves
+    const poolData = await zammContract.pools(poolId);
+    const reserve0 = Number(poolData[0]);
+    const reserve1 = Number(poolData[1]);
+    
+    if (reserve0 === 0 || reserve1 === 0) {
+      console.log("No liquidity in ERC6909 pool");
+      return null;
+    }
+    
+    // Calculate output using constant product formula with fee
+    // zeroForOne means we're swapping sorted token0 for sorted token1
+    const reserveIn = zeroForOne ? reserve0 : reserve1;
+    const reserveOut = zeroForOne ? reserve1 : reserve0;
+    
+    const amountInBigInt = BigInt(amountIn);
+    const amountInWithFee = amountInBigInt * BigInt(10000 - swapFee);
+    const numerator = amountInWithFee * BigInt(reserveOut);
+    const denominator = (BigInt(reserveIn) * 10000n) + amountInWithFee;
+    const amountOut = numerator / denominator;
+    
+    return {
+      amountOut,
+      poolId,
+      zammAddress,
+      swapFee,
+      reserve0,
+      reserve1,
+      zeroForOne
+    };
+  } catch (err) {
+    console.error("Error calculating ERC6909 swap output:", err);
+    return null;
+  }
+}
 
 // Swap state
 let swapFromToken = "ETH";
@@ -3033,17 +3403,27 @@ async function setupSwapEventListeners() {
   
   // Function to initialize token dropdowns with logos
   function initializeTokenDropdowns() {
-    const swapTokens = ['ETH', 'USDC', 'USDT', 'DAI', 'ENS'];
+    // Get all available tokens including custom ones
+    const swapTokens = Object.keys(TOKENS).filter(symbol => {
+      const token = TOKENS[symbol];
+      // Include all tokens but note that ERC6909 swaps might need special handling
+      return true;
+    });
     
     // Populate from dropdown
     const fromDropdown = document.getElementById('swapFromDropdown');
     if (fromDropdown) {
-      fromDropdown.innerHTML = swapTokens.map(token => `
-        <div class="token-option" data-token="${token}">
-          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
-          <span class="token-option-symbol">${token}</span>
-        </div>
-      `).join('');
+      fromDropdown.innerHTML = swapTokens.map(symbol => {
+        const token = TOKENS[symbol];
+        const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
+        return `
+          <div class="token-option" data-token="${symbol}">
+            <div class="token-option-icon">${logo}</div>
+            <span class="token-option-symbol">${symbol}</span>
+            ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
+          </div>
+        `;
+      }).join('');
       
       // Add click handlers
       fromDropdown.querySelectorAll('.token-option').forEach(option => {
@@ -3053,6 +3433,24 @@ async function setupSwapEventListeners() {
           updateSwapTokenDisplay('from');
           updateSwapBalances();
           fromDropdown.classList.add('hidden');
+          
+          // Re-initialize to dropdown based on new from token
+          initializeTokenDropdowns();
+          
+          // Check if current to token is still valid
+          const fromToken = TOKENS[swapFromToken];
+          const toToken = TOKENS[swapToToken];
+          
+          if (fromToken?.isERC6909 && swapToToken !== 'ETH') {
+            // Force to ETH if from is ERC6909
+            swapToToken = 'ETH';
+            updateSwapTokenDisplay('to');
+          } else if (toToken?.isERC6909 && swapFromToken !== 'ETH') {
+            // If to is ERC6909 but from is not ETH, switch to ETH
+            swapToToken = 'ETH';
+            updateSwapTokenDisplay('to');
+          }
+          
           if (document.getElementById("swapFromAmount").value) {
             simulateSwap();
           }
@@ -3060,15 +3458,37 @@ async function setupSwapEventListeners() {
       });
     }
     
-    // Populate to dropdown
+    // Populate to dropdown - dynamically filter based on from token
     const toDropdown = document.getElementById('swapToDropdown');
     if (toDropdown) {
-      toDropdown.innerHTML = swapTokens.map(token => `
-        <div class="token-option" data-token="${token}">
-          <div class="token-option-icon">${TOKEN_LOGOS[token] || '<div style="width: 100%; height: 100%; background: var(--border); border-radius: 50%;"></div>'}</div>
-          <span class="token-option-symbol">${token}</span>
-        </div>
-      `).join('');
+      // If from token is ERC6909, only show ETH
+      // If from token is ETH, show all tokens
+      // If from token is ERC20, show ETH and other ERC20s (not ERC6909)
+      let toTokens;
+      const fromToken = TOKENS[swapFromToken];
+      
+      if (fromToken?.isERC6909) {
+        // ERC6909 can only swap with ETH
+        toTokens = ['ETH'];
+      } else if (swapFromToken === 'ETH') {
+        // ETH can swap with anything
+        toTokens = swapTokens;
+      } else {
+        // ERC20 can swap with ETH and other ERC20s, but not ERC6909
+        toTokens = swapTokens.filter(symbol => !TOKENS[symbol].isERC6909);
+      }
+      
+      toDropdown.innerHTML = toTokens.map(symbol => {
+        const token = TOKENS[symbol];
+        const logo = TOKEN_LOGOS[symbol] || generateCoinSVG(symbol);
+        return `
+          <div class="token-option" data-token="${symbol}">
+            <div class="token-option-icon">${logo}</div>
+            <span class="token-option-symbol">${symbol}</span>
+            ${token.isERC6909 ? '<span style="font-size: 10px; color: var(--text-secondary);">(ERC6909)</span>' : ''}
+          </div>
+        `;
+      }).join('');
       
       // Add click handlers
       toDropdown.querySelectorAll('.token-option').forEach(option => {
@@ -3124,6 +3544,16 @@ async function setupSwapEventListeners() {
   
   // Swap direction button
   document.getElementById("swapDirectionBtn")?.addEventListener("click", () => {
+    // Check if swap is valid before allowing
+    const fromToken = TOKENS[swapFromToken];
+    const toToken = TOKENS[swapToToken];
+    
+    // Don't allow swapping if it would create an invalid pair
+    if (fromToken?.isERC6909 && toToken?.isERC6909) {
+      showToast("Cannot swap between two ERC6909 tokens");
+      return;
+    }
+    
     // Swap tokens
     const temp = swapFromToken;
     swapFromToken = swapToToken;
@@ -3139,6 +3569,9 @@ async function setupSwapEventListeners() {
     updateSwapTokenDisplay('from');
     updateSwapTokenDisplay('to');
     updateSwapBalances();
+    
+    // Re-initialize dropdowns with new restrictions
+    initializeTokenDropdowns();
     
     if (fromAmount || toAmount) {
       simulateSwap();
@@ -3442,22 +3875,43 @@ function updateSwapTokenDisplay() {
   if (toSymbol) toSymbol.textContent = swapToToken;
 }
 
-function updateSwapBalances() {
+async function updateSwapBalances() {
   const fromBalance = document.getElementById("swapFromBalance");
   const toBalance = document.getElementById("swapToBalance");
   
   if (fromBalance) {
     const balanceObj = currentBalances[swapFromToken];
     const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance);
-    fromBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+    const numBalance = parseFloat(balance) || 0;
+    fromBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
   }
   
   if (toBalance) {
     const balanceObj = currentBalances[swapToToken];
     const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance);
-    toBalance.textContent = isNaN(numBalance) || numBalance === 0 ? "0.000000" : numBalance.toFixed(6);
+    const numBalance = parseFloat(balance) || 0;
+    toBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+  }
+  
+  // Check approval status for non-ETH tokens
+  if (swapFromToken !== "ETH" && zWalletContract && wallet) {
+    const token = TOKENS[swapFromToken];
+    if (token && token.address) {
+      try {
+        const approvalNeeded = token.isERC6909 
+          ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
+          : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
+        
+        // Add visual indicator if approval is needed
+        const indicator = document.getElementById("swapFromApprovalIndicator");
+        if (indicator) {
+          indicator.style.display = (approvalNeeded && approvalNeeded !== "0x") ? "inline" : "none";
+          indicator.title = "Approval required for first swap";
+        }
+      } catch (err) {
+        console.debug("Approval check failed:", err);
+      }
+    }
   }
 }
 
@@ -3534,13 +3988,48 @@ async function simulateSwap() {
     const truncated = parseFloat(amountIn).toFixed(maxDecimals);
     const swapAmount = ethers.parseUnits(truncated, maxDecimals);
     
-    // Use global zQuoter contract instance
+    // Check if this is an ERC6909 swap first
+    const erc6909Result = await calculateERC6909SwapOutput(swapFromToken, swapToToken, swapAmount);
+    
+    if (erc6909Result) {
+      // This is an ERC6909 swap, use the calculated output
+      const outputAmount = erc6909Result.amountOut;
+      const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
+      
+      // Update UI with ERC6909 quote
+      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      document.getElementById("swapRoute").textContent = `ZAMM AMM (${erc6909Result.swapFee / 100}% fee)`;
+      document.getElementById("swapBtn").textContent = "Swap";
+      document.getElementById("swapBtn").disabled = false;
+      
+      // Store the route for execution
+      bestSwapRoute = {
+        isERC6909: true,
+        tokenIn: tokenInAddress,
+        tokenOut: tokenOutAddress,
+        idIn: fromToken?.id || 0,
+        idOut: toToken?.id || 0,
+        amountIn: swapAmount,
+        amountOut: outputAmount,
+        slippage: swapSlippage,
+        sourceName: "ZAMM AMM",
+        poolId: erc6909Result.poolId,
+        zammAddress: erc6909Result.zammAddress,
+        swapFee: erc6909Result.swapFee,
+        zeroForOne: erc6909Result.zeroForOne
+      };
+      
+      updateSwapUSDValues();
+      return;
+    }
+    
+    // Not an ERC6909 swap, use zQuoter for regular tokens
     if (!zQuoterContract) {
       console.error("zQuoter contract not initialized");
       return;
     }
     
-    let quotesResult, bestQuote, allQuotes;
+    let quotesResult, bestQuote;
     try {
       // Get quotes from zQuoter (exactOut = false for exactIn mode)
       quotesResult = await zQuoterContract.getQuotes(
@@ -3551,7 +4040,6 @@ async function simulateSwap() {
       );
       
       bestQuote = quotesResult.best;
-      allQuotes = quotesResult.quotes;
     } catch (quoterError) {
       console.error("Quoter error:", quoterError);
       // If quoter fails, show a more specific error
@@ -3639,34 +4127,76 @@ async function executeSwap() {
       if (!needsApproval) return;
     }
     
-    // Use global zQuoter contract instance
-    if (!zQuoterContract) {
-      throw new Error("zQuoter contract not initialized");
-    }
-    
-    // Get the swap calldata from buildBestSwap
+    let callData, msgValue;
     const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour deadline
-    const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
     
-    let swapData;
-    try {
-      swapData = await zQuoterContract.buildBestSwap(
-        wallet.address,
+    if (bestSwapRoute.isERC6909) {
+      // Handle ERC6909 swap using swapVZ
+      const fromToken = TOKENS[swapFromToken];
+      const toToken = TOKENS[swapToToken];
+      
+      // For ZAMM, use max deadline to use the old ZAMM_0 contract
+      const vzDeadline = fromToken?.id === ZAMM_ID || toToken?.id === ZAMM_ID 
+        ? ethers.MaxUint256 
+        : deadline;
+      
+      // Calculate minimum output with slippage
+      const minOutput = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
+      
+      // Create zRouter contract instance
+      const zRouter = new ethers.Contract(ZROUTER_ADDRESS, ZROUTER_ABI, wallet);
+      
+      // Build swapVZ calldata - need actual token addresses for ERC6909
+      const tokenInAddr = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
+      const tokenOutAddr = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+      const idIn = swapFromToken === "ETH" ? 0n : BigInt(fromToken.id || 0);
+      const idOut = swapToToken === "ETH" ? 0n : BigInt(toToken.id || 0);
+      
+      const swapVZCall = zRouter.interface.encodeFunctionData("swapVZ", [
+        wallet.address, // to
         false, // exactOut = false
-        bestSwapRoute.tokenIn,
-        bestSwapRoute.tokenOut,
-        bestSwapRoute.amountIn,
-        slippageBps,
-        deadline
-      );
-    } catch (err) {
-      console.error("Failed to build swap:", err);
-      showToast("Failed to prepare swap");
-      return;
+        bestSwapRoute.swapFee, // feeOrHook (100 bps = 1%)
+        tokenInAddr, // tokenIn
+        tokenOutAddr, // tokenOut
+        idIn, // idIn
+        idOut, // idOut
+        bestSwapRoute.amountIn, // swapAmount
+        minOutput, // amountLimit
+        vzDeadline // deadline
+      ]);
+      
+      callData = swapVZCall;
+      msgValue = swapFromToken === "ETH" ? bestSwapRoute.amountIn : 0n;
+      
+    } else {
+      // Use zQuoter for regular token swaps
+      if (!zQuoterContract) {
+        throw new Error("zQuoter contract not initialized");
+      }
+      
+      const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
+      
+      let swapData;
+      try {
+        swapData = await zQuoterContract.buildBestSwap(
+          wallet.address,
+          false, // exactOut = false
+          bestSwapRoute.tokenIn,
+          bestSwapRoute.tokenOut,
+          bestSwapRoute.amountIn,
+          slippageBps,
+          deadline
+        );
+      } catch (err) {
+        console.error("Failed to build swap:", err);
+        showToast("Failed to prepare swap");
+        return;
+      }
+      
+      // Extract the calldata and value
+      callData = swapData.callData;
+      msgValue = swapData.msgValue;
     }
-    
-    // Extract the calldata and value
-    const { callData, msgValue } = swapData;
     
     // Show confirmation modal
     const modal = document.getElementById("swapConfirmModal");
@@ -3794,39 +4324,19 @@ async function checkAndRequestApproval(token, amount) {
   try {
     // Handle ERC6909 tokens (like ZAMM)
     if (token.isERC6909) {
-      let needsApproval = false;
-      
-      // Use zWallet contract helper to check operator status
-      if (zWalletContract) {
-        try {
-          const isOperator = await zWalletContract.getIsOperatorOf(
-            wallet.address,
-            token.address,
-            ZROUTER_ADDRESS
-          );
-          needsApproval = !isOperator;
-        } catch {
-          // Fallback to direct check
-          const erc6909Contract = new ethers.Contract(
-            token.address,
-            ["function isOperator(address owner, address spender) view returns (bool)"],
-            provider
-          );
-          const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
-          needsApproval = !isApproved;
-        }
-      } else {
-        // Fallback to direct check
-        const erc6909Contract = new ethers.Contract(
-          token.address,
-          ["function isOperator(address owner, address spender) view returns (bool)"],
-          provider
-        );
-        const isApproved = await erc6909Contract.isOperator(wallet.address, ZROUTER_ADDRESS);
-        needsApproval = !isApproved;
+      // Use zWallet contract helper to check if operator approval is needed
+      if (!zWalletContract) {
+        throw new Error("zWallet contract not initialized");
       }
       
-      if (!needsApproval) {
+      // Get the approval payload if needed (returns empty bytes if already approved)
+      // This checks if zRouter is an operator for the user on the ERC6909 token contract
+      const approvalPayload = await zWalletContract.checkERC6909RouterIsOperator(
+        wallet.address,
+        token.address
+      );
+      
+      if (!approvalPayload || approvalPayload === "0x") {
         return true; // Already approved as operator
       }
       
@@ -3837,13 +4347,16 @@ async function checkAndRequestApproval(token, amount) {
       
       document.getElementById("swapStatus").innerHTML = '<div class="status">Setting operator approval...</div>';
       
-      // Set operator approval for ERC6909
-      const approveContract = new ethers.Contract(
-        token.address,
-        ["function setOperator(address spender, bool approved) returns (bool)"],
-        wallet
-      );
-      const approveTx = await approveContract.setOperator(ZROUTER_ADDRESS, true);
+      // Execute the approval using the generated calldata
+      const approveTx = await wallet.sendTransaction({
+        to: token.address,
+        data: approvalPayload,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: approvalPayload
+        })
+      });
       
       document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
       await approveTx.wait();
@@ -3853,39 +4366,20 @@ async function checkAndRequestApproval(token, amount) {
       
     } else {
       // Standard ERC20 approval flow
-      let needsApproval = false;
-      
-      // Use zWallet contract helper if available
-      if (zWalletContract) {
-        try {
-          const [rawAllowance] = await zWalletContract.getAllowanceOf(
-            wallet.address,
-            token.address,
-            ZROUTER_ADDRESS
-          );
-          needsApproval = rawAllowance < amount;
-        } catch {
-          // Fallback to direct check
-          const tokenContract = new ethers.Contract(
-            token.address,
-            ["function allowance(address owner, address spender) view returns (uint256)"],
-            provider
-          );
-          const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
-          needsApproval = allowance < amount;
-        }
-      } else {
-        // Fallback to direct check
-        const tokenContract = new ethers.Contract(
-          token.address,
-          ["function allowance(address owner, address spender) view returns (uint256)"],
-          provider
-        );
-        const allowance = await tokenContract.allowance(wallet.address, ZROUTER_ADDRESS);
-        needsApproval = allowance < amount;
+      if (!zWalletContract) {
+        throw new Error("zWallet contract not initialized");
       }
       
-      if (!needsApproval) {
+      // Use zWallet helper to check if approval is needed and get calldata
+      // The 'true' parameter means approve max amount to avoid future approvals
+      const approvalPayload = await zWalletContract.checkERC20RouterApproval(
+        wallet.address,
+        token.address,
+        amount,
+        true // Use max approval
+      );
+      
+      if (!approvalPayload || approvalPayload === "0x") {
         return true; // Already approved
       }
       
@@ -3896,14 +4390,16 @@ async function checkAndRequestApproval(token, amount) {
       
       document.getElementById("swapStatus").innerHTML = '<div class="status">Approving token...</div>';
       
-      const approveContract = new ethers.Contract(
-        token.address,
-        ["function approve(address spender, uint256 amount) returns (bool)"],
-        wallet
-      );
-      
-      // Approve max amount to avoid future approvals
-      const approveTx = await approveContract.approve(ZROUTER_ADDRESS, ethers.MaxUint256);
+      // Execute the approval using the generated calldata
+      const approveTx = await wallet.sendTransaction({
+        to: token.address,
+        data: approvalPayload,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: approvalPayload
+        })
+      });
       
       document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
       await approveTx.wait();
@@ -3918,6 +4414,136 @@ async function checkAndRequestApproval(token, amount) {
     showToast("Approval failed");
     return false;
   }
+}
+
+// Batch check approval status for multiple tokens
+async function batchCheckApprovals(tokens, amounts = []) {
+  if (!zWalletContract || !wallet) return {};
+  
+  const approvalStatus = {};
+  
+  try {
+    // Process tokens in parallel for efficiency
+    const promises = tokens.map(async (token, index) => {
+      const amount = amounts[index] || ethers.MaxUint256;
+      
+      if (token.isERC6909) {
+        // Check ERC6909 operator status
+        const payload = await zWalletContract.checkERC6909RouterIsOperator(
+          wallet.address,
+          token.address
+        );
+        approvalStatus[token.address] = {
+          needsApproval: payload && payload !== "0x",
+          type: 'operator',
+          payload
+        };
+      } else {
+        // Check ERC20 allowance
+        const payload = await zWalletContract.checkERC20RouterApproval(
+          wallet.address,
+          token.address,
+          amount,
+          true // Max approval
+        );
+        approvalStatus[token.address] = {
+          needsApproval: payload && payload !== "0x",
+          type: 'allowance',
+          payload
+        };
+      }
+    });
+    
+    await Promise.all(promises);
+  } catch (err) {
+    console.error("Batch approval check error:", err);
+  }
+  
+  return approvalStatus;
+}
+
+// Pre-generate approval calldata for multiple tokens
+async function prepareApprovalCalldata(token, amount = ethers.MaxUint256) {
+  if (!zWalletContract) return null;
+  
+  try {
+    if (token.isERC6909) {
+      return await zWalletContract.getERC6909SetOperator(ZROUTER_ADDRESS, true);
+    } else {
+      return await zWalletContract.getERC20Approve(ZROUTER_ADDRESS, amount);
+    }
+  } catch (err) {
+    console.error("Error preparing approval calldata:", err);
+    return null;
+  }
+}
+
+// Execute multiple approvals sequentially (each requires separate transaction)
+async function executeApprovalSequence(approvalData) {
+  if (!wallet || !provider) return false;
+  
+  const results = [];
+  
+  for (const approval of approvalData) {
+    try {
+      const tx = await wallet.sendTransaction({
+        to: approval.tokenAddress,
+        data: approval.calldata,
+        gasLimit: await provider.estimateGas({
+          from: wallet.address,
+          to: approval.tokenAddress,
+          data: approval.calldata
+        })
+      });
+      
+      showToast(`Approving ${approval.token}...`);
+      await tx.wait();
+      results.push({ token: approval.token, success: true });
+    } catch (err) {
+      console.error(`Approval failed for ${approval.token}:`, err);
+      results.push({ token: approval.token, success: false, error: err.message });
+    }
+  }
+  
+  const successCount = results.filter(r => r.success).length;
+  if (successCount === approvalData.length) {
+    showToast("All token approvals completed!");
+  } else if (successCount > 0) {
+    showToast(`${successCount}/${approvalData.length} approvals completed`);
+  } else {
+    showToast("Approvals failed");
+  }
+  
+  return results;
+}
+
+// Helper to check and prepare all necessary approvals
+async function prepareAllNecessaryApprovals() {
+  if (!zWalletContract || !wallet) return [];
+  
+  const approvals = [];
+  const tokensToCheck = Object.values(TOKENS).filter(t => t.address && t.symbol !== "ETH");
+  
+  for (const token of tokensToCheck) {
+    try {
+      const payload = token.isERC6909
+        ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
+        : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
+      
+      if (payload && payload !== "0x") {
+        approvals.push({
+          token: token.symbol,
+          tokenAddress: token.address,
+          calldata: payload,
+          type: token.isERC6909 ? 'operator' : 'allowance'
+        });
+      }
+    } catch (err) {
+      console.debug(`Failed to check approval for ${token.symbol}:`, err);
+    }
+  }
+  
+  return approvals;
 }
 
 async function showApprovalModal(token, isERC6909) {
