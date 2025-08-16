@@ -75,13 +75,22 @@ function buildExtension() {
   const fileList = EXTENSION_FILES.map(f => `'extension/${f}'`).join(' ');
   
   try {
-    // Create the zip file with shell-escaped filename
+    // Create the zip file
     console.log('\n🗜️  Creating zip archive...');
-    const escapedZipName = `'${zipName.replace(/'/g, "'\\''")}}'`;
-    execSync(`zip -r ${escapedZipName} ${fileList}`, {
+    
+    // Change to extension directory and create zip from there
+    const zipCommand = `cd extension && zip -r ../${zipName} ${EXTENSION_FILES.join(' ')}`;
+    
+    console.log('  Running: ' + zipCommand);
+    execSync(zipCommand, {
       cwd: __dirname,
-      stdio: 'pipe'
+      stdio: 'inherit' // Show zip command output
     });
+    
+    // Verify the zip file was created
+    if (!fs.existsSync(zipPath)) {
+      throw new Error('Zip file was not created');
+    }
     
     // Get file size
     const stats = fs.statSync(zipPath);

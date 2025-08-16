@@ -111,7 +111,7 @@ async function handleProviderRequest(request, sender, sendResponse) {
       break;
       
     case 'web3_clientVersion':
-      sendResponse({ result: 'zWallet/0.0.2' });
+      sendResponse({ result: 'zWallet/0.0.3' });
       break;
       
     case 'eth_syncing':
