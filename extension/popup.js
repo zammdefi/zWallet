@@ -39,102 +39,18 @@ function throttle(func, limit) {
 }
 
 /**
- * Memoization decorator for caching expensive computations
- * @param {Function} fn - Function to memoize
- * @param {Function} keyGenerator - Optional function to generate cache key
- * @returns {Function} Memoized function
+ * Optimized formatters
  */
-function memoize(fn, keyGenerator) {
-  const cache = new Map();
-  const MAX_CACHE_SIZE = 100;
-  
-  return function(...args) {
-    const key = keyGenerator ? keyGenerator(...args) : JSON.stringify(args);
-    
-    if (cache.has(key)) {
-      return cache.get(key);
-    }
-    
-    const result = fn.apply(this, args);
-    
-    // Limit cache size
-    if (cache.size >= MAX_CACHE_SIZE) {
-      const firstKey = cache.keys().next().value;
-      cache.delete(firstKey);
-    }
-    
-    cache.set(key, result);
-    return result;
-  };
-}
-
-/**
- * DOM element cache for avoiding repeated queries
- */
-const domCache = new Map();
-const DOM_CACHE_TTL = 10000; // 10 seconds
-
-function getCachedElement(id) {
-  const cached = domCache.get(id);
-  if (cached && Date.now() - cached.timestamp < DOM_CACHE_TTL) {
-    return cached.element;
-  }
-  
-  const element = document.getElementById(id);
-  if (element) {
-    domCache.set(id, { element, timestamp: Date.now() });
-  }
-  return element;
-}
-
-function clearDOMCache() {
-  domCache.clear();
-}
-
-/**
- * Request Animation Frame based batching for DOM updates
- */
-class DOMBatcher {
-  constructor() {
-    this.queue = [];
-    this.scheduled = false;
-  }
-  
-  add(fn) {
-    this.queue.push(fn);
-    if (!this.scheduled) {
-      this.scheduled = true;
-      requestAnimationFrame(() => this.flush());
-    }
-  }
-  
-  flush() {
-    const queue = this.queue.slice();
-    this.queue = [];
-    this.scheduled = false;
-    
-    // Execute all queued DOM updates in a single frame
-    for (let i = 0; i < queue.length; i++) {
-      queue[i]();
-    }
-  }
-}
-
-const domBatcher = new DOMBatcher();
-
-/**
- * Optimized formatters with memoization
- */
-const formatBalance = memoize((value, decimals = 18) => {
+const formatBalance = (value, decimals = 18) => {
   if (!value) return "0";
   try {
     return ethers.formatUnits(value, decimals);
   } catch {
     return "0";
   }
-}, (value, decimals) => `${value}_${decimals}`);
+};
 
-const formatCurrency = memoize((value, currency = 'USD') => {
+const formatCurrency = (value, currency = 'USD') => {
   if (!value || isNaN(value)) return '$0.00';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -142,12 +58,12 @@ const formatCurrency = memoize((value, currency = 'USD') => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(value);
-});
+};
 
-const formatAddress = memoize((address) => {
+const formatAddress = (address) => {
   if (!address) return '';
   return address.slice(0, 6) + '...' + address.slice(-4);
-});
+};
 
 // Constants for magic numbers
 const CONSTANTS = {
@@ -916,7 +832,7 @@ const activeIntervals = new Set();
 const cleanupCallbacks = new Set();
 
 // Cache for RPC responses (5 minute TTL)
-const rpcCache = new Map();
+// Removed rpcCache - using contract's efficient batching instead
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Track all timers for cleanup
@@ -1098,22 +1014,7 @@ function createManagedAbortController(key) {
   };
 }
 
-function getCachedOrFetch(key, fetchFn) {
-  const cached = rpcCache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return Promise.resolve(cached.data);
-  }
-  
-  return fetchFn().then(data => {
-    rpcCache.set(key, { data, timestamp: Date.now() });
-    // Limit cache size
-    if (rpcCache.size > 100) {
-      const firstKey = rpcCache.keys().next().value;
-      rpcCache.delete(firstKey);
-    }
-    return data;
-  });
-}
+// Removed getCachedOrFetch - using contract's efficient batching instead
 
 function addManagedEventListener(element, event, handler, options = {}) {
   if (!element) return;
@@ -1185,10 +1086,6 @@ function cleanupAbortControllers() {
   abortControllers.clear();
 }
 
-function cleanupCache() {
-  // Clear RPC cache
-  rpcCache.clear();
-}
 
 function cleanupWalletState() {
   // Clear sensitive wallet data
@@ -1219,7 +1116,6 @@ function performFullCleanup() {
   cleanupEventListeners();
   cleanupTimers();
   cleanupAbortControllers();
-  cleanupCache();
   
   // Don't clean wallet state on normal cleanup
   // Only on explicit logout or page unload
@@ -1367,7 +1263,6 @@ async function init() {
     if (document.hidden) {
       // Page is hidden, cleanup non-essential resources
       cleanupAbortControllers();
-      cleanupCache();
     }
   });
   
@@ -1424,11 +1319,17 @@ async function init() {
             }
 
             wallet = new ethers.Wallet(pk, provider);
+            
+            // Update selector to show current wallet
+            const selector = document.getElementById("walletSelector");
+            if (selector) {
+              selector.value = entry.address;
+            }
+            
             await displayWallet();
-
             showToast("Wallet unlocked!");
           } catch (e) {
-            
+            console.error('Failed to unlock last wallet:', e);
             // keep LS_LAST so user can try from selector
           }
       } else {
@@ -2029,8 +1930,8 @@ async function fetchZAMMPrice() {
  * Show loading skeleton for token grids
  */
 function showTokenLoadingSkeleton() {
-  const tokenGrid = getCachedElement("tokenGrid");
-  const sendTokenGrid = getCachedElement("sendTokenGrid");
+  const tokenGrid = document.getElementById("tokenGrid");
+  const sendTokenGrid = document.getElementById("sendTokenGrid");
   
   if (tokenGrid) {
     tokenGrid.innerHTML = `
@@ -2051,28 +1952,39 @@ function showTokenLoadingSkeleton() {
 
 // Fetch all balances using zWallet contract's batchView
 async function fetchAllBalances() {
-  if (!wallet || !provider || !zWalletContract) return;
+  console.log('fetchAllBalances called', {
+    wallet: wallet?.address,
+    provider: !!provider,
+    zWalletContract: !!zWalletContract,
+    tokensCount: Object.keys(TOKENS).length
+  });
+  
+  if (!wallet || !provider || !zWalletContract) {
+    console.error('Missing requirements for fetchAllBalances');
+    return;
+  }
   
   // Show loading state
   showTokenLoadingSkeleton();
 
-  return ErrorBoundary.wrapAsync(async () => {
+  try {
     // Prepare token addresses and ids for batchView
     const tokenAddresses = [];
     const tokenIds = [];
     const tokenSymbols = [];
 
     for (const [symbol, token] of Object.entries(TOKENS)) {
-      if (token.isERC6909) {
-        tokenAddresses.push(token.address);
-        tokenIds.push(BigInt(token.id));
-      } else {
-        tokenAddresses.push(token.address || ethers.ZeroAddress);
-        tokenIds.push(0);
-      }
+      tokenAddresses.push(token.address || ethers.ZeroAddress);
+      tokenIds.push(token.isERC6909 ? BigInt(token.id) : 0n);
       tokenSymbols.push(symbol);
     }
 
+    console.log('Calling batchView with:', {
+      addresses: tokenAddresses,
+      ids: tokenIds,
+      symbols: tokenSymbols
+    });
+    
     // Call batchView to get all data in one call
     const batchResult = await zWalletContract.batchView(
       wallet.address,
@@ -2080,25 +1992,26 @@ async function fetchAllBalances() {
       tokenIds
     );
     
-    // Destructure the results we need
-    const ensName = batchResult[0];
-    // const tokensOut = batchResult[1]; // Not used currently
-    // const idsOut = batchResult[2]; // Not used currently
-    // const kinds = batchResult[3]; // Token type indicators: 0=ETH, 20=ERC20, 72=ERC721, 69=ERC6909
-    const rawBalances = batchResult[4];
-    // const balances = batchResult[5]; // We calculate our own formatted balances
-    const names = batchResult[6];
-    const symbols = batchResult[7];
-    const decimals = batchResult[8];
-    const pricesETH = batchResult[9];
-    // const pricesETHStr = batchResult[10]; // Not used currently
-    const pricesUSDC = batchResult[11];
-    // const pricesUSDCStr = batchResult[12]; // Not used currently
+    console.log('batchView returned', batchResult.length, 'arrays');
+    
+    const [
+      ensName,
+      tokensOut,
+      idsOut,
+      kinds,  // 0=ETH, 20=ERC20, 72=ERC721, 69=ERC6909
+      rawBalances,
+      balances,
+      names,
+      symbols,
+      decimals,
+      pricesETH,
+      pricesETHStr,
+      pricesUSDC,
+      pricesUSDCStr
+    ] = batchResult;
     
     // Update ENS name if found
     if (ensName) {
-      // ENS name resolved
-      // Display ENS name in the UI
       const ensNameEl = document.getElementById("ensName");
       if (ensNameEl) {
         ensNameEl.textContent = ensName;
@@ -2109,146 +2022,110 @@ async function fetchAllBalances() {
     currentBalances = {};
     tokenPrices = {};
     
-    // First, find ETH price from the results (it will be in ETH's pricesUSDC)
-    let ethPriceInUsd = 3500; // fallback
+    // Get ETH price from results
     const ethIndex = tokenSymbols.indexOf("ETH");
     if (ethIndex !== -1 && pricesUSDC[ethIndex]) {
-      ethPriceInUsd = Number(pricesUSDC[ethIndex]) / 1e6;
-      ethPrice = ethPriceInUsd; // Update global ethPrice
-      
+      ethPrice = Number(pricesUSDC[ethIndex]) / 1e6;
     }
 
     for (let i = 0; i < tokenSymbols.length; i++) {
       const symbol = tokenSymbols[i];
       const token = TOKENS[symbol];
+      
+      if (!token) {
+        console.warn(`Token ${symbol} not found in TOKENS`);
+        continue;
+      }
 
-      // Store balance
+      // Update token type based on contract's detection
+      const tokenKind = kinds ? Number(kinds[i]) : 0;
+      if (tokenKind === 72) {
+        token.isERC721 = true;
+      } else if (tokenKind === 69) {
+        token.isERC6909 = true;
+      }
+
+      // Store balance directly from contract
+      const rawBal = rawBalances[i] || 0n;
+      const dec = decimals ? (Number(decimals[i]) || 18) : 18;
+      
       currentBalances[symbol] = {
-        raw: rawBalances[i],
-        formatted: ethers.formatUnits(rawBalances[i], decimals[i]),
+        raw: rawBal,
+        formatted: formatBalance(rawBal, dec),
       };
 
-      // Store prices - the contract already handles ETH/WETH/USDC special cases
-      let priceInEth = Number(pricesETH[i]) / 1e18;
-      let priceInUsd = Number(pricesUSDC[i]) / 1e6;
+      // Use prices directly from contract - it already handles all special cases
+      let priceInEth = pricesETH[i] ? Number(pricesETH[i]) / 1e18 : 0;
+      let priceInUsd = pricesUSDC[i] ? Number(pricesUSDC[i]) / 1e6 : 0;
 
-      // Only override for stablecoins that aren't USDC (since USDC is handled by contract)
-      if (symbol === "USDT" || symbol === "DAI") {
-        priceInUsd = 1.0; // Stablecoins are always $1
-        // Calculate ETH price based on current ETH/USD rate
-        if (ethPriceInUsd > 0) {
-          priceInEth = safeDivide(1.0, ethPriceInUsd, 0); // 1 USD worth of ETH
+      // Special handling only for ZAMM (custom AMM pool)
+      if (symbol === "ZAMM") {
+        try {
+          const zammPrice = await fetchZAMMPrice();
+          priceInEth = zammPrice.eth || priceInEth;
+          priceInUsd = zammPrice.usd || priceInUsd;
+        } catch (err) {
+          console.error('Failed to fetch ZAMM price:', err);
         }
-      } else if (symbol === "ZAMM") {
-        // Fetch ZAMM price from the AMM pool
-        const zammPrice = await fetchZAMMPrice();
-        priceInEth = zammPrice.eth;
-        priceInUsd = zammPrice.usd;
       }
-      // The contract already correctly handles:
-      // - ETH: priceETH = 1, priceUSDC from WETH
-      // - WETH: priceETH = 1, priceUSDC from checkPrice
-      // - USDC: priceUSDC = 1, priceETH from checkPriceInETH
 
       tokenPrices[symbol] = {
         eth: priceInEth,
         usd: priceInUsd,
       };
 
-      // Update token metadata if needed
-      if (!token.isCoin && (token.name === undefined || token.name === "")) {
+      // Update token metadata from contract if needed
+      if (!token.name || token.name === "") {
         token.name = names[i] || symbol;
         token.symbol = symbols[i] || symbol;
-        token.decimals = decimals[i];
+        token.decimals = dec;
       }
     }
 
+    console.log('Balance data processed, updating display');
     updateBalanceDisplay();
-  }, 'Fetch Balances', async () => {
-    // Fallback to individual fetches
-    await fetchBalancesFallback();
-  });
-}
-
-async function fetchBalancesFallback() {
-  if (!wallet || !provider || !zWalletContract) return;
-
-  // Get WETH price using zWallet contract (it has price checking built in)
-  try {
-    if (zWalletContract) {
-      const [priceUSDC] = await zWalletContract.checkPrice(WETH_ADDRESS);
-      ethPrice = Number(priceUSDC) / 1e6; // USDC has 6 decimals
-      
-    } else {
-      ethPrice = 3500; // Fallback if contract not ready
-    }
-  } catch (err) {
+  } catch (error) {
+    console.error('Failed to fetch balances via batchView:', error, error.stack);
     
-    ethPrice = 3500; // Fallback
-  }
-
-  for (const [symbol, token] of Object.entries(TOKENS)) {
+    // Fallback: try to at least get ETH balance
     try {
-      const tokenAddress = token.address || ethers.ZeroAddress;
-      const tokenId = token.isERC6909 ? BigInt(token.id) : 0;
-
-      // Get balance
-      const [raw] = await zWalletContract.getBalanceOf(
-        wallet.address,
-        tokenAddress,
-        tokenId
-      );
-
-      currentBalances[symbol] = {
-        raw: raw,
-        formatted: ethers.formatUnits(raw, token.decimals || 18),
+      const ethBalance = await provider.getBalance(wallet.address);
+      currentBalances = {
+        ETH: {
+          raw: ethBalance,
+          formatted: ethers.formatEther(ethBalance)
+        }
       };
-
-      // Get prices - let the contract handle ETH/USDC special cases
-      if (symbol === "USDT" || symbol === "DAI") {
-        // Only override non-USDC stablecoins to exactly $1.00
-        tokenPrices[symbol] = {
-          eth: safeDivide(1.0, ethPrice, 0),
-          usd: 1.0,
+      
+      // Set default prices if not available
+      if (!tokenPrices.ETH) {
+        tokenPrices = {
+          ETH: { eth: 1, usd: 3500 }
         };
-      } else if (symbol === "ZAMM") {
-        // Fetch ZAMM price from the AMM pool
-        const zammPrice = await fetchZAMMPrice();
-        tokenPrices[symbol] = zammPrice;
-      } else {
-        try {
-          // The contract automatically handles:
-          // - ETH: returns priceETH = 1e18, priceUSDC from WETH
-          // - USDC: returns priceUSDC = 1e6, priceETH calculated
-          const [priceETH] = await zWalletContract.checkPriceInETH(
-            tokenAddress
-          );
-          const [priceUSDC] = await zWalletContract.checkPriceInETHToUSDC(
-            tokenAddress
-          );
-
-          tokenPrices[symbol] = {
-            eth: Number(priceETH) / 1e18,
-            usd: Number(priceUSDC) / 1e6,
+      }
+      
+      // Initialize other tokens with zero balance
+      for (const [symbol, token] of Object.entries(TOKENS)) {
+        if (symbol !== 'ETH' && !currentBalances[symbol]) {
+          currentBalances[symbol] = {
+            raw: 0n,
+            formatted: "0"
           };
-        } catch (err) {
-          
-          tokenPrices[symbol] = { eth: 0, usd: 0 };
+          tokenPrices[symbol] = tokenPrices[symbol] || { eth: 0, usd: 0 };
         }
       }
-    } catch (err) {
       
-      currentBalances[symbol] = { raw: 0n, formatted: "0" };
-      tokenPrices[symbol] = { eth: 0, usd: 0 };
+      updateBalanceDisplay();
+    } catch (fallbackError) {
+      console.error('Fallback balance fetch also failed:', fallbackError);
+      showError(error, 'Fetch Balances');
     }
   }
-
-  updateBalanceDisplay();
 }
 
 function updateBalanceDisplay() {
-  const tokenGrid = getCachedElement("tokenGrid");
-  const sendTokenGrid = getCachedElement("sendTokenGrid");
+  const tokenGrid = document.getElementById("tokenGrid");
+  const sendTokenGrid = document.getElementById("sendTokenGrid");
   if (!tokenGrid || !sendTokenGrid) {
     console.error('Token grid elements not found');
     return;
@@ -2337,19 +2214,17 @@ function updateBalanceDisplay() {
     sendFragment.appendChild(sendRow);
   }
 
-  // Batch update DOM
-  domBatcher.add(() => {
-    tokenGrid.innerHTML = "";
-    sendTokenGrid.innerHTML = "";
-    tokenGrid.appendChild(walletFragment);
-    sendTokenGrid.appendChild(sendFragment);
-    
-    const portfolioTotal = getCachedElement("portfolioTotal");
-    if (portfolioTotal) {
-      portfolioTotal.innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">${formatCurrency(totalValue)}</div>
-      <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
-    }
-  });
+  // Update DOM directly
+  tokenGrid.innerHTML = "";
+  sendTokenGrid.innerHTML = "";
+  tokenGrid.appendChild(walletFragment);
+  sendTokenGrid.appendChild(sendFragment);
+  
+  const portfolioTotal = document.getElementById("portfolioTotal");
+  if (portfolioTotal) {
+    portfolioTotal.innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">${formatCurrency(totalValue)}</div>
+    <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
+  }
 }
 
 function selectToken(symbol) {
@@ -2359,7 +2234,7 @@ function selectToken(symbol) {
   for (const row of rows) {
     row.classList.toggle("selected", row.dataset.symbol === symbol);
   }
-  const label = getCachedElement("selectedTokenLabel");
+  const label = document.getElementById("selectedTokenLabel");
   if (label) label.textContent = symbol;
   
   // Show/hide IOU mode for USDC
@@ -2381,24 +2256,14 @@ function selectToken(symbol) {
 }
 
 async function resolveENS(name) {
-  if (!name.endsWith(".eth")) return null;
+  if (!name.endsWith(".eth") || !zWalletContract) return null;
 
-  // Use zWallet contract's ENS resolution if available
-  if (zWalletContract) {
-    try {
-      const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
-      // Return receiver if set, otherwise owner
-      return receiver !== ethers.ZeroAddress ? receiver : owner !== ethers.ZeroAddress ? owner : null;
-    } catch (err) {
-      
-    }
-  }
-
-  // Fallback to provider resolution
   try {
-    return await provider.resolveName(name);
+    const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
+    // Return receiver if set, otherwise owner
+    return receiver !== ethers.ZeroAddress ? receiver : owner !== ethers.ZeroAddress ? owner : null;
   } catch (err) {
-    
+    console.error('ENS resolution failed:', err);
     return null;
   }
 }
@@ -3423,23 +3288,28 @@ async function addCustomToken(tokenAddress, tokenId = null) {
       throw new Error("Invalid address");
     }
 
-    let isERC6909 = false;
+    // Get token metadata
+    const [name, symbol, decimals] = await zWalletContract.getMetadata(tokenAddress);
+    
+    if (!symbol || symbol === "") {
+      throw new Error("Could not fetch token metadata");
+    }
+
+    // Use batchView to determine token type
+    const [, , , kinds] = await zWalletContract.batchView(
+      wallet.address,
+      [tokenAddress],
+      [tokenId ? BigInt(tokenId) : 0]
+    );
+    
+    const tokenKind = kinds[0];
     let token;
 
-    // Check if token ID is provided, suggesting ERC6909
-    if (tokenId && tokenId !== "") {
-      // Check if it's actually ERC6909
-      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
-      
-      if (!isERC6909) {
-        throw new Error("Token ID provided but contract is not ERC6909");
+    if (tokenKind === 69 || tokenId) { // ERC6909
+      if (!tokenId) {
+        throw new Error("This is an ERC6909 contract - please provide a token ID");
       }
-
-      // For ERC6909, we may not have per-ID metadata
-      const [name, symbol, decimals] = await zWalletContract.getMetadata(
-        tokenAddress
-      );
-
+      
       // Create unique symbol for this ID
       const idSymbol = symbol ? `${symbol.toUpperCase()}_${tokenId}` : `ID_${tokenId}`;
       
@@ -3451,23 +3321,9 @@ async function addCustomToken(tokenAddress, tokenId = null) {
         isERC6909: true,
         id: tokenId,
       };
-    } else {
-      // Check if it's ERC6909 without ID
-      isERC6909 = await zWalletContract.isERC6909(tokenAddress);
-      
-      if (isERC6909) {
-        throw new Error("This is an ERC6909 contract - please provide a token ID");
-      }
-
-      // Standard ERC20 token
-      const [name, symbol, decimals] = await zWalletContract.getMetadata(
-        tokenAddress
-      );
-
-      if (!symbol || symbol === "") {
-        throw new Error("Could not fetch token metadata");
-      }
-
+    } else if (tokenKind === 72) { // ERC721
+      throw new Error("ERC721 (NFT) tokens are not supported in the wallet interface");
+    } else { // ERC20
       token = {
         address: tokenAddress,
         symbol: symbol.toUpperCase(),
@@ -3483,7 +3339,7 @@ async function addCustomToken(tokenAddress, tokenId = null) {
 
     return token;
   } catch (err) {
-    
+    console.error('Failed to add custom token:', err);
     throw err;
   }
 }
@@ -4046,14 +3902,27 @@ function setupEventListeners() {
       const addr = e.target.value;
       if (!addr) return;
       
+      // Check if we're already unlocked with this wallet
+      if (wallet && wallet.address.toLowerCase() === addr.toLowerCase()) {
+        // Already using this wallet, no need to unlock again
+        return;
+      }
+      
       // Clean up resources from previous wallet before switching
       cleanupForWalletSwitch();
       
       const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
-      const entry = list.find((w) => w.address === addr);
+      const entry = list.find((w) => w.address.toLowerCase() === addr.toLowerCase());
+      
+      if (!entry) {
+        showError('Wallet not found');
+        e.target.value = "";
+        return;
+      }
+      
       // For multi-wallet, ask for password to unlock the specific wallet
       try {
-        const pass = await securePasswordPrompt('Unlock Wallet', `Enter password for ${addr.slice(0,6)}...${addr.slice(-4)} to send transaction:`);
+        const pass = await securePasswordPrompt('Switch Wallet', `Enter password for ${addr.slice(0,6)}...${addr.slice(-4)}:`);
         const pk = await decryptPK(
           entry.crypto,
           pass,
@@ -4076,7 +3945,7 @@ function setupEventListeners() {
             );
             localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
           } catch (e) {
-            
+            console.error('Failed to rewrap keystore:', e);
           }
         }
 
@@ -4084,11 +3953,16 @@ function setupEventListeners() {
         await displayWallet();
 
         localStorage.setItem(LS_LAST, addr);
-        showToast("Wallet unlocked!");
+        showToast("Switched to " + (entry.label || `${addr.slice(0,6)}...${addr.slice(-4)}`));
       } catch (err) {
-        
+        console.error('Wallet unlock failed:', err);
         showError('Wrong password');
-        e.target.value = "";
+        // Reset selector to previous value if available
+        if (wallet) {
+          e.target.value = wallet.address;
+        } else {
+          e.target.value = "";
+        }
       }
     });
 
@@ -4340,7 +4214,7 @@ function setupEventListeners() {
 
   // Debounced ENS resolution handler
   const handleAddressInput = debounce(async (value) => {
-    const resolved = getCachedElement("resolvedAddress");
+    const resolved = document.getElementById("resolvedAddress");
     if (!resolved) return;
     
     if (value.endsWith(".eth")) {
@@ -4349,7 +4223,7 @@ function setupEventListeners() {
       try {
         const address = await resolveENS(value);
         // Check if input hasn't changed
-        if (getCachedElement("toAddress")?.value.trim() === value) {
+        if (document.getElementById("toAddress")?.value.trim() === value) {
           if (address) {
             resolved.textContent = `→ ${formatAddress(address)}`;
             resolved.style.color = "var(--success)";
@@ -5931,232 +5805,59 @@ async function executeSwap() {
   }
 }
 async function checkAndRequestApproval(token, amount) {
-  if (!token || !token.address) return true;
+  if (!token || !token.address || !zWalletContract) return true;
   
   try {
-    // Handle ERC6909 tokens (like ZAMM)
-    if (token.isERC6909) {
-      // Use zWallet contract helper to check if operator approval is needed
-      if (!zWalletContract) {
-        throw new Error("zWallet contract not initialized");
-      }
-      
-      // Get the approval payload if needed (returns empty bytes if already approved)
-      // This checks if zRouter is an operator for the user on the ERC6909 token contract
-      const approvalPayload = await zWalletContract.checkERC6909RouterIsOperator(
-        wallet.address,
-        token.address
-      );
-      
-      if (!approvalPayload || approvalPayload === "0x") {
-        return true; // Already approved as operator
-      }
-      
-      // Show approval modal with details
-      const approvalConfirmed = await showApprovalModal(token, true);
-      
-      if (!approvalConfirmed) return false;
-      
-      document.getElementById("swapStatus").innerHTML = '<div class="status">Setting operator approval...</div>';
-      
-      // Execute the approval using the generated calldata
-      const approveTx = await wallet.sendTransaction({
-        to: token.address,
-        data: approvalPayload,
-        gasLimit: await provider.estimateGas({
-          from: wallet.address,
-          to: token.address,
-          data: approvalPayload
-        })
-      });
-      
-      document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
-      await approveTx.wait();
-      
-      showToast(`${token.symbol} operator approval granted!`);
-      return true;
-      
-    } else {
-      // Standard ERC20 approval flow
-      if (!zWalletContract) {
-        throw new Error("zWallet contract not initialized");
-      }
-      
-      // Use zWallet helper to check if approval is needed and get calldata
-      // The 'true' parameter means approve max amount to avoid future approvals
-      const approvalPayload = await zWalletContract.checkERC20RouterApproval(
-        wallet.address,
-        token.address,
-        amount,
-        true // Use max approval
-      );
-      
-      if (!approvalPayload || approvalPayload === "0x") {
-        return true; // Already approved
-      }
-      
-      // Show approval modal with details
-      const approvalConfirmed = await showApprovalModal(token, false);
-      
-      if (!approvalConfirmed) return false;
-      
-      document.getElementById("swapStatus").innerHTML = '<div class="status">Approving token...</div>';
-      
-      // Execute the approval using the generated calldata
-      const approveTx = await wallet.sendTransaction({
-        to: token.address,
-        data: approvalPayload,
-        gasLimit: await provider.estimateGas({
-          from: wallet.address,
-          to: token.address,
-          data: approvalPayload
-        })
-      });
-      
-      document.getElementById("swapStatus").innerHTML = `<div class="status">Approving... ${approveTx.hash.slice(0, 10)}...</div>`;
-      await approveTx.wait();
-      
-      showToast(`${token.symbol} approved for swapping!`);
+    // Get approval payload from contract - it handles both ERC20 and ERC6909
+    const approvalPayload = token.isERC6909
+      ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
+      : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, amount, true);
+    
+    // If no payload or empty, already approved
+    if (!approvalPayload || approvalPayload === "0x") {
       return true;
     }
     
-  } catch (err) {
+    // Show approval modal
+    const approvalConfirmed = await showApprovalModal(token, token.isERC6909);
+    if (!approvalConfirmed) return false;
     
-    document.getElementById("swapStatus").innerHTML = '<div class="status error">Approval failed</div>';
-    showToast("Approval failed");
+    // Update status
+    const statusEl = document.getElementById("swapStatus");
+    if (statusEl) {
+      statusEl.innerHTML = `<div class="status">Approving ${token.symbol}...</div>`;
+    }
+    
+    // Execute approval
+    const approveTx = await wallet.sendTransaction({
+      to: token.address,
+      data: approvalPayload,
+      gasLimit: await provider.estimateGas({
+        from: wallet.address,
+        to: token.address,
+        data: approvalPayload
+      })
+    });
+    
+    if (statusEl) {
+      statusEl.innerHTML = `<div class="status">Waiting for approval...</div>`;
+    }
+    await approveTx.wait();
+    
+    showToast(`${token.symbol} approved!`);
+    return true;
+    
+  } catch (err) {
+    console.error('Approval failed:', err);
+    const statusEl = document.getElementById("swapStatus");
+    if (statusEl) {
+      statusEl.innerHTML = '<div class="status error">Approval failed</div>';
+    }
     return false;
   }
 }
 
-// Batch check approval status for multiple tokens
-async function batchCheckApprovals(tokens, amounts = []) {
-  if (!zWalletContract || !wallet) return {};
-  
-  const approvalStatus = {};
-  
-  try {
-    // Process tokens in parallel for efficiency
-    const promises = tokens.map(async (token, index) => {
-      const amount = amounts[index] || ethers.MaxUint256;
-      
-      if (token.isERC6909) {
-        // Check ERC6909 operator status
-        const payload = await zWalletContract.checkERC6909RouterIsOperator(
-          wallet.address,
-          token.address
-        );
-        approvalStatus[token.address] = {
-          needsApproval: payload && payload !== "0x",
-          type: 'operator',
-          payload
-        };
-      } else {
-        // Check ERC20 allowance
-        const payload = await zWalletContract.checkERC20RouterApproval(
-          wallet.address,
-          token.address,
-          amount,
-          true // Max approval
-        );
-        approvalStatus[token.address] = {
-          needsApproval: payload && payload !== "0x",
-          type: 'allowance',
-          payload
-        };
-      }
-    });
-    
-    await Promise.all(promises);
-  } catch (err) {
-    
-  }
-  
-  return approvalStatus;
-}
-
-// Pre-generate approval calldata for multiple tokens
-async function prepareApprovalCalldata(token, amount = ethers.MaxUint256) {
-  if (!zWalletContract) return null;
-  
-  try {
-    if (token.isERC6909) {
-      return await zWalletContract.getERC6909SetOperator(ZROUTER_ADDRESS, true);
-    } else {
-      return await zWalletContract.getERC20Approve(ZROUTER_ADDRESS, amount);
-    }
-  } catch (err) {
-    
-    return null;
-  }
-}
-
-// Execute multiple approvals sequentially (each requires separate transaction)
-async function executeApprovalSequence(approvalData) {
-  if (!wallet || !provider) return false;
-  
-  const results = [];
-  
-  for (const approval of approvalData) {
-    try {
-      const tx = await wallet.sendTransaction({
-        to: approval.tokenAddress,
-        data: approval.calldata,
-        gasLimit: await provider.estimateGas({
-          from: wallet.address,
-          to: approval.tokenAddress,
-          data: approval.calldata
-        })
-      });
-      
-      showToast(`Approving ${approval.token}...`);
-      await tx.wait();
-      results.push({ token: approval.token, success: true });
-    } catch (err) {
-      
-      results.push({ token: approval.token, success: false, error: err.message });
-    }
-  }
-  
-  const successCount = results.filter(r => r.success).length;
-  if (successCount === approvalData.length) {
-    showToast("All token approvals completed!");
-  } else if (successCount > 0) {
-    showToast(`${successCount}/${approvalData.length} approvals completed`);
-  } else {
-    showToast("Approvals failed");
-  }
-  
-  return results;
-}
-
-// Helper to check and prepare all necessary approvals
-async function prepareAllNecessaryApprovals() {
-  if (!zWalletContract || !wallet) return [];
-  
-  const approvals = [];
-  const tokensToCheck = Object.values(TOKENS).filter(t => t.address && t.symbol !== "ETH");
-  
-  for (const token of tokensToCheck) {
-    try {
-      const payload = token.isERC6909
-        ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, token.address)
-        : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
-      
-      if (payload && payload !== "0x") {
-        approvals.push({
-          token: token.symbol,
-          tokenAddress: token.address,
-          calldata: payload,
-          type: token.isERC6909 ? 'operator' : 'allowance'
-        });
-      }
-    } catch (err) {
-      
-    }
-  }
-  
-  return approvals;
-}
+// Approval checking is now consolidated in checkAndRequestApproval function
 
 async function showApprovalModal(token, isERC6909) {
   return new Promise((resolve) => {
