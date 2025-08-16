@@ -9,7 +9,7 @@
     <!-- Security: Content Security Policy -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com https://etherscan.io"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com https://etherscan.io; object-src 'none'; base-uri 'self'"
     />
 
     <title>zWallet</title>
@@ -18,6 +18,69 @@
     <link rel="icon" type="image/png" sizes="32x32" href="icon.png" />
     <link rel="icon" type="image/png" sizes="128x128" href="icon.png" />
     <style>
+      /* Loading states and skeleton screens */
+      @keyframes shimmer {
+        0% { background-position: -1000px 0; }
+        100% { background-position: 1000px 0; }
+      }
+      
+      .skeleton {
+        background: linear-gradient(90deg, var(--hover) 25%, var(--bg) 50%, var(--hover) 75%);
+        background-size: 1000px 100%;
+        animation: shimmer 2s infinite;
+        border-radius: 4px;
+      }
+      
+      .skeleton-text {
+        height: 14px;
+        margin: 4px 0;
+      }
+      
+      .skeleton-button {
+        height: 36px;
+        margin: 8px 0;
+      }
+      
+      .skeleton-row {
+        height: 60px;
+        margin: 8px 0;
+        border: 1px solid var(--border);
+      }
+      
+      .loading-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border);
+        border-radius: 50%;
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
+      }
+      
+      .fade-in {
+        animation: fadeIn 0.3s ease-in;
+      }
+      
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      
+      /* Optimized animations with GPU acceleration */
+      .token-row {
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        will-change: transform;
+      }
+      
+      .token-row:hover {
+        transform: translateZ(0) scale(1.02);
+      }
+      
+      button {
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        will-change: transform;
+      }
+      
       /* Chrome detection */
       @media (max-width: 800px) {
         body.extension-mode {
@@ -36,10 +99,12 @@
       @media (max-width: 480px) {
         body {
           padding: 10px;
+          font-size: 13px;
         }
         
         .window {
           border-radius: 0;
+          box-shadow: 2px 2px 0 var(--border);
         }
         
         .content {
@@ -263,25 +328,66 @@
         font-size: 13px;
         font-weight: bold;
         cursor: pointer;
-        transition: all 0.1s;
+        transition: all 0.15s ease;
         box-shadow: 2px 2px 0 var(--border);
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        position: relative;
+        transform: translate(0, 0);
+        overflow: hidden;
+      }
+
+      button::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+        transition: left 0.5s ease;
       }
 
       button:hover:not(:disabled) {
-        transform: translate(-1px, -1px);
-        box-shadow: 3px 3px 0 var(--border);
+        transform: translate(-2px, -2px);
+        box-shadow: 4px 4px 0 var(--border);
+      }
+
+      button:hover:not(:disabled)::before {
+        left: 100%;
       }
 
       button:active:not(:disabled) {
-        transform: translate(1px, 1px);
+        transform: translate(0, 0);
         box-shadow: 1px 1px 0 var(--border);
+        transition: all 0.05s ease;
       }
 
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+        filter: grayscale(0.3);
+      }
+
+      /* Button loading state */
+      button.loading {
+        pointer-events: none;
+        color: transparent;
+      }
+
+      button.loading::after {
+        content: "";
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        top: 50%;
+        left: 50%;
+        margin-left: -8px;
+        margin-top: -8px;
+        border: 2px solid var(--fg);
+        border-radius: 50%;
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
       }
 
       button + button {
@@ -387,6 +493,23 @@
 
       .toast.show {
         opacity: 1;
+      }
+      
+      .toast.error {
+        background: #ff4444;
+        color: white;
+        border-color: #cc0000;
+      }
+      
+      .toast.warning {
+        background: #ffaa00;
+        color: white;
+        border-color: #cc8800;
+      }
+      
+      .toast.success {
+        background: var(--accent);
+        color: var(--bg);
       }
 
       .warning {
@@ -755,17 +878,37 @@
         color: var(--bg);
       }
 
+      /* Modal Animations */
+      @keyframes modalFadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @keyframes modalSlideIn {
+        from {
+          transform: translateY(-20px) scale(0.97);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0) scale(1);
+          opacity: 1;
+        }
+      }
+
       .modal {
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(0, 0, 0, 0.6);
         display: flex;
         align-items: center;
         justify-content: center;
         z-index: 2000;
+        animation: modalFadeIn 0.2s ease;
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
       }
 
       .modal.hidden {
@@ -775,11 +918,13 @@
       .modal-content {
         background: var(--bg);
         border: 2px solid var(--border);
-        box-shadow: 4px 4px 0 var(--border);
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3), 4px 4px 0 var(--border);
         max-width: 420px;
         width: 90%;
         max-height: 80vh;
         overflow-y: auto;
+        animation: modalSlideIn 0.3s ease;
+        transform-origin: center;
       }
 
       .modal-header {
@@ -898,6 +1043,15 @@
 
       .token-option:hover {
         background: var(--hover);
+      }
+      
+      .token-option-icon {
+        flex-shrink: 0;
+      }
+      
+      .token-option-icon svg {
+        width: 100%;
+        height: 100%;
       }
 
       .token-option-icon {
@@ -1069,7 +1223,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.2</span>
+          <span>zWallet v0.0.3</span>
         </div>
         <div class="title-right">
           <button class="icon-btn" id="themeToggle" title="Toggle theme">
@@ -1125,20 +1279,26 @@
 
           <div id="walletSection" class="section hidden">
             <h2>Account</h2>
-            <div class="info-box">
-              <button class="copy-btn" data-copy="address">Copy</button>
-              <strong>Address</strong>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div class="mono" id="address" style="flex: 1;"></div>
-                <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                    <polyline points="15 3 21 3 21 9"></polyline>
-                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                  </svg>
-                </a>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+              <img id="blockieAvatar" style="width: 64px; height: 64px; border-radius: 8px; border: 2px solid var(--border);" />
+              <div style="flex: 1;">
+                <div class="info-box" style="margin: 0;">
+                  <button class="copy-btn" data-copy="address">Copy</button>
+                  <button class="download-btn" id="qrBtn" style="right: 60px;">QR</button>
+                  <strong>Address</strong>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="mono" id="address" style="flex: 1;"></div>
+                    <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                      </svg>
+                    </a>
+                  </div>
+                  <div class="ens-indicator" id="ensName"></div>
+                </div>
               </div>
-              <div class="ens-indicator" id="ensName"></div>
             </div>
           </div>
 
@@ -1159,9 +1319,15 @@
               />
               <input
                 type="text"
+                id="newTokenId"
+                placeholder="Token ID (for ERC6909, optional)"
+              />
+              <input
+                type="text"
                 id="newTokenSymbol"
                 placeholder="Symbol (optional)"
               />
+              <div id="tokenTypeIndicator" class="hidden" style="font-size: 12px; color: var(--text-secondary); margin: 4px 0;"></div>
               <button id="confirmAddToken">Add Token</button>
             </div>
             <button id="refreshBtn" style="width: 100%; margin-top: 8px">
@@ -1227,10 +1393,7 @@
             
             <!-- Slippage Settings -->
             <div class="swap-settings" style="margin-bottom: 16px;">
-              <label style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Slippage Tolerance</span>
-                <button id="slippageSettingsBtn" style="padding: 4px 8px; font-size: 11px; margin-bottom: 4px;">⚙️</button>
-              </label>
+              <label>Slippage Tolerance</label>
               <div class="slippage-selector" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
                 <button class="slippage-option" data-slippage="0.1">0.1%</button>
                 <button class="slippage-option active" data-slippage="0.5">0.5%</button>
@@ -1274,6 +1437,16 @@
             <div class="token-grid" id="sendTokenGrid">
               <!-- Populated dynamically -->
             </div>
+            <!-- IOU Mode Toggle for USDC -->
+            <div id="iouModeSection" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="iouModeToggle" style="width: 18px; height: 18px;">
+                <span style="font-weight: bold;">📄🪽 IOU Mode (Gasless USDC Transfer)</span>
+              </label>
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; display: none;" id="iouModeInfo">
+                Create a signed USDC transfer authorization (EIP-3009) that the recipient can claim later, paying the gas themselves.
+              </div>
+            </div>
           </div>
 
           <div class="section">
@@ -1300,7 +1473,7 @@
               <button class="max-btn" id="maxBtn">MAX</button>
             </div>
 
-            <div style="margin-top: 16px">
+            <div style="margin-top: 16px" id="gasFeeSection">
               <label>Gas Fee</label>
               <div class="gas-selector">
                 <button class="gas-option" data-speed="slow">
@@ -1358,6 +1531,9 @@
 
             <button id="sendBtn" style="width: 100%; margin-top: 12px">
               Send Transaction
+            </button>
+            <button id="createIouBtn" class="hidden" style="width: 100%; margin-top: 12px">
+              Create & Sign IOU 📄
             </button>
             <div id="txStatus"></div>
           </div>
@@ -1434,6 +1610,28 @@
           </div>
 
           <div class="section">
+            <h2>Web3 Integration</h2>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input
+                type="checkbox"
+                id="defaultWallet"
+                style="width: auto; margin-right: 8px"
+              />
+              <div>
+                <div style="font-weight: bold;">Make zWallet Default</div>
+                <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                  Automatically connect when dApps request MetaMask or other wallets
+                </div>
+              </div>
+            </label>
+            <div id="defaultWalletInfo" class="hidden" style="margin-top: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+              <strong>⚡ Default Wallet Active</strong>
+              <p style="margin-top: 8px;">zWallet will intercept connection requests from other wallets. When sites try to connect to MetaMask, Coinbase, or WalletConnect, zWallet will respond instead.</p>
+              <p style="margin-top: 8px;">Refresh any open dApp tabs for changes to take effect.</p>
+            </div>
+          </div>
+
+          <div class="section">
             <h2>Private Key Management</h2>
             <div class="warning" style="margin-bottom: 12px;">
               ⚠️ Never share your private key with anyone
@@ -1469,6 +1667,7 @@
     <div id="toast" class="toast"></div>
 
     <script src="ethers.umd.min.js"></script>
+    <script src="visual-id.js"></script>
     <script src="popup.js"></script>
 
     <!-- Transaction Confirmation Modal -->
@@ -1655,5 +1854,173 @@
         </div>
       </div>
     </div>
+
+    <!-- IOU Preview Modal -->
+    <div id="iouPreviewModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📄🪽 USDC IOU Preview</h3>
+          <button class="modal-close" id="iouModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="info-box" style="margin-bottom: 16px; background: #e8f5ff; border-color: #2196F3;">
+            <p style="margin-bottom: 8px; font-weight: bold;">🪽 Free! Gasless Transfer</p>
+            <p style="font-size: 11px;">You're creating a signed authorization that allows the recipient to claim USDC later. They will pay the gas when claiming.</p>
+          </div>
+          
+          <div class="confirm-row">
+            <span class="confirm-label">Type:</span>
+            <span class="confirm-value" id="iouType">Transfer Authorization</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">From:</span>
+            <span class="confirm-value mono" id="iouFrom"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">To:</span>
+            <span class="confirm-value mono" id="iouTo"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Amount:</span>
+            <span class="confirm-value" id="iouAmount"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Valid for:</span>
+            <span class="confirm-value" id="iouValidDays">30 days</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Expires:</span>
+            <span class="confirm-value" id="iouExpiry"></span>
+          </div>
+          
+          <!-- EIP-712 Data Preview -->
+          <div style="margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label style="font-weight: bold; font-size: 12px;">EIP-712 Signature Data</label>
+              <button id="toggleIouData" style="padding: 4px 8px; font-size: 11px;">Show</button>
+            </div>
+            <div id="iouDataSection" class="hidden" style="margin-top: 8px;">
+              <textarea id="iouDataDisplay" readonly style="width: 100%; height: 120px; font-family: 'Courier New', monospace; font-size: 10px; resize: none;"></textarea>
+              <div style="margin-top: 8px; display: flex; gap: 8px;">
+                <button id="copyIouData" style="flex: 1; padding: 6px; font-size: 11px;">📋 Copy JSON</button>
+                <button id="downloadIou" style="flex: 1; padding: 6px; font-size: 11px;">💾 Download</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmIouBtn" class="btn-confirm">Sign IOU</button>
+          <button id="cancelIouBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qrModal" class="modal hidden">
+      <div class="modal-content" style="max-width: 360px;">
+        <div class="modal-header">
+          <h3>Wallet QR Code</h3>
+          <button class="modal-close" id="qrModalClose">×</button>
+        </div>
+        <div class="modal-body" style="text-align: center;">
+          <img id="qrCodeImage" style="width: 256px; height: 256px; margin: 0 auto 16px;" />
+          <div class="info-box" style="font-size: 11px;">
+            <strong>Scan to Send</strong>
+            <div id="qrAddress" class="mono" style="word-break: break-all; margin-top: 8px;"></div>
+          </div>
+          <div style="margin-top: 16px; display: flex; gap: 8px;">
+            <button id="downloadQR" style="flex: 1;">Download QR</button>
+            <button id="copyQRAddress" style="flex: 1;">Copy Address</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Secure Password Modal -->
+    <div id="passwordModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.95); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center;">
+      <div class="modal-content" style="background: rgba(30, 30, 40, 0.98); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8); border-radius: 12px; padding: 24px; max-width: 400px; width: 90%; max-height: 90vh; overflow-y: auto; position: relative;">
+        <h3 id="passwordModalTitle" style="margin: 0 0 16px 0; color: var(--text-primary);">Enter Password</h3>
+        <p id="passwordModalMessage" style="margin: 0 0 16px 0; color: var(--text-secondary); font-size: 14px;"></p>
+        
+        <form id="passwordForm" autocomplete="off">
+          <!-- Primary password input -->
+          <div style="position: relative; margin-bottom: 16px;">
+            <input 
+              type="password" 
+              id="passwordInput" 
+              placeholder="Enter password"
+              autocomplete="new-password"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+              required
+            />
+            <button 
+              type="button" 
+              id="togglePassword"
+              style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255, 255, 255, 0.3); cursor: pointer; padding: 4px; transition: color 0.2s; outline: none;"
+              aria-label="Toggle password visibility"
+              onmouseover="this.style.color='rgba(255, 255, 255, 0.5)'" 
+              onmouseout="this.style.color='rgba(255, 255, 255, 0.3)'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path id="eyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Confirm password input (hidden by default) -->
+          <div id="confirmPasswordGroup" style="position: relative; margin-bottom: 16px; display: none;">
+            <input 
+              type="password" 
+              id="confirmPasswordInput" 
+              placeholder="Confirm password"
+              autocomplete="new-password"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+            />
+            <button 
+              type="button" 
+              id="toggleConfirmPassword"
+              style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255, 255, 255, 0.3); cursor: pointer; padding: 4px; transition: color 0.2s; outline: none;"
+              aria-label="Toggle confirm password visibility"
+              onmouseover="this.style.color='rgba(255, 255, 255, 0.5)'" 
+              onmouseout="this.style.color='rgba(255, 255, 255, 0.3)'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path id="confirmEyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          
+          <!-- Password strength indicator -->
+          <div id="passwordStrength" style="margin-bottom: 16px; display: none;">
+            <div style="height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden;">
+              <div id="strengthBar" style="height: 100%; width: 0%; transition: all 0.3s; background: var(--accent);"></div>
+            </div>
+            <p id="strengthText" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;"></p>
+          </div>
+          
+          <!-- Error message -->
+          <div id="passwordError" style="color: #ff4444; font-size: 14px; margin-bottom: 16px; display: none;"></div>
+          
+          <!-- Buttons -->
+          <div style="display: flex; gap: 12px;">
+            <button type="button" id="cancelPassword" style="flex: 1; padding: 12px; border: 1px solid var(--border); background: transparent; color: var(--text-primary); border-radius: 8px; font-size: 16px; cursor: pointer;">
+              Cancel
+            </button>
+            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer;">
+              Submit
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
   </body>
 </html>

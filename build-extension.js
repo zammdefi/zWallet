@@ -50,8 +50,14 @@ function buildExtension() {
   
   // Read manifest to get version
   const manifestPath = path.join(extensionDir, 'manifest.json');
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const version = manifest.version || '0.0.2';
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    console.error('❌ Failed to parse manifest.json:', error.message);
+    process.exit(1);
+  }
+  const version = manifest.version || '0.0.3';
   
   console.log(`\n📦 Building zWallet v${version}...`);
   
@@ -65,16 +71,26 @@ function buildExtension() {
     console.log(`  Removed existing ${zipName}`);
   }
   
-  // Create file list for zip command
-  const fileList = EXTENSION_FILES.map(f => `extension/${f}`).join(' ');
+  // Create file list for zip command with proper escaping
+  const fileList = EXTENSION_FILES.map(f => `'extension/${f}'`).join(' ');
   
   try {
     // Create the zip file
     console.log('\n🗜️  Creating zip archive...');
-    execSync(`zip -r ${zipName} ${fileList}`, {
+    
+    // Change to extension directory and create zip from there
+    const zipCommand = `cd extension && zip -r ../${zipName} ${EXTENSION_FILES.join(' ')}`;
+    
+    console.log('  Running: ' + zipCommand);
+    execSync(zipCommand, {
       cwd: __dirname,
-      stdio: 'pipe'
+      stdio: 'inherit' // Show zip command output
     });
+    
+    // Verify the zip file was created
+    if (!fs.existsSync(zipPath)) {
+      throw new Error('Zip file was not created');
+    }
     
     // Get file size
     const stats = fs.statSync(zipPath);
