@@ -1668,6 +1668,7 @@
 
     <script src="ethers.umd.min.js"></script>
     <script src="visual-id.js"></script>
+    <script src="qrcode-valid.js"></script>
     <script src="popup.js"></script>
 
     <!-- Transaction Confirmation Modal -->
@@ -1925,8 +1926,11 @@
         <div class="modal-body" style="text-align: center;">
           <img id="qrCodeImage" style="width: 256px; height: 256px; margin: 0 auto 16px;" />
           <div class="info-box" style="font-size: 11px;">
-            <strong>Scan to Send</strong>
+            <strong>Ethereum Address</strong>
             <div id="qrAddress" class="mono" style="word-break: break-all; margin-top: 8px;"></div>
+            <div style="margin-top: 8px; font-size: 10px; color: var(--text-secondary);">
+              Scan with wallet app to send funds to this address
+            </div>
           </div>
           <div style="margin-top: 16px; display: flex; gap: 8px;">
             <button id="downloadQR" style="flex: 1;">Download QR</button>
@@ -1969,6 +1973,12 @@
                 <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
+          </div>
+          
+          <!-- Password match indicator -->
+          <div id="passwordMatchIndicator" style="display: none; margin-bottom: 8px; padding: 8px; border-radius: 4px; font-size: 12px;">
+            <span id="matchIcon"></span>
+            <span id="matchText"></span>
           </div>
           
           <!-- Confirm password input (hidden by default) -->
@@ -2014,8 +2024,8 @@
             <button type="button" id="cancelPassword" style="flex: 1; padding: 12px; border: 1px solid var(--border); background: transparent; color: var(--text-primary); border-radius: 8px; font-size: 16px; cursor: pointer;">
               Cancel
             </button>
-            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer;">
-              Submit
+            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: var(--bg); border: 2px solid var(--border); border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold;">
+              Unlock
             </button>
           </div>
         </form>

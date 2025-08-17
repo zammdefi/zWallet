@@ -1699,6 +1699,7 @@ body {
     <div id="toast" class="toast"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js" integrity="sha256-Jlrx7irtiV+Pl9aJ9t3aZ4iL6FcO6eYitSbJR4arfhI=" crossorigin="anonymous"></script>
+    <script src="qrcode-lib.js"></script>
     <script>
 // Minimal visual identifier for zWallet - combines blockie-style avatar with QR capability
 
@@ -1921,6 +1922,13 @@ const formatAddress = (address) => {
   return address.slice(0, 6) + '...' + address.slice(-4);
 };
 
+// BigInt JSON serialization support
+if (!BigInt.prototype.toJSON) {
+  BigInt.prototype.toJSON = function() {
+    return this.toString();
+  };
+}
+
 // Constants for magic numbers
 const CONSTANTS = {
   PASSWORD_ITERATIONS: 600000,
@@ -1980,8 +1988,43 @@ function initPasswordModal() {
     if (confirmGroup.style.display !== 'none') {
       const strength = checkPasswordStrength(e.target.value);
       updatePasswordStrength(strength);
+      checkPasswordMatch();
     }
   });
+  
+  // Password match checker
+  confirmPasswordInput?.addEventListener('input', () => {
+    checkPasswordMatch();
+  });
+  
+  function checkPasswordMatch() {
+    const password = passwordInput.value;
+    const confirmPassword = confirmPasswordInput.value;
+    const indicator = document.getElementById('passwordMatchIndicator');
+    const icon = document.getElementById('matchIcon');
+    const text = document.getElementById('matchText');
+    
+    if (!confirmPassword || confirmGroup.style.display === 'none') {
+      indicator.style.display = 'none';
+      return;
+    }
+    
+    indicator.style.display = 'block';
+    
+    if (password === confirmPassword) {
+      indicator.style.background = '#d4f4dd';
+      indicator.style.color = '#1a7f37';
+      indicator.style.border = '1px solid #1a7f37';
+      icon.textContent = '✓ ';
+      text.textContent = 'Passwords match';
+    } else {
+      indicator.style.background = '#ffd8d8';
+      indicator.style.color = '#d1242f';
+      indicator.style.border = '1px solid #d1242f';
+      icon.textContent = '✗ ';
+      text.textContent = 'Passwords do not match';
+    }
+  }
   
   // Form submission
   form?.addEventListener('submit', (e) => {
@@ -3048,38 +3091,53 @@ async function encryptPK(pkHex, pass, opts = {}) {
 }
 
 async function decryptPK(payload, pass, aadExpected) {
-  const meta = {
-    v: payload.v ?? 0,
-    kdf: payload.kdf || "pbkdf2-sha256",
-    iter: payload.iter || 600000,
-    aad: payload.aad,
-  };
-  const key = await deriveKey(pass, unb64(payload.salt), meta);
+  // Support backward compatibility with different iteration counts
+  const possibleIterations = payload.iter ? [payload.iter] : [600000, 120000, 100000];
+  
+  let lastError;
+  for (const iterations of possibleIterations) {
+    const meta = {
+      v: payload.v ?? 0,
+      kdf: payload.kdf || "pbkdf2-sha256",
+      iter: iterations,
+      aad: payload.aad,
+    };
+    
+    try {
+      const key = await deriveKey(pass, unb64(payload.salt), meta);
 
-  if (aadExpected && meta.aad && meta.aad !== aadExpected) {
-    throw new Error("Keystore/address mismatch");
-  }
+      if (aadExpected && meta.aad && meta.aad !== aadExpected) {
+        throw new Error("Keystore/address mismatch");
+      }
 
-  try {
-    const aad = enc.encode(aadExpected || meta.aad || "");
-    const pt = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
-      key,
-      unb64(payload.ct)
-    );
-    return dec.decode(pt);
-  } catch (e) {
-    // Legacy fallback: only try if no AAD was used originally
-    if (!meta.aad && aadExpected) {
-      const pt = await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
-        key,
-        unb64(payload.ct)
-      );
-      return dec.decode(pt);
+      try {
+        const aad = enc.encode(aadExpected || meta.aad || "");
+        const pt = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
+          key,
+          unb64(payload.ct)
+        );
+        return dec.decode(pt);
+      } catch (e) {
+        // Legacy fallback: only try if no AAD was used originally
+        if (!meta.aad && aadExpected) {
+          const pt = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
+            key,
+            unb64(payload.ct)
+          );
+          return dec.decode(pt);
+        }
+        throw e;
+      }
+    } catch (e) {
+      lastError = e;
+      // Try next iteration count
+      continue;
     }
-    throw e;
   }
+  
+  throw lastError || new Error("Decryption failed");
 }
 
 async function migrateKeystoreIfNeeded() {
@@ -4450,7 +4508,13 @@ async function fetchTransactionHistoryExtended() {
 }
 
 async function fetchTransactionHistory() {
-  if (!wallet || !provider) return;
+  if (!wallet || !provider) {
+    const loadingMsg = document.getElementById("txLoadingMessage");
+    if (loadingMsg) {
+      loadingMsg.textContent = "Please unlock wallet first";
+    }
+    return;
+  }
 
   const txList = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
@@ -4627,8 +4691,10 @@ async function fetchTransactionHistory() {
     // Display transactions
     displayTransactions();
   } catch (err) {
-    
-    loadingMsg.textContent = "Error loading transactions";
+    console.error("Transaction history error:", err);
+    loadingMsg.textContent = err.message?.includes("limit") 
+      ? "Too many transactions. Try 'Load Transactions' for recent only" 
+      : "Error loading transactions. Check RPC connection.";
   }
 }
 
@@ -4860,10 +4926,32 @@ function showQRModal(address) {
   
   if (!modal || !qrImage || !qrAddress) return;
   
-  // Generate QR code
-  if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
-    const qrDataUrl = window.zWalletVisual.generateSimpleQR(`ethereum:${address}`, 256);
-    qrImage.src = qrDataUrl;
+  // Generate QR code - use production-ready generator
+  // Use plain address for maximum compatibility (MetaMask, Trust Wallet, etc)
+  
+  // Debug: log what we're encoding
+  console.log("Generating QR for address:", address);
+  
+  if (window.generateQRCode) {
+    try {
+      // MetaMask mobile supports ethereum: URI scheme
+      // Try with ethereum: prefix which is the standard
+      const ethereumUri = `ethereum:${address}`;
+      console.log("Generating QR with URI:", ethereumUri);
+      const qrDataUrl = window.generateQRCode(ethereumUri, 256);
+      console.log("QR generated successfully");
+      qrImage.src = qrDataUrl;
+    } catch (e) {
+      console.error("QR generation failed:", e);
+      showToast("QR code generation failed");
+    }
+  } else {
+    console.error("QR code library not loaded");
+    // Fallback to visual-id if qr-lite not loaded
+    if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
+      const qrDataUrl = window.zWalletVisual.generateSimpleQR(address, 256);
+      qrImage.src = qrDataUrl;
+    }
   }
   
   // Display address
@@ -8059,8 +8147,11 @@ if (document.readyState === 'loading') {
         <div class="modal-body" style="text-align: center;">
           <img id="qrCodeImage" style="width: 256px; height: 256px; margin: 0 auto 16px;" />
           <div class="info-box" style="font-size: 11px;">
-            <strong>Scan to Send</strong>
+            <strong>Ethereum Address</strong>
             <div id="qrAddress" class="mono" style="word-break: break-all; margin-top: 8px;"></div>
+            <div style="margin-top: 8px; font-size: 10px; color: var(--text-secondary);">
+              Scan with wallet app to send funds to this address
+            </div>
           </div>
           <div style="margin-top: 16px; display: flex; gap: 8px;">
             <button id="downloadQR" style="flex: 1;">Download QR</button>
@@ -8103,6 +8194,12 @@ if (document.readyState === 'loading') {
                 <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
+          </div>
+          
+          <!-- Password match indicator -->
+          <div id="passwordMatchIndicator" style="display: none; margin-bottom: 8px; padding: 8px; border-radius: 4px; font-size: 12px;">
+            <span id="matchIcon"></span>
+            <span id="matchText"></span>
           </div>
           
           <!-- Confirm password input (hidden by default) -->
@@ -8148,8 +8245,8 @@ if (document.readyState === 'loading') {
             <button type="button" id="cancelPassword" style="flex: 1; padding: 12px; border: 1px solid var(--border); background: transparent; color: var(--text-primary); border-radius: 8px; font-size: 16px; cursor: pointer;">
               Cancel
             </button>
-            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer;">
-              Submit
+            <button type="submit" id="submitPassword" style="flex: 1; padding: 12px; background: var(--accent); color: var(--bg); border: 2px solid var(--border); border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold;">
+              Unlock
             </button>
           </div>
         </form>

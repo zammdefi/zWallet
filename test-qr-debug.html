@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QR Code Debug Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .test { margin: 20px 0; padding: 20px; border: 1px solid #ccc; }
+        img { border: 2px solid #000; margin: 10px; }
+        textarea { width: 100%; height: 100px; font-family: monospace; font-size: 10px; }
+    </style>
+</head>
+<body>
+    <h1>QR Code Debug Test for MetaMask</h1>
+    
+    <div class="test">
+        <h2>Test Address</h2>
+        <input type="text" id="testAddress" value="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0" style="width: 400px;" />
+        <button onclick="generateTests()">Generate QR Codes</button>
+    </div>
+    
+    <div id="results"></div>
+
+    <script src="extension/qrcode-min.js"></script>
+    <script>
+        function generateTests() {
+            const address = document.getElementById('testAddress').value;
+            const results = document.getElementById('results');
+            results.innerHTML = '';
+            
+            // Test different formats that MetaMask might expect
+            const formats = [
+                { label: 'Plain Address (lowercase)', data: address.toLowerCase() },
+                { label: 'Plain Address (checksummed)', data: address },
+                { label: 'ethereum: URI', data: `ethereum:${address}` },
+                { label: 'ethereum: URI (lowercase)', data: `ethereum:${address.toLowerCase()}` },
+                { label: 'EIP-681 Format', data: `ethereum:${address}@1` },
+                { label: 'Just hex (no 0x)', data: address.slice(2).toLowerCase() }
+            ];
+            
+            formats.forEach(format => {
+                const div = document.createElement('div');
+                div.className = 'test';
+                
+                const h3 = document.createElement('h3');
+                h3.textContent = format.label;
+                div.appendChild(h3);
+                
+                const p = document.createElement('p');
+                p.textContent = 'Data: ' + format.data;
+                div.appendChild(p);
+                
+                try {
+                    const qrDataUrl = window.generateQRCode(format.data, 256);
+                    
+                    if (qrDataUrl) {
+                        const img = document.createElement('img');
+                        img.src = qrDataUrl;
+                        img.width = 256;
+                        img.height = 256;
+                        div.appendChild(img);
+                        
+                        const textarea = document.createElement('textarea');
+                        textarea.value = qrDataUrl;
+                        textarea.readOnly = true;
+                        div.appendChild(textarea);
+                        
+                        const status = document.createElement('p');
+                        status.innerHTML = '✅ Generated successfully - Try scanning with MetaMask';
+                        status.style.color = 'green';
+                        div.appendChild(status);
+                    } else {
+                        throw new Error('No QR data URL returned');
+                    }
+                } catch (e) {
+                    const error = document.createElement('p');
+                    error.innerHTML = `❌ Error: ${e.message}`;
+                    error.style.color = 'red';
+                    div.appendChild(error);
+                }
+                
+                results.appendChild(div);
+            });
+            
+            // Also test with a simple QR library to compare
+            const simpleTest = document.createElement('div');
+            simpleTest.className = 'test';
+            simpleTest.innerHTML = '<h3>Reference: Simple Canvas Pattern</h3>';
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            
+            // Create a simple test pattern
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, 256, 256);
+            ctx.fillStyle = '#000';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(address.slice(0, 20), 128, 128);
+            ctx.fillText(address.slice(20), 128, 148);
+            
+            simpleTest.appendChild(canvas);
+            results.appendChild(simpleTest);
+        }
+        
+        // Auto-generate on load
+        window.onload = generateTests;
+    </script>
+</body>
+</html>

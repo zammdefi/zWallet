@@ -65,6 +65,13 @@ const formatAddress = (address) => {
   return address.slice(0, 6) + '...' + address.slice(-4);
 };
 
+// BigInt JSON serialization support
+if (!BigInt.prototype.toJSON) {
+  BigInt.prototype.toJSON = function() {
+    return this.toString();
+  };
+}
+
 // Constants for magic numbers
 const CONSTANTS = {
   PASSWORD_ITERATIONS: 600000,
@@ -124,8 +131,43 @@ function initPasswordModal() {
     if (confirmGroup.style.display !== 'none') {
       const strength = checkPasswordStrength(e.target.value);
       updatePasswordStrength(strength);
+      checkPasswordMatch();
     }
   });
+  
+  // Password match checker
+  confirmPasswordInput?.addEventListener('input', () => {
+    checkPasswordMatch();
+  });
+  
+  function checkPasswordMatch() {
+    const password = passwordInput.value;
+    const confirmPassword = confirmPasswordInput.value;
+    const indicator = document.getElementById('passwordMatchIndicator');
+    const icon = document.getElementById('matchIcon');
+    const text = document.getElementById('matchText');
+    
+    if (!confirmPassword || confirmGroup.style.display === 'none') {
+      indicator.style.display = 'none';
+      return;
+    }
+    
+    indicator.style.display = 'block';
+    
+    if (password === confirmPassword) {
+      indicator.style.background = '#d4f4dd';
+      indicator.style.color = '#1a7f37';
+      indicator.style.border = '1px solid #1a7f37';
+      icon.textContent = '✓ ';
+      text.textContent = 'Passwords match';
+    } else {
+      indicator.style.background = '#ffd8d8';
+      indicator.style.color = '#d1242f';
+      indicator.style.border = '1px solid #d1242f';
+      icon.textContent = '✗ ';
+      text.textContent = 'Passwords do not match';
+    }
+  }
   
   // Form submission
   form?.addEventListener('submit', (e) => {
@@ -1192,38 +1234,53 @@ async function encryptPK(pkHex, pass, opts = {}) {
 }
 
 async function decryptPK(payload, pass, aadExpected) {
-  const meta = {
-    v: payload.v ?? 0,
-    kdf: payload.kdf || "pbkdf2-sha256",
-    iter: payload.iter || 600000,
-    aad: payload.aad,
-  };
-  const key = await deriveKey(pass, unb64(payload.salt), meta);
+  // Support backward compatibility with different iteration counts
+  const possibleIterations = payload.iter ? [payload.iter] : [600000, 120000, 100000];
+  
+  let lastError;
+  for (const iterations of possibleIterations) {
+    const meta = {
+      v: payload.v ?? 0,
+      kdf: payload.kdf || "pbkdf2-sha256",
+      iter: iterations,
+      aad: payload.aad,
+    };
+    
+    try {
+      const key = await deriveKey(pass, unb64(payload.salt), meta);
 
-  if (aadExpected && meta.aad && meta.aad !== aadExpected) {
-    throw new Error("Keystore/address mismatch");
-  }
+      if (aadExpected && meta.aad && meta.aad !== aadExpected) {
+        throw new Error("Keystore/address mismatch");
+      }
 
-  try {
-    const aad = enc.encode(aadExpected || meta.aad || "");
-    const pt = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
-      key,
-      unb64(payload.ct)
-    );
-    return dec.decode(pt);
-  } catch (e) {
-    // Legacy fallback: only try if no AAD was used originally
-    if (!meta.aad && aadExpected) {
-      const pt = await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
-        key,
-        unb64(payload.ct)
-      );
-      return dec.decode(pt);
+      try {
+        const aad = enc.encode(aadExpected || meta.aad || "");
+        const pt = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
+          key,
+          unb64(payload.ct)
+        );
+        return dec.decode(pt);
+      } catch (e) {
+        // Legacy fallback: only try if no AAD was used originally
+        if (!meta.aad && aadExpected) {
+          const pt = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
+            key,
+            unb64(payload.ct)
+          );
+          return dec.decode(pt);
+        }
+        throw e;
+      }
+    } catch (e) {
+      lastError = e;
+      // Try next iteration count
+      continue;
     }
-    throw e;
   }
+  
+  throw lastError || new Error("Decryption failed");
 }
 
 async function migrateKeystoreIfNeeded() {
@@ -2444,9 +2501,11 @@ async function fetchTransactionHistoryExtended() {
       for (const [symbol, token] of Object.entries(TOKENS)) {
         if (!token.address) continue;
         
-        if (token.isERC6909) {
+        if (token.isERC6909 && token.id) {
           // Handle ERC6909 tokens - Transfer(address caller, address indexed sender, address indexed receiver, uint256 indexed id, uint256 amount)
-          promises.push(
+          try {
+            const tokenIdHex = ethers.toBeHex(token.id);
+            promises.push(
             Promise.all([
               provider.getLogs({
                 address: token.address,
@@ -2456,7 +2515,7 @@ async function fetchTransactionHistoryExtended() {
                   ethers.id("Transfer(address,address,address,uint256,uint256)"),
                   ethers.zeroPadValue(wallet.address, 32), // sender (indexed)
                   null, // receiver can be anyone
-                  ethers.zeroPadValue(BigInt(token.id), 32), // id (indexed)
+                  ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
                 ],
               }).catch(() => []),
               provider.getLogs({
@@ -2467,7 +2526,7 @@ async function fetchTransactionHistoryExtended() {
                   ethers.id("Transfer(address,address,address,uint256,uint256)"),
                   null, // sender can be anyone
                   ethers.zeroPadValue(wallet.address, 32), // receiver (indexed)
-                  ethers.zeroPadValue(BigInt(token.id), 32), // id (indexed)
+                  ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
                 ],
               }).catch(() => [])
             ]).then(([sentLogs, receivedLogs]) => {
@@ -2515,6 +2574,9 @@ async function fetchTransactionHistoryExtended() {
               }
             })
           );
+          } catch (err) {
+            console.error(`Failed to process ERC6909 token ${symbol} in extended history:`, err);
+          }
         } else {
           // Standard ERC20
           promises.push(
@@ -2594,7 +2656,13 @@ async function fetchTransactionHistoryExtended() {
 }
 
 async function fetchTransactionHistory() {
-  if (!wallet || !provider) return;
+  if (!wallet || !provider) {
+    const loadingMsg = document.getElementById("txLoadingMessage");
+    if (loadingMsg) {
+      loadingMsg.textContent = "Please unlock wallet first";
+    }
+    return;
+  }
 
   const txList = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
@@ -2621,19 +2689,23 @@ async function fetchTransactionHistory() {
       if (!token.address) continue; // Skip ETH
 
       // Handle ERC6909 tokens differently
-      if (token.isERC6909) {
+      if (token.isERC6909 && token.id) {
         // ERC6909 uses Transfer event with 5 parameters: Transfer(address caller, address indexed sender, address indexed receiver, uint256 indexed id, uint256 amount)
-        promises.push(
-          Promise.all([
-            provider.getLogs({
-              address: token.address,
-              fromBlock,
-              toBlock: currentBlock,
-              topics: [
-                ethers.id("Transfer(address,address,address,uint256,uint256)"),
-                ethers.zeroPadValue(wallet.address, 32), // sender (indexed)
-                null, // receiver can be anyone
-                ethers.zeroPadValue(BigInt(token.id), 32), // id (indexed)
+        try {
+          // Convert ID to hex format safely
+          const tokenIdHex = ethers.toBeHex(token.id);
+          
+          promises.push(
+            Promise.all([
+              provider.getLogs({
+                address: token.address,
+                fromBlock,
+                toBlock: currentBlock,
+                topics: [
+                  ethers.id("Transfer(address,address,address,uint256,uint256)"),
+                  ethers.zeroPadValue(wallet.address, 32), // sender (indexed)
+                  null, // receiver can be anyone
+                  ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
               ],
             }),
             provider.getLogs({
@@ -2644,7 +2716,7 @@ async function fetchTransactionHistory() {
                 ethers.id("Transfer(address,address,address,uint256,uint256)"),
                 null, // sender can be anyone
                 ethers.zeroPadValue(wallet.address, 32), // receiver (indexed)
-                ethers.zeroPadValue(BigInt(token.id), 32), // id (indexed)
+                ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
               ],
             })
           ]).then(([sentLogs, receivedLogs]) => {
@@ -2694,6 +2766,9 @@ async function fetchTransactionHistory() {
             // Ignore errors for individual token fetches
           })
         );
+        } catch (err) {
+          console.error(`Failed to process ERC6909 token ${symbol}:`, err);
+        }
       } else {
         // Standard ERC20 transfers
         promises.push(
@@ -2771,8 +2846,10 @@ async function fetchTransactionHistory() {
     // Display transactions
     displayTransactions();
   } catch (err) {
-    
-    loadingMsg.textContent = "Error loading transactions";
+    console.error("Transaction history error:", err);
+    loadingMsg.textContent = err.message?.includes("limit") 
+      ? "Too many transactions. Try 'Load Transactions' for recent only" 
+      : "Error loading transactions. Check RPC connection.";
   }
 }
 
@@ -3004,10 +3081,36 @@ function showQRModal(address) {
   
   if (!modal || !qrImage || !qrAddress) return;
   
-  // Generate QR code
-  if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
-    const qrDataUrl = window.zWalletVisual.generateSimpleQR(`ethereum:${address}`, 256);
-    qrImage.src = qrDataUrl;
+  // Generate QR code - use production-ready generator
+  // Use plain address for maximum compatibility (MetaMask, Trust Wallet, etc)
+  
+  // Debug: log what we're encoding
+  console.log("Generating QR for address:", address);
+  
+  if (window.generateQRCode) {
+    try {
+      // MetaMask Mobile expects JUST the plain address, no prefix
+      // Ensure it's lowercase and starts with 0x
+      let cleanAddress = address.toLowerCase();
+      if (!cleanAddress.startsWith('0x')) {
+        cleanAddress = '0x' + cleanAddress;
+      }
+      
+      console.log("Generating QR for plain address:", cleanAddress);
+      const qrDataUrl = window.generateQRCode(cleanAddress, 256);
+      console.log("QR generated successfully");
+      qrImage.src = qrDataUrl;
+    } catch (e) {
+      console.error("QR generation failed:", e);
+      showToast("QR code generation failed");
+    }
+  } else {
+    console.error("QR code library not loaded");
+    // Fallback to visual-id if qr-lite not loaded
+    if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
+      const qrDataUrl = window.zWalletVisual.generateSimpleQR(address, 256);
+      qrImage.src = qrDataUrl;
+    }
   }
   
   // Display address
