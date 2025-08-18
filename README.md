@@ -11,7 +11,7 @@ Two files compose the `zWallet`.
 
 Base wallet functionality is provided. Hold and send, add custom tokens. Starts with certain defaults. But you can also add your own RPCs.
 
-`zWallet.sol` is the onchain logic. It parses tokens, fethes prices, and handles decimal and other particulars for UIs, like `zWallet.html`.
+`zWallet.sol` is the onchain logic. It parses tokens, fetches prices, and handles decimal and other particulars for UIs, like `zWallet.html`.
 
 ## Philosophy
 

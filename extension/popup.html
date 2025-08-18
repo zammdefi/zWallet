@@ -17,6 +17,12 @@
     />
 
     <title>zWallet</title>
+    
+    <!-- Preconnect to RPC endpoints for faster loading -->
+    <link rel="preconnect" href="https://eth.llamarpc.com" crossorigin>
+    <link rel="preconnect" href="https://ethereum.publicnode.com" crossorigin>
+    <link rel="dns-prefetch" href="https://rpc.ankr.com">
+    
     <!-- Favicon -->
     <link rel="icon" type="image/png" sizes="16x16" href="icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="icon.png" />
@@ -227,10 +233,14 @@
         }
       }
 
-      * {
+      /* Performance: Use more specific reset */
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      
+      body, h1, h2, h3, p, button, input, select, textarea {
         margin: 0;
         padding: 0;
-        box-sizing: border-box;
       }
 
       :root {
@@ -239,12 +249,15 @@
         --border: #000000;
         --accent: #000000;
         --hover: #f0f0f0;
+        --bg-secondary: #f5f5f5;
+        --bg-hover: #e0e0e0;
+        --text-primary: #000000;
+        --text-secondary: #666666;
         --input-bg: #ffffff;
         --info-bg: #f9f9f9;
         --warning-bg: #ffe066;
         --success: #66d9a6;
         --error: #ff6b9d;
-        --text-secondary: #666666;
       }
 
       [data-theme="dark"] {
@@ -253,10 +266,13 @@
         --border: #ffffff;
         --accent: #ffffff;
         --hover: #2a2a2a;
+        --bg-secondary: #252525;
+        --bg-hover: #333333;
+        --text-primary: #ffffff;
+        --text-secondary: #aaaaaa;
         --input-bg: #2a2a2a;
         --info-bg: #2a2a2a;
         --warning-bg: #3a3a1a;
-        --text-secondary: #aaaaaa;
       }
 
       body {
@@ -317,6 +333,56 @@
       .icon-btn:hover {
         transform: none;
         opacity: 0.8;
+      }
+
+      /* Network toggle button styles */
+      .network-btn {
+        padding: 4px;
+        width: 28px;
+        height: 28px;
+        background: white;
+        border: 1px solid var(--border-color);
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .network-btn.base-active {
+        background: #0052FF;
+        border-color: #0052FF;
+      }
+
+      .network-btn svg {
+        width: 16px;
+        height: 16px;
+        pointer-events: none;
+      }
+
+      [data-theme="dark"] .network-btn {
+        background: var(--surface-dark);
+      }
+
+      [data-theme="dark"] .network-btn.base-active {
+        background: #0052FF;
+      }
+
+      /* Mobile optimization for header buttons */
+      @media (max-width: 768px) {
+        .title-right {
+          gap: 4px;
+        }
+        
+        .icon-btn, .network-btn {
+          width: 32px;
+          height: 32px;
+          padding: 6px;
+        }
+        
+        .network-btn svg {
+          width: 20px;
+          height: 20px;
+        }
       }
 
       .logo {
@@ -673,6 +739,14 @@
         margin-bottom: 12px;
         font-size: 11px;
         box-shadow: 1px 1px 0 var(--border);
+        background: var(--accent) !important;
+        color: var(--bg) !important;
+        border-color: var(--accent) !important;
+      }
+      
+      .max-btn:hover:not(:disabled) {
+        opacity: 0.9;
+        background: var(--accent) !important;
       }
 
       .token-grid {
@@ -1350,33 +1424,7 @@
       .rounded-8 { border-radius: 8px; }
       .rounded-12 { border-radius: 12px; }
       
-      /* Network toggle styles */
-      .network-toggle {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        border: 2px solid var(--border);
-        background: var(--bg);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.3s ease;
-        z-index: 10;
-      }
-      
-      .network-toggle:hover {
-        transform: scale(1.1);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-      }
-      
-      .network-toggle.base-active {
-        background: #0052FF;
-        border-color: #0052FF;
-      }
+      /* Removed old network-toggle styles - now using header button only */
       
       .network-indicator {
         position: absolute;
@@ -1431,7 +1479,10 @@
           <span>zWallet v0.0.4</span>
         </div>
         <div class="title-right">
-          <button class="icon-btn" id="themeToggle" title="Toggle theme">
+          <button class="icon-btn network-btn" id="baseNetworkToggle" title="Switch to Base" aria-label="Switch network">
+            <!-- Will be filled dynamically -->
+          </button>
+          <button class="icon-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle dark/light mode">
             🌓
           </button>
         </div>
@@ -1483,28 +1534,12 @@
             </div>
           </div>
 
-          <div id="walletSection" class="section hidden" style="position: relative;">
+          <div id="walletSection" class="section hidden">
             <h2>Account</h2>
-            <!-- Network Toggle Button -->
-            <button class="network-toggle" id="networkToggle" title="Switch to Base">
-              <!-- Ethereum Logo (default) -->
-              <svg id="ethLogo" width="20" height="20" viewBox="0 0 256 417" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid">
-                <path fill="#343434" d="M127.961 0l-2.795 9.5v275.668l2.795 2.79 127.962-75.638z"/>
-                <path fill="#8C8C8C" d="M127.962 0L0 212.32l127.962 75.639V154.158z"/>
-                <path fill="#3C3C3B" d="M127.961 312.187l-1.575 1.92v98.199l1.575 4.6L256 236.587z"/>
-                <path fill="#8C8C8C" d="M127.962 416.905v-104.72L0 236.585z"/>
-                <path fill="#141414" d="M127.961 287.958l127.96-75.637-127.96-58.162z"/>
-                <path fill="#393939" d="M0 212.32l127.96 75.638v-133.8z"/>
-              </svg>
-              <!-- Base Logo (hidden by default) -->
-              <svg id="baseLogo" width="20" height="20" viewBox="0 0 111 111" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
-                <path d="M54.921 110.034C85.359 110.034 110.034 85.402 110.034 55.017C110.034 24.6319 85.359 0 54.921 0C26.0432 0 2.35281 22.1714 0 50.3923H72.8467V59.6416H3.9565e-07C2.35281 87.8625 26.0432 110.034 54.921 110.034Z" fill="white"/>
-              </svg>
-            </button>
             <!-- Network Indicator -->
             <div class="network-indicator" id="networkIndicator">Base Mode</div>
             <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
-              <img id="blockieAvatar" alt="Wallet avatar" style="width: 64px; height: 64px; border-radius: 8px; border: 2px solid var(--border);" />
+              <img id="blockieAvatar" alt="Wallet avatar" loading="lazy" style="width: 64px; height: 64px; border-radius: 8px; border: 2px solid var(--border);" />
               <div style="flex: 1;">
                 <div class="info-box" style="margin: 0;">
                   <button class="copy-btn" data-copy="address">Copy</button>
@@ -1554,7 +1589,7 @@
               <div id="tokenTypeIndicator" class="hidden" style="font-size: 12px; color: var(--text-secondary); margin: 4px 0;"></div>
               <button id="confirmAddToken">Add Token</button>
             </div>
-            <button id="refreshBtn" style="width: 100%; margin-top: 8px">
+            <button id="refreshBtn" style="width: 100%; margin-top: 8px" aria-label="Refresh all balances">
               Refresh All
             </button>
           </div>
@@ -1584,7 +1619,7 @@
               </div>
               <div style="display: flex; justify-content: space-between; margin-top: 8px;">
                 <span id="swapFromUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
-                <button class="max-btn" id="swapMaxBtn" aria-label="Use maximum amount" style="padding: 6px 14px; font-size: 12px; margin: 0; background: var(--accent); color: white; border-radius: 6px; min-height: 32px; min-width: 50px; touch-action: manipulation;">MAX</button>
+                <button class="max-btn" id="swapMaxBtn" aria-label="Use maximum amount" style="padding: 6px 14px; font-size: 12px; margin: 0; border-radius: 6px; min-height: 32px; min-width: 50px; touch-action: manipulation;">MAX</button>
               </div>
             </div>
             
@@ -1952,7 +1987,7 @@
                   inputmode="decimal"
                   pattern="[0-9]*"
                 />
-                <button id="bridgeMaxBtn" style="padding: 10px 18px; font-size: 13px; font-weight: 600; margin: 0; background: var(--accent); color: white; border-radius: 8px; border: none; cursor: pointer; transition: opacity 0.2s;">
+                <button id="bridgeMaxBtn" class="max-btn" style="padding: 10px 18px; font-size: 13px; font-weight: 600; margin: 0; border-radius: 8px; cursor: pointer; transition: opacity 0.2s;">
                   MAX
                 </button>
               </div>
@@ -2362,18 +2397,18 @@
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              class="touch-input" style="width: 100%; padding: 14px 44px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
+              class="touch-input" style="width: 100%; padding: 14px 52px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
               required
             />
             <button 
               type="button" 
               id="togglePassword"
-              style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255, 255, 255, 0.3); cursor: pointer; padding: 4px; transition: color 0.2s; outline: none;"
+              style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); cursor: pointer; padding: 8px; transition: all 0.2s; outline: none; display: flex; align-items: center; justify-content: center;"
               aria-label="Toggle password visibility"
-              onmouseover="this.style.color='rgba(255, 255, 255, 0.5)'" 
-              onmouseout="this.style.color='rgba(255, 255, 255, 0.3)'"
+              onmouseover="this.style.backgroundColor='var(--bg-hover)'; this.style.color='var(--text-primary)'" 
+              onmouseout="this.style.backgroundColor='var(--bg-secondary)'; this.style.color='var(--text-secondary)'"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path id="eyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
               </svg>
@@ -2396,17 +2431,17 @@
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              class="touch-input" style="width: 100%; padding: 14px 44px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
+              class="touch-input" style="width: 100%; padding: 14px 52px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
             />
             <button 
               type="button" 
               id="toggleConfirmPassword"
-              style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255, 255, 255, 0.3); cursor: pointer; padding: 4px; transition: color 0.2s; outline: none;"
+              style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); cursor: pointer; padding: 8px; transition: all 0.2s; outline: none; display: flex; align-items: center; justify-content: center;"
               aria-label="Toggle confirm password visibility"
-              onmouseover="this.style.color='rgba(255, 255, 255, 0.5)'" 
-              onmouseout="this.style.color='rgba(255, 255, 255, 0.3)'"
+              onmouseover="this.style.backgroundColor='var(--bg-hover)'; this.style.color='var(--text-primary)'" 
+              onmouseout="this.style.backgroundColor='var(--bg-secondary)'; this.style.color='var(--text-secondary)'"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path id="confirmEyeIcon" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
               </svg>
