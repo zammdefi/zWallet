@@ -835,7 +835,7 @@ const EIP3009_TYPES = {
   ]
 };
 
-// zWallet contract address and ABI (v0.0.3)
+// zWallet contract address and ABI
 const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5";
 const ZWALLET_ABI = [
   // Enhanced batch view with ENS and token type detection
