@@ -91,6 +91,36 @@ const CONSTANTS = {
   MIN_TX_INTERVAL: 2000 // Minimum 2 seconds between transactions
 };
 
+// Network configuration
+const NETWORKS = {
+  MAINNET: {
+    chainId: 1,
+    name: 'Ethereum',
+    rpcUrls: [
+      'https://eth.llamarpc.com',
+      'https://ethereum.publicnode.com',
+      'https://cloudflare-eth.com'
+    ],
+    blockExplorer: 'https://etherscan.io',
+    currency: 'ETH'
+  },
+  BASE: {
+    chainId: 8453,
+    name: 'Base',
+    rpcUrls: [
+      'https://mainnet.base.org',
+      'https://base.llamarpc.com',
+      'https://base.publicnode.com'
+    ],
+    blockExplorer: 'https://basescan.org',
+    currency: 'ETH'
+  }
+};
+
+// Current network state
+let currentNetwork = 'MAINNET';
+let isBaseMode = false;
+
 // Secure password modal handler
 let passwordModalCallback = null;
 let passwordModalReject = null;
@@ -1370,6 +1400,16 @@ async function init() {
   console.log("Current DOM state:", document.readyState);
   console.log("Number of .tab elements:", document.querySelectorAll(".tab").length);
   
+  // Load saved network preference
+  const savedNetwork = localStorage.getItem('network_mode');
+  if (savedNetwork === 'BASE') {
+    isBaseMode = true;
+    currentNetwork = 'BASE';
+  } else {
+    isBaseMode = false;
+    currentNetwork = 'MAINNET';
+  }
+  
   // Check if running as extension and handle CSP restrictions
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
     // Keep service worker alive
@@ -1409,16 +1449,19 @@ async function init() {
   // --- auto-unlock last wallet (with password prompt) ---
   try {
     const last = localStorage.getItem(LS_LAST);
+    console.log("Last wallet address:", last);
     if (last) {
       const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
       const entry = list.find(
         (w) => w.address.toLowerCase() === last.toLowerCase()
       );
+      console.log("Found wallet entry:", !!entry);
       if (entry) {
         const label =
           entry.label ||
           entry.address.slice(0, 6) + "..." + entry.address.slice(-4);
         try {
+          console.log("Showing password prompt for:", label);
           const pass = await securePasswordPrompt('Unlock Wallet', `Enter password to unlock ${label}:`, false, `wallet_${entry.address}`);
           const pk = await decryptPK(
               entry.crypto,
@@ -1676,16 +1719,21 @@ async function handleTransactionRequest(requestId, pendingRequest) {
     calldataDisplay.value = calldata;
   }
   
+  // Setup Swiss Knife decoder link with correct format
   if (swissKnifeLink && calldata !== '0x' && calldata.length > 2) {
-    swissKnifeLink.href = '#';
+    // Use the correct decoder URL format
+    const decoderUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
+    
+    swissKnifeLink.href = decoderUrl;
+    swissKnifeLink.target = '_blank';
     swissKnifeLink.style.display = 'inline-block';
+    
     swissKnifeLink.onclick = (e) => {
       e.preventDefault();
-      const url = `https://www.swiss-knife.xyz/decoder?calldata=${calldata}`;
       if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({ action: 'open_external', url });
+        chrome.runtime.sendMessage({ action: 'open_external', url: decoderUrl });
       } else {
-        window.open(url, '_blank', 'noopener,noreferrer');
+        window.open(decoderUrl, '_blank', 'noopener,noreferrer');
       }
     };
   } else if (swissKnifeLink) {
@@ -1891,25 +1939,38 @@ async function initProvider() {
       setManagedTimeout(() => reject(new Error('RPC timeout')), 5000)
     );
     
-    provider = new ethers.JsonRpcProvider(currentRpc);
+    // Use appropriate RPC based on network mode
+    let rpcUrl = currentRpc;
+    if (isBaseMode) {
+      // Select Base RPC
+      const baseRpc = localStorage.getItem('base_rpc') || NETWORKS.BASE.rpcUrls[0];
+      rpcUrl = baseRpc;
+    }
+    
+    provider = new ethers.JsonRpcProvider(rpcUrl);
     await Promise.race([
       provider.getBlockNumber(),
       timeoutPromise
     ]);
 
-    // Initialize zWallet contract
-    zWalletContract = new ethers.Contract(
-      ZWALLET_ADDRESS,
-      ZWALLET_ABI,
-      provider
-    );
-    
-    // Initialize zQuoter contract once
-    zQuoterContract = new ethers.Contract(
-      ZQUOTER_ADDRESS,
-      ZQUOTER_ABI,
-      provider
-    );
+    // Only initialize zWallet and zQuoter contracts on mainnet
+    if (!isBaseMode) {
+      zWalletContract = new ethers.Contract(
+        ZWALLET_ADDRESS,
+        ZWALLET_ABI,
+        provider
+      );
+      
+      // Initialize zQuoter contract once
+      zQuoterContract = new ethers.Contract(
+        ZQUOTER_ADDRESS,
+        ZQUOTER_ABI,
+        provider
+      );
+    } else {
+      zWalletContract = null; // No zWallet on Base
+      zQuoterContract = null; // No zQuoter on Base
+    }
 
     // Connected to RPC
     loadRpcSettings();
@@ -2085,9 +2146,190 @@ function showTokenLoadingSkeleton() {
 }
 
 // Fetch all balances using zWallet contract's batchView
+// Network switching functionality
+async function toggleNetwork() {
+  if (!wallet) {
+    showToast("Please connect wallet first");
+    return;
+  }
+  
+  const networkToggle = document.getElementById("networkToggle");
+  const ethLogo = document.getElementById("ethLogo");
+  const baseLogo = document.getElementById("baseLogo");
+  const networkIndicator = document.getElementById("networkIndicator");
+  const etherscanLink = document.getElementById("etherscanLink");
+  
+  // Toggle network state
+  isBaseMode = !isBaseMode;
+  currentNetwork = isBaseMode ? 'BASE' : 'MAINNET';
+  
+  // Save preference
+  localStorage.setItem('network_mode', currentNetwork);
+  
+  // Update UI
+  if (isBaseMode) {
+    // Switch to Base
+    networkToggle.classList.add('base-active');
+    networkToggle.title = 'Switch to Ethereum';
+    ethLogo.style.display = 'none';
+    baseLogo.style.display = 'block';
+    networkIndicator.classList.add('active', 'base');
+    networkIndicator.textContent = 'Base Network';
+    
+    // Update explorer link
+    if (etherscanLink && wallet) {
+      etherscanLink.href = `https://basescan.org/address/${wallet.address}`;
+      etherscanLink.title = 'View on BaseScan';
+    }
+    
+    // Hide swap and bridge tabs on Base
+    document.querySelector('.tab[data-tab="swap"]').style.display = 'none';
+    document.querySelector('.tab[data-tab="bridge"]').style.display = 'none';
+    
+    showToast('Switched to Base Network');
+  } else {
+    // Switch to Ethereum
+    networkToggle.classList.remove('base-active');
+    networkToggle.title = 'Switch to Base';
+    ethLogo.style.display = 'block';
+    baseLogo.style.display = 'none';
+    networkIndicator.classList.remove('active', 'base');
+    
+    // Update explorer link
+    if (etherscanLink && wallet) {
+      etherscanLink.href = `https://etherscan.io/address/${wallet.address}`;
+      etherscanLink.title = 'View on Etherscan';
+    }
+    
+    // Show swap and bridge tabs on mainnet
+    document.querySelector('.tab[data-tab="swap"]').style.display = '';
+    document.querySelector('.tab[data-tab="bridge"]').style.display = '';
+    
+    showToast('Switched to Ethereum Mainnet');
+  }
+  
+  // Reinitialize provider for new network
+  await initProvider();
+  
+  // Reconnect wallet
+  if (wallet && wallet.privateKey) {
+    wallet = new ethers.Wallet(wallet.privateKey, provider);
+  }
+  
+  // Refresh balances
+  await fetchAllBalances();
+  
+  // Update gas prices
+  updateGasPrices();
+  
+  // Update send tab if it's active
+  const sendTab = document.getElementById('send-tab');
+  if (sendTab && sendTab.classList.contains('active')) {
+    updateSendTabForNetwork();
+  }
+}
+
+// Update send tab based on network
+function updateSendTabForNetwork() {
+  const tokenSelector = document.getElementById('tokenSelector');
+  const sendTitle = document.querySelector('#send-tab h2');
+  
+  if (isBaseMode) {
+    // On Base, only show ETH
+    if (tokenSelector) {
+      tokenSelector.innerHTML = '<option value="ETH">ETH</option>';
+      tokenSelector.value = 'ETH';
+      selectedToken = 'ETH';
+    }
+    if (sendTitle) {
+      sendTitle.textContent = 'Send ETH on Base';
+    }
+  } else {
+    // On mainnet, show all tokens
+    if (tokenSelector) {
+      updateTokenSelector();
+    }
+    if (sendTitle) {
+      sendTitle.textContent = 'Send';
+    }
+  }
+}
+
+// Fetch ETH balance on Base network
+async function fetchBaseETHBalance() {
+  if (!wallet || !provider) return;
+  
+  try {
+    // Show loading state
+    showTokenLoadingSkeleton();
+    
+    // Get ETH balance directly from provider
+    const balance = await provider.getBalance(wallet.address);
+    const formattedBalance = ethers.formatEther(balance);
+    
+    // Update currentBalances for ETH only
+    currentBalances = {
+      ETH: {
+        raw: balance,
+        formatted: formattedBalance
+      }
+    };
+    
+    // Get ETH price if available (could cache from mainnet)
+    const ethPrice = tokenPrices.ETH?.usd || 0;
+    
+    // Update display
+    const tokenGrid = document.getElementById("tokenGrid");
+    if (tokenGrid) {
+      tokenGrid.innerHTML = `
+        <div class="token-row" data-token="ETH">
+          <div class="token-info">
+            <div class="token-icon">${TOKEN_LOGOS.ETH || generateCoinSVG('ETH')}</div>
+            <div class="token-details">
+              <div class="token-symbol">ETH</div>
+              <div class="token-name">Ethereum</div>
+              <div class="token-network-badge" style="display: inline-block; padding: 2px 6px; background: #0052FF; color: white; border-radius: 4px; font-size: 10px; margin-top: 2px;">Base</div>
+            </div>
+          </div>
+          <div class="token-balance">
+            <div class="balance-amount">${parseFloat(formattedBalance).toFixed(6)}</div>
+            <div class="balance-value">${formatCurrency(parseFloat(formattedBalance) * ethPrice)}</div>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Update portfolio total
+    const portfolioTotal = parseFloat(formattedBalance) * ethPrice;
+    const portfolioEl = document.getElementById("portfolioTotal");
+    if (portfolioEl) {
+      portfolioEl.textContent = `Total: ${formatCurrency(portfolioTotal)}`;
+    }
+    
+    // Hide add token button on Base
+    const addTokenBtn = document.getElementById("addTokenBtn");
+    if (addTokenBtn) {
+      addTokenBtn.style.display = 'none';
+    }
+    
+  } catch (err) {
+    console.error("Error fetching Base ETH balance:", err);
+    showError("Failed to fetch balance");
+  }
+}
+
 async function fetchAllBalances() {
   
-  if (!wallet || !provider || !zWalletContract) {
+  if (!wallet || !provider) {
+    return;
+  }
+  
+  // For Base network, only fetch ETH balance directly
+  if (isBaseMode) {
+    return fetchBaseETHBalance();
+  }
+  
+  if (!zWalletContract) {
     return;
   }
   
@@ -2149,6 +2391,15 @@ async function fetchAllBalances() {
       ethPrice = Number(pricesUSDC[ethIndex]) / 1e6;
     }
 
+    // Start fetching ZAMM price in parallel (non-blocking)
+    let zammPricePromise = null;
+    if (tokenSymbols.includes("ZAMM")) {
+      zammPricePromise = fetchZAMMPrice().catch(err => {
+        console.log("ZAMM price fetch failed:", err);
+        return { eth: 0, usd: 0 };
+      });
+    }
+
     for (let i = 0; i < tokenSymbols.length; i++) {
       const symbol = tokenSymbols[i];
       const token = TOKENS[symbol];
@@ -2178,17 +2429,6 @@ async function fetchAllBalances() {
       let priceInEth = pricesETH[i] ? Number(pricesETH[i]) / 1e18 : 0;
       let priceInUsd = pricesUSDC[i] ? Number(pricesUSDC[i]) / 1e6 : 0;
 
-      // Special handling only for ZAMM (custom AMM pool)
-      if (symbol === "ZAMM") {
-        try {
-          const zammPrice = await fetchZAMMPrice();
-          priceInEth = zammPrice.eth || priceInEth;
-          priceInUsd = zammPrice.usd || priceInUsd;
-        } catch (err) {
-          // Price fetch failed - will use 0
-        }
-      }
-
       tokenPrices[symbol] = {
         eth: priceInEth,
         usd: priceInUsd,
@@ -2199,6 +2439,16 @@ async function fetchAllBalances() {
         token.name = names[i] || symbol;
         token.symbol = symbols[i] || symbol;
         token.decimals = dec;
+      }
+    }
+
+    // Update ZAMM price after the loop if it was fetched
+    if (zammPricePromise) {
+      const zammPrice = await zammPricePromise;
+      const zammSymbol = "ZAMM";
+      if (tokenPrices[zammSymbol]) {
+        tokenPrices[zammSymbol].eth = zammPrice.eth || tokenPrices[zammSymbol].eth;
+        tokenPrices[zammSymbol].usd = zammPrice.usd || tokenPrices[zammSymbol].usd;
       }
     }
 
@@ -2739,8 +2989,10 @@ async function fetchTransactionHistory() {
 
   const txList = document.getElementById("txList");
   const loadingMsg = document.getElementById("txLoadingMessage");
-
-  loadingMsg.textContent = "Loading recent transactions (last ~3 hours)...";
+  
+  // Update loading message based on network
+  const networkName = isBaseMode ? 'Base' : 'Ethereum';
+  loadingMsg.textContent = `Loading recent ${networkName} transactions...`;
   txList.classList.add("hidden");
   txHistory = [];
 
@@ -3025,64 +3277,68 @@ function lockWallet() {
   showToast("Locked");
 }
 
-function showEtherscanLink(txHash) {
+async function showEtherscanLink(txHash) {
   const status = document.getElementById("txStatus");
   
-  // Create container for multiple links
+  // Create container for link
   const linksContainer = document.createElement("div");
   linksContainer.style.cssText = "margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap;";
   
-  // Etherscan link
-  const etherscanLink = document.createElement("a");
-  etherscanLink.href = `#`;
-  etherscanLink.className = "etherscan-link";
-  etherscanLink.textContent = "Etherscan →";
-  etherscanLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  etherscanLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://etherscan.io/tx/${txHash}`;
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ action: 'open_external', url });
+  // Determine the correct block explorer based on network
+  let explorerUrl;
+  let explorerName;
+  
+  try {
+    if (isBaseMode) {
+      // Use Base explorer
+      explorerUrl = `https://basescan.org/tx/${txHash}`;
+      explorerName = "BaseScan";
+    } else if (provider) {
+      const network = await provider.getNetwork();
+      const chainId = Number(network.chainId);
+      
+      switch(chainId) {
+        case 8453:
+          explorerUrl = `https://basescan.org/tx/${txHash}`;
+          explorerName = "Basescan";
+          break;
+        case 1:
+        default:
+          explorerUrl = `https://etherscan.io/tx/${txHash}`;
+          explorerName = "Etherscan";
+          break;
+      }
     } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
+      // Default to Etherscan if no provider
+      explorerUrl = `https://etherscan.io/tx/${txHash}`;
+      explorerName = "Etherscan";
+    }
+  } catch (err) {
+    // Default to Etherscan on error
+    explorerUrl = `https://etherscan.io/tx/${txHash}`;
+    explorerName = "Etherscan";
+  }
+  
+  // Block explorer link
+  const explorerLink = document.createElement("a");
+  explorerLink.href = explorerUrl;
+  explorerLink.className = "explorer-link";
+  explorerLink.textContent = `${explorerName} →`;
+  explorerLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
+  explorerLink.target = "_blank";
+  explorerLink.rel = "noopener noreferrer";
+  
+  // Override click for extension compatibility
+  explorerLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({ action: 'open_external', url: explorerUrl });
+    } else {
+      window.open(explorerUrl, '_blank', 'noopener,noreferrer');
     }
   });
   
-  // Transaction decoder link (Swiss Knife style)
-  const decoderLink = document.createElement("a");
-  decoderLink.href = `#`;
-  decoderLink.className = "decoder-link";
-  decoderLink.textContent = "Decode →";
-  decoderLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  decoderLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://www.swiss-knife.xyz/tx/ethereum/${txHash}`;
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ action: 'open_external', url });
-    } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  });
-  
-  // Tenderly link for detailed debugging
-  const tenderlyLink = document.createElement("a");
-  tenderlyLink.href = `#`;
-  tenderlyLink.className = "tenderly-link";
-  tenderlyLink.textContent = "Debug →";
-  tenderlyLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  tenderlyLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://dashboard.tenderly.co/tx/mainnet/${txHash}`;
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ action: 'open_external', url });
-    } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  });
-  
-  linksContainer.appendChild(etherscanLink);
-  linksContainer.appendChild(decoderLink);
-  linksContainer.appendChild(tenderlyLink);
+  linksContainer.appendChild(explorerLink);
   status.appendChild(linksContainer);
 }
 
@@ -3269,30 +3525,7 @@ function setButtonLoading(buttonId, loading = true) {
   }
 }
 
-// Debounce Helper for Better Performance
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
-
-// Throttle Helper for Rate Limiting
-function throttle(func, limit) {
-  let inThrottle;
-  return function(...args) {
-    if (!inThrottle) {
-      func.apply(this, args);
-      inThrottle = true;
-      setTimeout(() => inThrottle = false, limit);
-    }
-  };
-}
+// Debounce and throttle helpers are already defined at the top of the file
 
 async function copyToClipboard(text, type) {
   try {
@@ -3409,10 +3642,59 @@ async function displayWallet() {
     address.slice(0, 6) + "..." + address.slice(-4);
   document.getElementById("address").title = address;
   
-  // Set Etherscan link
+  // Set explorer link based on network
   const etherscanLink = document.getElementById("etherscanLink");
   if (etherscanLink) {
-    etherscanLink.href = `https://etherscan.io/address/${address}`;
+    if (isBaseMode) {
+      etherscanLink.href = `https://basescan.org/address/${address}`;
+      etherscanLink.title = 'View on BaseScan';
+    } else {
+      etherscanLink.href = `https://etherscan.io/address/${address}`;
+      etherscanLink.title = 'View on Etherscan';
+    }
+  }
+  
+  // Apply network UI state
+  const networkToggle = document.getElementById("networkToggle");
+  const ethLogo = document.getElementById("ethLogo");
+  const baseLogo = document.getElementById("baseLogo");
+  const networkIndicator = document.getElementById("networkIndicator");
+  
+  if (isBaseMode) {
+    // Apply Base UI
+    if (networkToggle) {
+      networkToggle.classList.add('base-active');
+      networkToggle.title = 'Switch to Ethereum';
+    }
+    if (ethLogo) ethLogo.style.display = 'none';
+    if (baseLogo) baseLogo.style.display = 'block';
+    if (networkIndicator) {
+      networkIndicator.classList.add('active', 'base');
+      networkIndicator.textContent = 'Base Network';
+    }
+    
+    // Hide swap and bridge tabs on Base
+    const swapTab = document.querySelector('.tab[data-tab="swap"]');
+    const bridgeTab = document.querySelector('.tab[data-tab="bridge"]');
+    if (swapTab) swapTab.style.display = 'none';
+    if (bridgeTab) bridgeTab.style.display = 'none';
+  } else {
+    // Apply Mainnet UI
+    if (networkToggle) {
+      networkToggle.classList.remove('base-active');
+      networkToggle.title = 'Switch to Base';
+    }
+    if (ethLogo) ethLogo.style.display = 'block';
+    if (baseLogo) baseLogo.style.display = 'none';
+    if (networkIndicator) {
+      networkIndicator.classList.remove('active', 'base');
+    }
+    
+    // Show swap and bridge tabs on mainnet
+    const swapTab = document.querySelector('.tab[data-tab="swap"]');
+    const bridgeTab = document.querySelector('.tab[data-tab="bridge"]');
+    if (swapTab) swapTab.style.display = '';
+    if (bridgeTab) bridgeTab.style.display = '';
   }
   
   // Generate and display blockie avatar
@@ -3621,6 +3903,12 @@ async function sendTransaction() {
 
   if (!toInput || !amountInput || !wallet) {
     status.innerHTML = '<div class="status error">Fill all fields</div>';
+    return;
+  }
+  
+  // On Base network, only allow ETH sends
+  if (isBaseMode && selectedToken !== 'ETH') {
+    status.innerHTML = '<div class="status error">Only ETH transfers supported on Base</div>';
     return;
   }
 
@@ -3839,35 +4127,24 @@ async function sendTransaction() {
     calldataDisplay.value = calldata;
   }
   
+  // Setup Swiss Knife decoder link with correct format
   if (swissKnifeLink) {
     if (calldata !== '0x' && calldata.length > 2) {
-      swissKnifeLink.href = '#';
+      // Use the correct decoder URL format for all cases
+      const simulationUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
+      
+      // Set both href and onclick for maximum compatibility
+      swissKnifeLink.href = simulationUrl;
+      swissKnifeLink.target = '_blank';
       swissKnifeLink.style.display = 'inline-block';
+      
+      // Override click behavior for extension compatibility
       swissKnifeLink.onclick = (e) => {
         e.preventDefault();
-        // Use Swiss Knife simulation for the transaction
-        const recipientAddress = document.getElementById('toAddress').value;
-        const amount = document.getElementById('amount').value || '0';
-        let url;
-        
-        if (selectedToken === 'ETH') {
-          // For ETH transfers, simulate with value
-          const valueInWei = ethers.parseEther(amount).toString();
-          url = `https://www.swiss-knife.xyz/simulateTransaction/ethereum/${recipientAddress}?value=${valueInWei}`;
-        } else {
-          // For token transfers, simulate the calldata on the token contract
-          const tokenAddress = TOKENS[selectedToken]?.address;
-          if (tokenAddress) {
-            url = `https://www.swiss-knife.xyz/simulateCalldata/ethereum/${tokenAddress}/${calldata}`;
-          } else {
-            url = `https://www.swiss-knife.xyz/decoder?calldata=${calldata}`;
-          }
-        }
-        
         if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-          chrome.runtime.sendMessage({ action: 'open_external', url });
+          chrome.runtime.sendMessage({ action: 'open_external', url: simulationUrl });
         } else {
-          window.open(url, '_blank', 'noopener,noreferrer');
+          window.open(simulationUrl, '_blank', 'noopener,noreferrer');
         }
       };
     } else {
@@ -4279,6 +4556,14 @@ function setupEventListeners() {
     themeToggle.addEventListener("click", toggleTheme);
   } else {
     console.error("Theme toggle button not found!");
+  }
+  
+  // Network toggle (Base/Mainnet)
+  const networkToggle = document.getElementById("networkToggle");
+  if (networkToggle) {
+    networkToggle.addEventListener("click", async () => {
+      await toggleNetwork();
+    });
   }
 
   // Tabs - simplified with just one event listener
@@ -4870,8 +5155,8 @@ function setupEventListeners() {
     showToast("IOU downloaded! 💾");
   });
 
-  // Settings
-  document.querySelectorAll(".rpc-item").forEach((item) => {
+  // Settings - Ethereum RPC
+  document.querySelectorAll(".rpc-item:not(.base-rpc)").forEach((item) => {
     item.addEventListener("click", async () => {
       const rpc = item.dataset.rpc;
 
@@ -4880,12 +5165,39 @@ function setupEventListeners() {
       } else {
         currentRpc = rpc;
         localStorage.setItem("rpc_endpoint", rpc);
-        await initProvider();
+        
+        // Only reinit if on mainnet
+        if (!isBaseMode) {
+          await initProvider();
 
-        if (wallet) {
-          wallet = wallet.connect(provider);
-          await fetchAllBalances();
+          if (wallet) {
+            wallet = wallet.connect(provider);
+            await fetchAllBalances();
+          }
         }
+      }
+    });
+  });
+  
+  // Settings - Base RPC
+  document.querySelectorAll(".base-rpc").forEach((item) => {
+    item.addEventListener("click", async () => {
+      const baseRpc = item.dataset.baseRpc;
+      
+      if (baseRpc) {
+        localStorage.setItem("base_rpc", baseRpc);
+        
+        // Only reinit if on Base
+        if (isBaseMode) {
+          await initProvider();
+
+          if (wallet) {
+            wallet = wallet.connect(provider);
+            await fetchAllBalances();
+          }
+        }
+        
+        showToast("Base RPC updated");
       }
     });
   });
@@ -6339,12 +6651,12 @@ async function executeSwap() {
     const calldataDisplay = document.getElementById("swapCalldataDisplay");
     if (calldataDisplay) calldataDisplay.value = callData;
     
-    // Setup Swiss Knife decoder link
+    // Setup Swiss Knife decoder link with correct format
     const swissKnifeLink = document.getElementById("swapSwissKnifeLink");
     if (swissKnifeLink) {
       if (callData && callData !== '0x' && callData.length > 2) {
-        // Build the Swiss Knife simulation URL
-        const simulationUrl = `https://www.swiss-knife.xyz/simulateCalldata/ethereum/${ZROUTER_ADDRESS}/${callData}?value=${msgValue || 0}`;
+        // Use the correct decoder URL format
+        const simulationUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${callData}`;
         
         // Set both href and onclick for maximum compatibility
         swissKnifeLink.href = simulationUrl;
@@ -6728,7 +7040,7 @@ function setupBridgeEventListeners() {
         
         // Estimate gas for bridge transaction
         const gasPrice = await provider.getFeeData();
-        const gasLimit = 21000n; // Standard ETH transfer
+        const gasLimit = 150000n; // Bridge transactions need more gas
         const gasCost = gasLimit * gasPrice.maxFeePerGas;
         
         // Calculate max amount (balance - gas)
@@ -6808,7 +7120,7 @@ async function updateBridgeEstimates() {
     // Estimate gas
     if (provider) {
       const feeData = await provider.getFeeData();
-      const gasLimit = 21000n; // Standard ETH transfer
+      const gasLimit = 150000n; // Bridge transactions need ~130k gas
       const gasCost = gasLimit * feeData.maxFeePerGas;
       const gasCostEth = parseFloat(ethers.formatEther(gasCost));
       const gasCostUsd = gasCostEth * ethPrice;
@@ -6845,9 +7157,10 @@ async function prepareBridge() {
     const balance = await provider.getBalance(wallet.address);
     const amountWei = ethers.parseEther(amount);
     
-    // Estimate gas
+    // Estimate gas - Bridge requires more gas than simple transfer
     const feeData = await provider.getFeeData();
-    const gasLimit = 21000n;
+    // Bridge transactions need ~130k gas based on actual usage
+    const gasLimit = 150000n; // Add buffer for safety
     const gasCost = gasLimit * feeData.maxFeePerGas;
     
     const totalCost = amountWei + gasCost;
@@ -6855,6 +7168,26 @@ async function prepareBridge() {
     if (totalCost > balance) {
       showToast("Insufficient balance for bridge + gas", "error");
       return;
+    }
+    
+    // Simulate the bridge transaction first
+    showToast("Simulating bridge transaction...");
+    
+    try {
+      const simulation = await simulateTransaction({
+        from: wallet.address,
+        to: BASE_BRIDGE_CONTRACT,
+        value: amountWei.toString(),
+        gasLimit: gasLimit
+      });
+      
+      if (!simulation.success) {
+        showToast(`Bridge would fail: ${simulation.error}`, "error");
+        return;
+      }
+    } catch (simError) {
+      console.error("Bridge simulation error:", simError);
+      // Continue anyway if simulation fails
     }
     
     // Prepare transaction
@@ -6929,9 +7262,7 @@ async function executeBridge() {
         <div class="status" style="background: var(--info-bg); padding: 12px; border: 1px solid var(--border); border-radius: 8px;">
           <div style="font-weight: bold; margin-bottom: 8px;">🔄 Bridge Transaction Sent</div>
           <div style="font-size: 11px; margin-bottom: 8px;">
-            Tx: <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" style="color: var(--accent); text-decoration: underline;">
-              ${tx.hash.slice(0, 10)}...${tx.hash.slice(-8)}
-            </a>
+            Tx: ${tx.hash.slice(0, 10)}...${tx.hash.slice(-8)}
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <div class="loading-spinner"></div>
@@ -6942,29 +7273,37 @@ async function executeBridge() {
     }
     
     // Wait for confirmation
-    await tx.wait();
+    const receipt = await tx.wait();
     
     // Success
-    if (statusEl) {
+    if (statusEl && receipt.status === 1) {
       statusEl.innerHTML = `
         <div class="status success" style="padding: 12px; border-radius: 8px;">
           <div style="font-weight: bold; margin-bottom: 8px;">✅ Bridge Successful!</div>
           <div style="font-size: 12px; margin-bottom: 8px;">
             Your ETH has been sent to the Base bridge contract.
           </div>
-          <div style="font-size: 11px; margin-bottom: 8px;">
-            Ethereum Tx: <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" style="color: white; text-decoration: underline;">
-              ${tx.hash.slice(0, 10)}...${tx.hash.slice(-8)}
-            </a>
-          </div>
           <div style="font-size: 11px;">
             Your ETH will appear on Base in 1-2 minutes. Check your balance on:
-            <a href="https://basescan.org/address/${wallet.address}" target="_blank" style="color: white; text-decoration: underline;">
+            <a href="https://basescan.org/address/${wallet.address}" target="_blank" style="color: var(--accent); text-decoration: underline;">
               Base Explorer →
             </a>
           </div>
         </div>
       `;
+      
+      // Show proper Etherscan link using our helper function
+      await showEtherscanLink(tx.hash);
+    } else if (statusEl) {
+      statusEl.innerHTML = `
+        <div class="status error" style="padding: 12px; border-radius: 8px;">
+          <div style="font-weight: bold; margin-bottom: 8px;">❌ Bridge Failed</div>
+          <div style="font-size: 12px;">Transaction was not successful. Please try again.</div>
+        </div>
+      `;
+      
+      // Still show transaction link for debugging
+      await showEtherscanLink(tx.hash);
     }
     
     showToast("Bridge successful! ETH will appear on Base soon", "success");

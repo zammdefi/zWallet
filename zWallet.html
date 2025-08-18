@@ -1556,7 +1556,7 @@ body {
           </div>
         </div>
 
-               <!-- Send Tab -->
+        <!-- Send Tab -->
         <div class="tab-content" id="send-tab">
           <div class="section">
             <h2>Select Token</h2>
@@ -3465,16 +3465,19 @@ async function init() {
   // --- auto-unlock last wallet (with password prompt) ---
   try {
     const last = localStorage.getItem(LS_LAST);
+    console.log("Last wallet address:", last);
     if (last) {
       const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
       const entry = list.find(
         (w) => w.address.toLowerCase() === last.toLowerCase()
       );
+      console.log("Found wallet entry:", !!entry);
       if (entry) {
         const label =
           entry.label ||
           entry.address.slice(0, 6) + "..." + entry.address.slice(-4);
         try {
+          console.log("Showing password prompt for:", label);
           const pass = await securePasswordPrompt('Unlock Wallet', `Enter password to unlock ${label}:`, false, `wallet_${entry.address}`);
           const pk = await decryptPK(
               entry.crypto,
@@ -3732,19 +3735,8 @@ async function handleTransactionRequest(requestId, pendingRequest) {
     calldataDisplay.value = calldata;
   }
   
-  if (swissKnifeLink && calldata !== '0x' && calldata.length > 2) {
-    swissKnifeLink.href = '#';
-    swissKnifeLink.style.display = 'inline-block';
-    swissKnifeLink.onclick = (e) => {
-      e.preventDefault();
-      const url = `https://www.swiss-knife.xyz/decoder?calldata=${calldata}`;
-      if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
-        (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url });
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
-    };
-  } else if (swissKnifeLink) {
+  // Remove Swiss Knife decoder link - not needed
+  if (swissKnifeLink) {
     swissKnifeLink.style.display = 'none';
   }
   
@@ -5081,64 +5073,64 @@ function lockWallet() {
   showToast("Locked");
 }
 
-function showEtherscanLink(txHash) {
+async function showEtherscanLink(txHash) {
   const status = document.getElementById("txStatus");
   
-  // Create container for multiple links
+  // Create container for link
   const linksContainer = document.createElement("div");
   linksContainer.style.cssText = "margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap;";
   
-  // Etherscan link
-  const etherscanLink = document.createElement("a");
-  etherscanLink.href = `#`;
-  etherscanLink.className = "etherscan-link";
-  etherscanLink.textContent = "Etherscan →";
-  etherscanLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  etherscanLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://etherscan.io/tx/${txHash}`;
-    if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
-      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url });
+  // Determine the correct block explorer based on network
+  let explorerUrl;
+  let explorerName;
+  
+  try {
+    if (provider) {
+      const network = await provider.getNetwork();
+      const chainId = Number(network.chainId);
+      
+      switch(chainId) {
+        case 8453:
+          explorerUrl = `https://basescan.org/tx/${txHash}`;
+          explorerName = "Basescan";
+          break;
+        case 1:
+        default:
+          explorerUrl = `https://etherscan.io/tx/${txHash}`;
+          explorerName = "Etherscan";
+          break;
+      }
     } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
+      // Default to Etherscan if no provider
+      explorerUrl = `https://etherscan.io/tx/${txHash}`;
+      explorerName = "Etherscan";
+    }
+  } catch (err) {
+    // Default to Etherscan on error
+    explorerUrl = `https://etherscan.io/tx/${txHash}`;
+    explorerName = "Etherscan";
+  }
+  
+  // Block explorer link
+  const explorerLink = document.createElement("a");
+  explorerLink.href = explorerUrl;
+  explorerLink.className = "explorer-link";
+  explorerLink.textContent = `${explorerName} →`;
+  explorerLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
+  explorerLink.target = "_blank";
+  explorerLink.rel = "noopener noreferrer";
+  
+  // Override click for extension compatibility
+  explorerLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
+      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url: explorerUrl });
+    } else {
+      window.open(explorerUrl, '_blank', 'noopener,noreferrer');
     }
   });
   
-  // Transaction decoder link (Swiss Knife style)
-  const decoderLink = document.createElement("a");
-  decoderLink.href = `#`;
-  decoderLink.className = "decoder-link";
-  decoderLink.textContent = "Decode →";
-  decoderLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  decoderLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://www.swiss-knife.xyz/tx/ethereum/${txHash}`;
-    if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
-      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url });
-    } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  });
-  
-  // Tenderly link for detailed debugging
-  const tenderlyLink = document.createElement("a");
-  tenderlyLink.href = `#`;
-  tenderlyLink.className = "tenderly-link";
-  tenderlyLink.textContent = "Debug →";
-  tenderlyLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  tenderlyLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    const url = `https://dashboard.tenderly.co/tx/mainnet/${txHash}`;
-    if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
-      (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url });
-    } else {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  });
-  
-  linksContainer.appendChild(etherscanLink);
-  linksContainer.appendChild(decoderLink);
-  linksContainer.appendChild(tenderlyLink);
+  linksContainer.appendChild(explorerLink);
   status.appendChild(linksContainer);
 }
 
@@ -5895,35 +5887,40 @@ async function sendTransaction() {
     calldataDisplay.value = calldata;
   }
   
+  // Setup Swiss Knife decoder link (same pattern as swap)
   if (swissKnifeLink) {
     if (calldata !== '0x' && calldata.length > 2) {
-      swissKnifeLink.href = '#';
-      swissKnifeLink.style.display = 'inline-block';
-      swissKnifeLink.onclick = (e) => {
-        e.preventDefault();
-        // Use Swiss Knife simulation for the transaction
+      // Build the Swiss Knife simulation URL based on token type
+      let simulationUrl;
+      
+      if (selectedToken === 'ETH') {
+        // For ETH transfers, simulate with value
         const recipientAddress = document.getElementById('toAddress').value;
         const amount = document.getElementById('amount').value || '0';
-        let url;
-        
-        if (selectedToken === 'ETH') {
-          // For ETH transfers, simulate with value
-          const valueInWei = ethers.parseEther(amount).toString();
-          url = `https://www.swiss-knife.xyz/simulateTransaction/ethereum/${recipientAddress}?value=${valueInWei}`;
+        const valueInWei = ethers.parseEther(amount).toString();
+        simulationUrl = `https://www.swiss-knife.xyz/simulateTransaction/ethereum/${recipientAddress}?value=${valueInWei}`;
+      } else {
+        // For token transfers, simulate the calldata on the token contract
+        const tokenAddress = TOKENS[selectedToken]?.address;
+        if (tokenAddress) {
+          simulationUrl = `https://www.swiss-knife.xyz/simulateCalldata/ethereum/${tokenAddress}/${calldata}`;
         } else {
-          // For token transfers, simulate the calldata on the token contract
-          const tokenAddress = TOKENS[selectedToken]?.address;
-          if (tokenAddress) {
-            url = `https://www.swiss-knife.xyz/simulateCalldata/ethereum/${tokenAddress}/${calldata}`;
-          } else {
-            url = `https://www.swiss-knife.xyz/decoder?calldata=${calldata}`;
-          }
+          simulationUrl = `https://www.swiss-knife.xyz/decoder?calldata=${calldata}`;
         }
-        
+      }
+      
+      // Set both href and onclick for maximum compatibility
+      swissKnifeLink.href = simulationUrl;
+      swissKnifeLink.target = '_blank';
+      swissKnifeLink.style.display = 'inline-block';
+      
+      // Override click behavior for extension compatibility
+      swissKnifeLink.onclick = (e) => {
+        e.preventDefault();
         if (chrome && chrome.runtime && (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})) {
-          (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url });
+          (typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})({ action: 'open_external', url: simulationUrl });
         } else {
-          window.open(url, '_blank', 'noopener,noreferrer');
+          window.open(simulationUrl, '_blank', 'noopener,noreferrer');
         }
       };
     } else {
