@@ -4,8 +4,12 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover"
     />
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="format-detection" content="telephone=no">
     <!-- Security: Content Security Policy -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -66,6 +70,17 @@
         to { opacity: 1; transform: translateY(0); }
       }
       
+      @keyframes slideUp {
+        from { 
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to { 
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      
       /* Optimized animations with GPU acceleration */
       .token-row {
         transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -95,11 +110,27 @@
         }
       }
 
-      /* Mobile optimizations */
+      /* Touch-friendly styles for both mobile and touch-enabled desktops */
+      @media (pointer: coarse), (max-width: 768px) {
+        .touch-friendly {
+          touch-action: manipulation;
+          min-height: 44px;
+        }
+        
+        .touch-input {
+          touch-action: manipulation;
+          min-height: 48px;
+          font-size: 16px !important;
+        }
+      }
+      
+      /* Mobile-specific optimizations */
       @media (max-width: 480px) {
         body {
           padding: 10px;
-          font-size: 13px;
+          padding-bottom: env(safe-area-inset-bottom);
+          font-size: 14px;
+          -webkit-tap-highlight-color: transparent;
         }
         
         .window {
@@ -108,16 +139,23 @@
         }
         
         .content {
-          padding: 12px;
+          padding: 16px;
+          padding-bottom: calc(16px + env(safe-area-inset-bottom));
         }
         
         .tabs {
-          gap: 4px;
+          gap: 6px;
         }
         
         .tab {
-          padding: 8px 12px;
-          font-size: 11px;
+          padding: 8px 6px;
+          font-size: 10px;
+          min-height: 40px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          touch-action: manipulation;
+          letter-spacing: 0;
         }
         
         .swap-box {
@@ -135,6 +173,57 @@
         .token-icon {
           width: 20px !important;
           height: 20px !important;
+        }
+        
+        /* Mobile input/button improvements */
+        input, select, textarea, button {
+          font-size: 16px !important; /* Prevent zoom on iOS */
+          min-height: 44px;
+          touch-action: manipulation;
+          -webkit-appearance: none;
+        }
+        
+        input:focus, select:focus, textarea:focus {
+          font-size: 16px !important;
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+        
+        button {
+          padding: 14px 20px !important;
+          cursor: pointer;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        
+        /* Better touch targets */
+        .token-row, .token-option, .tab {
+          min-height: 44px;
+          cursor: pointer;
+        }
+        
+        /* Prevent text selection on tap */
+        * {
+          -webkit-touch-callout: none;
+          -webkit-tap-highlight-color: transparent;
+        }
+        
+        input, textarea {
+          -webkit-touch-callout: default;
+          -webkit-user-select: text;
+          user-select: text;
+        }
+        
+        /* Modal adjustments */
+        .modal-content {
+          margin: 16px !important;
+          padding: 20px !important;
+          max-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 40px) !important;
+        }
+        
+        /* Dropdown improvements */
+        .token-dropdown {
+          max-height: 50vh !important;
         }
       }
 
@@ -249,18 +338,20 @@
       }
 
       .tab {
-        padding: 8px 16px;
+        padding: 6px 10px;
         background: transparent;
         border: none;
         border-bottom: 2px solid transparent;
         cursor: pointer;
         font-weight: bold;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 12px;
+        letter-spacing: 0.2px;
+        font-size: 11px;
         color: var(--fg);
         margin-bottom: -2px;
         box-shadow: none;
+        white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .tab:hover {
@@ -277,7 +368,7 @@
       }
 
       .tab-content.active {
-        display: block;
+        display: block !important;
       }
 
       .section {
@@ -1030,6 +1121,8 @@
         z-index: 1000;
         max-height: 200px;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
       }
 
       .token-option {
@@ -1223,7 +1316,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.3</span>
+          <span>zWallet v0.0.4</span>
         </div>
         <div class="title-right">
           <button class="icon-btn" id="themeToggle" title="Toggle theme">
@@ -1237,6 +1330,7 @@
           <button class="tab active" data-tab="wallet">Wallet</button>
           <button class="tab" data-tab="send">Send</button>
           <button class="tab" data-tab="swap">Swap</button>
+          <button class="tab" data-tab="bridge">Bridge</button>
           <button class="tab" data-tab="txs">Txs</button>
           <button class="tab" data-tab="settings">Settings</button>
         </div>
@@ -1325,7 +1419,7 @@
               <input
                 type="text"
                 id="newTokenSymbol"
-                placeholder="Symbol (optional)"
+                placeholder="Symbol (recommended for ERC6909)"
               />
               <div id="tokenTypeIndicator" class="hidden" style="font-size: 12px; color: var(--text-secondary); margin: 4px 0;"></div>
               <button id="confirmAddToken">Add Token</button>
@@ -1348,19 +1442,19 @@
                 <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="swapFromBalance">0.0</span></span>
               </div>
               <div style="display: flex; gap: 12px; align-items: center;">
-                <input type="text" id="swapFromAmount" placeholder="0" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 0; outline: none;" autocomplete="off" inputmode="decimal" />
+                <input type="text" id="swapFromAmount" placeholder="0" class="touch-friendly" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 8px 0; outline: none; min-height: 40px;" autocomplete="off" inputmode="decimal" pattern="[0-9]*" />
                 <div style="position: relative;">
-                  <div class="token-selector" id="swapFromTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; cursor: pointer; transition: all 0.2s; min-width: 100px;">
+                  <div class="token-selector" id="swapFromTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 8px 12px; cursor: pointer; transition: all 0.2s; min-width: 110px; min-height: 44px; touch-action: manipulation; user-select: none;">
                     <div class="token-icon" id="swapFromTokenIcon" style="width: 24px; height: 24px;"></div>
                     <span id="swapFromTokenDisplay" style="font-weight: 500;">ETH</span>
-                    <span style="font-size: 10px;">▼</span>
+                    <span style="font-size: 12px;">▼</span>
                   </div>
                   <div id="swapFromDropdown" class="token-dropdown hidden"></div>
                 </div>
               </div>
               <div style="display: flex; justify-content: space-between; margin-top: 8px;">
                 <span id="swapFromUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
-                <button class="max-btn" id="swapMaxBtn" style="padding: 2px 10px; font-size: 11px; margin: 0; background: var(--accent); color: white; border-radius: 4px;">MAX</button>
+                <button class="max-btn" id="swapMaxBtn" style="padding: 6px 14px; font-size: 12px; margin: 0; background: var(--accent); color: white; border-radius: 6px; min-height: 32px; min-width: 50px; touch-action: manipulation;">MAX</button>
               </div>
             </div>
             
@@ -1376,12 +1470,12 @@
                 <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="swapToBalance">0.0</span></span>
               </div>
               <div style="display: flex; gap: 12px; align-items: center;">
-                <input type="text" id="swapToAmount" placeholder="0" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 0; outline: none;" autocomplete="off" inputmode="decimal" readonly />
+                <input type="text" id="swapToAmount" placeholder="0" style="flex: 1; margin-bottom: 0; background: transparent; border: none; font-size: 24px; font-weight: 500; padding: 8px 0; outline: none; min-height: 40px; touch-action: manipulation;" autocomplete="off" inputmode="decimal" pattern="[0-9]*" readonly />
                 <div style="position: relative;">
-                  <div class="token-selector" id="swapToTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; cursor: pointer; transition: all 0.2s; min-width: 100px;">
+                  <div class="token-selector" id="swapToTokenSelector" style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 8px 12px; cursor: pointer; transition: all 0.2s; min-width: 110px; min-height: 44px; touch-action: manipulation; user-select: none;">
                     <div class="token-icon" id="swapToTokenIcon" style="width: 24px; height: 24px;"></div>
                     <span id="swapToTokenDisplay" style="font-weight: 500;">USDC</span>
-                    <span style="font-size: 10px;">▼</span>
+                    <span style="font-size: 12px;">▼</span>
                   </div>
                   <div id="swapToDropdown" class="token-dropdown hidden"></div>
                 </div>
@@ -1422,11 +1516,110 @@
             </div>
             
             <!-- Swap Button -->
-            <button id="swapBtn" style="width: 100%;" disabled>
+            <button id="swapBtn" style="width: 100%; padding: 16px; min-height: 52px; font-size: 16px; font-weight: 600; border-radius: 10px; touch-action: manipulation; margin-top: 16px;" disabled>
               Enter Amount to Swap
             </button>
             
             <div id="swapStatus" style="margin-top: 12px;"></div>
+          </div>
+        </div>
+
+        <!-- Bridge Tab -->
+        <div class="tab-content" id="bridge-tab">
+          <div class="section">
+            <h2>Bridge to Base</h2>
+            
+            <!-- Bridge Info Card -->
+            <div style="background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; color: white; position: relative; overflow: hidden;">
+              <!-- Base Logo Background -->
+              <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
+                <svg width="120" height="120" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="white"/>
+                </svg>
+              </div>
+              
+              <!-- Bridge Header -->
+              <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; position: relative;">
+                <div style="background: white; border-radius: 12px; padding: 8px; display: flex; align-items: center; justify-content: center;">
+                  <svg width="32" height="32" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="#0000FF"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 20px; font-weight: bold;">Base Network</h3>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; opacity: 0.9;">Ethereum L2 built by Coinbase</p>
+                </div>
+              </div>
+            
+            <!-- Bridge Amount Input -->
+            <div style="background: var(--input-bg); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <label style="font-weight: bold; font-size: 13px;">Amount to Bridge</label>
+                <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="bridgeBalance">0.0</span> ETH</span>
+              </div>
+              
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <input 
+                  type="text" 
+                  id="bridgeAmount" 
+                  placeholder="0.0" 
+                  style="flex: 1; margin-bottom: 0; font-size: 24px; font-weight: bold; background: transparent; border: none; padding: 8px 0; outline: none;"
+                  autocomplete="off"
+                  inputmode="decimal"
+                  pattern="[0-9]*"
+                />
+                <button id="bridgeMaxBtn" style="padding: 8px 16px; font-size: 12px; margin: 0; background: var(--accent); color: white; border-radius: 8px;">
+                  MAX
+                </button>
+              </div>
+              
+              <div style="margin-top: 8px;">
+                <span id="bridgeUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
+              </div>
+            </div>
+            
+            <!-- Bridge Details -->
+            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">From:</span>
+                <span style="font-weight: bold;">Ethereum Mainnet</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">To:</span>
+                <span style="font-weight: bold; color: #0052FF;">Base Network</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">Bridge Contract:</span>
+                <span style="font-family: 'Courier New', monospace; font-size: 11px;">0x49048044...E97e</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">Est. Gas Fee:</span>
+                <span id="bridgeGasFee">--</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--text-secondary);">Est. Time:</span>
+                <span>~1-2 minutes</span>
+              </div>
+            </div>
+            
+            <!-- How it Works -->
+            <div style="background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+              <div style="font-weight: bold; font-size: 12px; margin-bottom: 8px;">ℹ️ How it works</div>
+              <ol style="margin: 0; padding-left: 20px; font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
+                <li>Send ETH to the Base bridge contract on Ethereum</li>
+                <li>The bridge automatically credits your account on Base</li>
+                <li>Your ETH will appear on Base in 1-2 minutes</li>
+                <li>Use the same wallet address on Base network</li>
+              </ol>
+            </div>
+            
+            <!-- Bridge Button -->
+            <button id="bridgeBtn" style="width: 100%; padding: 16px; font-size: 16px; font-weight: bold; background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); color: white; border: 2px solid var(--border); border-radius: 10px;" disabled>
+              Bridge ETH to Base
+            </button>
+            
+            <!-- Status Message -->
+            <div id="bridgeStatus" style="margin-top: 12px;"></div>
           </div>
         </div>
 
@@ -1445,6 +1638,8 @@
               </label>
               <div style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; display: none;" id="iouModeInfo">
                 Create a signed USDC transfer authorization (EIP-3009) that the recipient can claim later, paying the gas themselves.
+                <br><br>
+                Recipients can check and claim their IOUs at <a href="https://iousdc.eth.limo/" target="_blank" style="color: var(--accent); text-decoration: underline;">IOUSDC.eth</a>
               </div>
             </div>
           </div>
@@ -1456,6 +1651,8 @@
               id="toAddress"
               placeholder="0x... or name.eth"
               autocomplete="off"
+              inputmode="text"
+              class="touch-input" style="padding: 14px;"
             />
             <div class="ens-indicator" id="resolvedAddress"></div>
 
@@ -1464,13 +1661,15 @@
             >
             <div class="amount-controls">
               <input
-                type="number"
+                type="text"
                 id="amount"
-                step="0.000001"
-                min="0"
+                inputmode="decimal"
+                pattern="[0-9]*"
                 placeholder="0.000000"
+                autocomplete="off"
+                style="font-size: 16px; padding: 14px; min-height: 48px; touch-action: manipulation;"
               />
-              <button class="max-btn" id="maxBtn">MAX</button>
+              <button class="max-btn" id="maxBtn" style="min-width: 60px; min-height: 48px; padding: 12px 16px; font-size: 13px; touch-action: manipulation;">MAX</button>
             </div>
 
             <div style="margin-top: 16px" id="gasFeeSection">
@@ -1529,7 +1728,7 @@
               </div>
             </div>
 
-            <button id="sendBtn" style="width: 100%; margin-top: 12px">
+            <button id="sendBtn" style="width: 100%; margin-top: 16px; padding: 16px; min-height: 52px; font-size: 16px; font-weight: 600; border-radius: 10px; touch-action: manipulation;">
               Send Transaction
             </button>
             <button id="createIouBtn" class="hidden" style="width: 100%; margin-top: 12px">
@@ -1916,6 +2115,66 @@
       </div>
     </div>
 
+    <!-- Bridge Confirmation Modal -->
+    <div id="bridgeConfirmModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Confirm Bridge to Base</h3>
+          <button class="modal-close" id="bridgeModalClose">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: linear-gradient(135deg, #0052FF15 0%, #0033CC15 100%); border: 1px solid #0052FF; border-radius: 8px; margin-bottom: 16px;">
+            <svg width="32" height="32" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="#0000FF"/>
+            </svg>
+            <div>
+              <div style="font-weight: bold;">Bridging to Base Network</div>
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">Ethereum L2 by Coinbase</div>
+            </div>
+          </div>
+          
+          <div class="confirm-row">
+            <span class="confirm-label">Amount:</span>
+            <span class="confirm-value" id="confirmBridgeAmount"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">USD Value:</span>
+            <span class="confirm-value" id="confirmBridgeUSD"></span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Bridge Contract:</span>
+            <span class="confirm-value mono" style="font-size: 10px;">0x49048044D57e1C92A77f79988d21Fa8fAF74E97e</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Network:</span>
+            <span class="confirm-value">Ethereum → Base</span>
+          </div>
+          <div class="confirm-row">
+            <span class="confirm-label">Gas Fee:</span>
+            <span class="confirm-value" id="confirmBridgeGas"></span>
+          </div>
+          <div class="confirm-row total">
+            <span class="confirm-label">Total Cost:</span>
+            <span class="confirm-value" id="confirmBridgeTotal"></span>
+          </div>
+          
+          <div style="margin-top: 16px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px; font-size: 11px;">
+            <strong>⚠️ Important:</strong>
+            <ul style="margin: 8px 0 0 20px; padding: 0;">
+              <li>Funds will be sent to the official Base bridge</li>
+              <li>ETH will appear on Base network in 1-2 minutes</li>
+              <li>Use the same wallet address on Base</li>
+              <li>This transaction cannot be reversed</li>
+            </ul>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirmBridgeBtn" class="btn-confirm">Confirm Bridge</button>
+          <button id="cancelBridgeBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <!-- QR Code Modal -->
     <div id="qrModal" class="modal hidden">
       <div class="modal-content" style="max-width: 360px;">
@@ -1941,10 +2200,10 @@
     </div>
 
     <!-- Secure Password Modal -->
-    <div id="passwordModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.95); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center;">
-      <div class="modal-content" style="background: rgba(30, 30, 40, 0.98); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8); border-radius: 12px; padding: 24px; max-width: 400px; width: 90%; max-height: 90vh; overflow-y: auto; position: relative;">
-        <h3 id="passwordModalTitle" style="margin: 0 0 16px 0; color: var(--text-primary);">Enter Password</h3>
-        <p id="passwordModalMessage" style="margin: 0 0 16px 0; color: var(--text-secondary); font-size: 14px;"></p>
+    <div id="passwordModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 10000; align-items: center; justify-content: center; animation: fadeIn 0.15s ease;">
+      <div class="modal-content" style="background: var(--bg-secondary); border: 1px solid var(--border); box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4); border-radius: 16px; padding: 28px; max-width: 380px; width: 90%; max-height: 90vh; overflow-y: auto; position: relative; animation: slideUp 0.2s ease;">
+        <h3 id="passwordModalTitle" style="margin: 0 0 12px 0; color: var(--text-primary); font-size: 18px; font-weight: 600;">Enter Password</h3>
+        <p id="passwordModalMessage" style="margin: 0 0 20px 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5;"></p>
         
         <form id="passwordForm" autocomplete="off">
           <!-- Primary password input -->
@@ -1957,7 +2216,7 @@
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+              class="touch-input" style="width: 100%; padding: 14px 44px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
               required
             />
             <button 
@@ -1991,7 +2250,7 @@
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              style="width: 100%; padding: 12px 40px 12px 12px; font-size: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);"
+              class="touch-input" style="width: 100%; padding: 14px 44px 14px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); -webkit-appearance: none;"
             />
             <button 
               type="button" 

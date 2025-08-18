@@ -37,7 +37,7 @@ The extension consists of:
 
 ## Version
 
-v0.0.3
+v0.0.4
 
 ## License
 
