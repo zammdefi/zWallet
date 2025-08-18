@@ -1556,106 +1556,7 @@ body {
           </div>
         </div>
 
-        <!-- Bridge Tab -->
-        <div class="tab-content" id="bridge-tab">
-          <div class="section">
-            <h2>Bridge to Base</h2>
-            
-            <!-- Bridge Info Card -->
-            <div style="background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; color: white; position: relative; overflow: hidden;">
-              <!-- Base Logo Background -->
-              <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
-                <svg width="120" height="120" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="white"/>
-                </svg>
-              </div>
-              
-              <!-- Bridge Header -->
-              <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; position: relative;">
-                <div style="background: white; border-radius: 12px; padding: 8px; display: flex; align-items: center; justify-content: center;">
-                  <svg width="32" height="32" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="#0000FF"/>
-                  </svg>
-                </div>
-                <div>
-                  <h3 style="margin: 0; font-size: 20px; font-weight: bold;">Base Network</h3>
-                  <p style="margin: 4px 0 0 0; font-size: 13px; opacity: 0.9;">Ethereum L2 built by Coinbase</p>
-                </div>
-              </div>
-            
-            <!-- Bridge Amount Input -->
-            <div style="background: var(--input-bg); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px;">
-              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                <label style="font-weight: bold; font-size: 13px;">Amount to Bridge</label>
-                <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="bridgeBalance">0.0</span> ETH</span>
-              </div>
-              
-              <div style="display: flex; gap: 12px; align-items: center;">
-                <input 
-                  type="text" 
-                  id="bridgeAmount" 
-                  placeholder="0.0" 
-                  style="flex: 1; margin-bottom: 0; font-size: 24px; font-weight: bold; background: transparent; border: none; padding: 8px 0; outline: none;"
-                  autocomplete="off"
-                  inputmode="decimal"
-                  pattern="[0-9]*"
-                />
-                <button id="bridgeMaxBtn" style="padding: 8px 16px; font-size: 12px; margin: 0; background: var(--accent); color: white; border-radius: 8px;">
-                  MAX
-                </button>
-              </div>
-              
-              <div style="margin-top: 8px;">
-                <span id="bridgeUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
-              </div>
-            </div>
-            
-            <!-- Bridge Details -->
-            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; font-size: 12px;">
-              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                <span style="color: var(--text-secondary);">From:</span>
-                <span style="font-weight: bold;">Ethereum Mainnet</span>
-              </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                <span style="color: var(--text-secondary);">To:</span>
-                <span style="font-weight: bold; color: #0052FF;">Base Network</span>
-              </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                <span style="color: var(--text-secondary);">Bridge Contract:</span>
-                <span style="font-family: 'Courier New', monospace; font-size: 11px;">0x49048044...E97e</span>
-              </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                <span style="color: var(--text-secondary);">Est. Gas Fee:</span>
-                <span id="bridgeGasFee">--</span>
-              </div>
-              <div style="display: flex; justify-content: space-between;">
-                <span style="color: var(--text-secondary);">Est. Time:</span>
-                <span>~1-2 minutes</span>
-              </div>
-            </div>
-            
-            <!-- How it Works -->
-            <div style="background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
-              <div style="font-weight: bold; font-size: 12px; margin-bottom: 8px;">ℹ️ How it works</div>
-              <ol style="margin: 0; padding-left: 20px; font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
-                <li>Send ETH to the Base bridge contract on Ethereum</li>
-                <li>The bridge automatically credits your account on Base</li>
-                <li>Your ETH will appear on Base in 1-2 minutes</li>
-                <li>Use the same wallet address on Base network</li>
-              </ol>
-            </div>
-            
-            <!-- Bridge Button -->
-            <button id="bridgeBtn" style="width: 100%; padding: 16px; font-size: 16px; font-weight: bold; background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); color: white; border: 2px solid var(--border); border-radius: 10px;" disabled>
-              Bridge ETH to Base
-            </button>
-            
-            <!-- Status Message -->
-            <div id="bridgeStatus" style="margin-top: 12px;"></div>
-          </div>
-        </div>
-
-        <!-- Send Tab -->
+               <!-- Send Tab -->
         <div class="tab-content" id="send-tab">
           <div class="section">
             <h2>Select Token</h2>
@@ -1890,6 +1791,105 @@ body {
             >
               Clear All Data
             </button>
+          </div>
+        </div>
+
+        <!-- Bridge Tab -->
+        <div class="tab-content" id="bridge-tab">
+          <div class="section">
+            <h2>Bridge to Base</h2>
+            
+            <!-- Bridge Info Card -->
+            <div style="background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; color: white; position: relative; overflow: hidden;">
+              <!-- Base Logo Background -->
+              <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
+                <svg width="120" height="120" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="white"/>
+                </svg>
+              </div>
+              
+              <!-- Bridge Header -->
+              <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; position: relative;">
+                <div style="background: white; border-radius: 12px; padding: 8px; display: flex; align-items: center; justify-content: center;">
+                  <svg width="32" height="32" viewBox="0 0 249 249" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M0 19.671C0 12.9332 0 9.56425 1.26956 6.97276C2.48511 4.49151 4.49151 2.48511 6.97276 1.26956C9.56425 0 12.9332 0 19.671 0H229.329C236.067 0 239.436 0 242.027 1.26956C244.508 2.48511 246.515 4.49151 247.73 6.97276C249 9.56425 249 12.9332 249 19.671V229.329C249 236.067 249 239.436 247.73 242.027C246.515 244.508 244.508 246.515 242.027 247.73C239.436 249 236.067 249 229.329 249H19.671C12.9332 249 9.56425 249 6.97276 247.73C4.49151 246.515 2.48511 244.508 1.26956 242.027C0 239.436 0 236.067 0 229.329V19.671Z" fill="#0000FF"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 20px; font-weight: bold;">Base Network</h3>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; opacity: 0.9;">Ethereum L2 built by Coinbase</p>
+                </div>
+              </div>
+            
+            <!-- Bridge Amount Input -->
+            <div style="background: var(--input-bg); border: 2px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <label style="font-weight: bold; font-size: 13px;">Amount to Bridge</label>
+                <span style="font-size: 11px; color: var(--text-secondary);">Balance: <span id="bridgeBalance">0.0</span> ETH</span>
+              </div>
+              
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <input 
+                  type="text" 
+                  id="bridgeAmount" 
+                  placeholder="0.0" 
+                  style="flex: 1; margin-bottom: 0; font-size: 24px; font-weight: bold; background: transparent; border: none; padding: 8px 0; outline: none;"
+                  autocomplete="off"
+                  inputmode="decimal"
+                  pattern="[0-9]*"
+                />
+                <button id="bridgeMaxBtn" style="padding: 8px 16px; font-size: 12px; margin: 0; background: var(--accent); color: white; border-radius: 8px;">
+                  MAX
+                </button>
+              </div>
+              
+              <div style="margin-top: 8px;">
+                <span id="bridgeUSD" style="font-size: 12px; color: var(--text-secondary);">$0.00</span>
+              </div>
+            </div>
+            
+            <!-- Bridge Details -->
+            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">From:</span>
+                <span style="font-weight: bold;">Ethereum Mainnet</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">To:</span>
+                <span style="font-weight: bold; color: #0052FF;">Base Network</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">Bridge Contract:</span>
+                <span style="font-family: 'Courier New', monospace; font-size: 11px;">0x49048044...E97e</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="color: var(--text-secondary);">Est. Gas Fee:</span>
+                <span id="bridgeGasFee">--</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--text-secondary);">Est. Time:</span>
+                <span>~1-2 minutes</span>
+              </div>
+            </div>
+            
+            <!-- How it Works -->
+            <div style="background: var(--info-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+              <div style="font-weight: bold; font-size: 12px; margin-bottom: 8px;">ℹ️ How it works</div>
+              <ol style="margin: 0; padding-left: 20px; font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
+                <li>Send ETH to the Base bridge contract on Ethereum</li>
+                <li>The bridge automatically credits your account on Base</li>
+                <li>Your ETH will appear on Base in 1-2 minutes</li>
+                <li>Use the same wallet address on Base network</li>
+              </ol>
+            </div>
+            
+            <!-- Bridge Button -->
+            <button id="bridgeBtn" style="width: 100%; padding: 16px; font-size: 16px; font-weight: bold; background: linear-gradient(135deg, #0052FF 0%, #0033CC 100%); color: white; border: 2px solid var(--border); border-radius: 10px;" disabled>
+              Bridge ETH to Base
+            </button>
+            
+            <!-- Status Message -->
+            <div id="bridgeStatus" style="margin-top: 12px;"></div>
           </div>
         </div>
       </div>
