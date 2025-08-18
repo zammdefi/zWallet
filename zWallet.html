@@ -2900,6 +2900,12 @@ const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 // zQuoter contract for finding best swap routes
 const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
 
+// zQuoter ABI for getting best quotes (moved here to be defined before use)
+const ZQUOTER_ABI = [
+  "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)",
+  "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
+];
+
 // ERC6909 addresses
 const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
 const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
@@ -3416,6 +3422,10 @@ async function migrateKeystoreIfNeeded() {
 
 // Initialize
 async function init() {
+  console.log("init() called!");
+  console.log("Current DOM state:", document.readyState);
+  console.log("Number of .tab elements:", document.querySelectorAll(".tab").length);
+  
   // Check if running as extension and handle CSP restrictions
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
     // Keep service worker alive
@@ -3515,6 +3525,9 @@ async function init() {
   }
 
   setupEventListeners();
+  
+  // Initialize display even without wallet
+  updateBalanceDisplay();
   
   // Initialize keyboard shortcuts
   initKeyboardShortcuts();
@@ -4287,6 +4300,20 @@ function updateBalanceDisplay() {
   const tokenGrid = document.getElementById("tokenGrid");
   const sendTokenGrid = document.getElementById("sendTokenGrid");
   if (!tokenGrid || !sendTokenGrid) {
+    console.error("Token grids not found in DOM");
+    return;
+  }
+  
+  // If no wallet is connected, show a message
+  if (!wallet) {
+    const noWalletMessage = `
+      <div style="text-align: center; padding: 20px; color: var(--text-secondary);">
+        <div style="font-size: 18px; margin-bottom: 10px;">No wallet connected</div>
+        <div style="font-size: 14px;">Generate or import a wallet to send tokens</div>
+      </div>
+    `;
+    if (tokenGrid) tokenGrid.innerHTML = noWalletMessage;
+    if (sendTokenGrid) sendTokenGrid.innerHTML = noWalletMessage;
     return;
   }
 
@@ -6247,62 +6274,92 @@ async function signAndDownloadIOU() {
   }
 }
 
-function setupEventListeners() {
-  // Theme toggle
-  document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+// Define handleTabClick outside setupEventListeners for proper scope
+function handleTabClick(tab) {
+  console.log("handleTabClick called for:", tab.dataset.tab);
+  
+  // Remove active from all tabs and contents
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.classList.remove("active");
+  });
+  document.querySelectorAll(".tab-content").forEach((c) => {
+    c.classList.remove("active");
+  });
 
-  // Tabs
+  // Add active to clicked tab
+  tab.classList.add("active");
+  
+  // Find and activate tab content
+  const tabContentId = tab.dataset.tab + "-tab";
+  const tabContent = document.getElementById(tabContentId);
+  console.log(`Looking for ${tabContentId}:`, !!tabContent);
+  
+  if (tabContent) {
+    tabContent.classList.add("active");
+    console.log(`Activated tab content: ${tabContentId}`);
+    
+    // Debug: Check what's actually visible in the tab
+    const visibleElements = tabContent.querySelectorAll('*:not(.hidden)');
+    console.log(`Visible elements in ${tabContentId}:`, visibleElements.length);
+    
+    // Check computed styles
+    const computedStyle = window.getComputedStyle(tabContent);
+    console.log(`Tab content display:`, computedStyle.display);
+    console.log(`Tab content visibility:`, computedStyle.visibility);
+    console.log(`Tab content height:`, computedStyle.height);
+    
+    // Check if sections are visible
+    const sections = tabContent.querySelectorAll('.section');
+    sections.forEach((section, i) => {
+      const sectionStyle = window.getComputedStyle(section);
+      console.log(`Section ${i} display:`, sectionStyle.display, 'visibility:', sectionStyle.visibility);
+    });
+  } else {
+    console.error(`Tab content not found: ${tabContentId}`);
+  }
+  
+  // Load transactions when tab is opened
+  if (tab.dataset.tab === "txs" && wallet && txHistory.length === 0) {
+    fetchTransactionHistory();
+  }
+}
+
+function setupEventListeners() {
+  console.log("setupEventListeners called!");
+  console.log("DOM ready state:", document.readyState);
+  console.log("Tab buttons in DOM:", document.querySelectorAll(".tab").length);
+  
+  // Theme toggle
+  const themeToggle = document.getElementById("themeToggle");
+  if (themeToggle) {
+    themeToggle.addEventListener("click", toggleTheme);
+  } else {
+    console.error("Theme toggle button not found!");
+  }
+
+  // Tabs - simplified with just one event listener
   const allTabs = document.querySelectorAll(".tab");
   console.log("Setting up tabs:", allTabs.length, Array.from(allTabs).map(t => t.dataset.tab));
   
   allTabs.forEach((tab, index) => {
     console.log(`Setting up tab ${index}: ${tab.dataset.tab}`);
     
-    // Try both addEventListener and onclick
-    tab.onclick = function(e) {
-      console.log("onclick fired for:", tab.dataset.tab);
-      handleTabClick(tab);
-    };
-    
+    // Use only addEventListener, not both onclick and addEventListener
     tab.addEventListener("click", (e) => {
-      console.log("addEventListener fired for:", tab.dataset.tab);
+      console.log("Tab clicked:", tab.dataset.tab);
+      e.preventDefault();
+      e.stopPropagation();
       handleTabClick(tab);
     });
   });
-  
-  function handleTabClick(tab) {
-    // Remove active from all tabs and contents
-    document.querySelectorAll(".tab").forEach((t) => {
-      t.classList.remove("active");
-    });
-    document.querySelectorAll(".tab-content").forEach((c) => {
-      c.classList.remove("active");
-    });
-
-    // Add active to clicked tab
-    tab.classList.add("active");
-    
-    // Find and activate tab content
-    const tabContentId = tab.dataset.tab + "-tab";
-    const tabContent = document.getElementById(tabContentId);
-    console.log(`Looking for ${tabContentId}:`, !!tabContent);
-    
-    if (tabContent) {
-      tabContent.classList.add("active");
-    } else {
-      console.error(`Tab content not found: ${tabContentId}`);
-    }
-    
-    // Load transactions when tab is opened
-    if (tab.dataset.tab === "txs" && wallet && txHistory.length === 0) {
-      fetchTransactionHistory();
-    }
-  }
 
   // Transaction history button
-  document.getElementById("loadTxBtn").addEventListener("click", () => {
-    fetchTransactionHistory();
-  });
+  const loadTxBtn = document.getElementById("loadTxBtn");
+  if (loadTxBtn) {
+    loadTxBtn.addEventListener("click", () => {
+      fetchTransactionHistory();
+    });
+  }
 
   // Load more transactions button  
   const loadMoreBtn = document.getElementById("loadMoreTxBtn");
@@ -6387,32 +6444,41 @@ function setupEventListeners() {
       }
     });
 
-  document.getElementById("deleteWalletBtn").addEventListener("click", async () => {
-    const selector = document.getElementById("walletSelector");
-    const address = selector.value;
+  const deleteWalletBtn = document.getElementById("deleteWalletBtn");
+  if (deleteWalletBtn) {
+    deleteWalletBtn.addEventListener("click", async () => {
+      const selector = document.getElementById("walletSelector");
+      const address = selector.value;
 
-    if (address && await securePasswordPrompt('Delete Wallet', 'Confirm wallet deletion:')) {
-      deleteWallet(address);
-      showToast("Wallet deleted");
-    }
-  });
+      if (address && await securePasswordPrompt('Delete Wallet', 'Confirm wallet deletion:')) {
+        deleteWallet(address);
+        showToast("Wallet deleted");
+      }
+    });
+  }
 
-  document.getElementById("generateBtn").addEventListener("click", async () => {
-    try {
-      wallet = ethers.Wallet.createRandom().connect(provider);
-      saveWallet(wallet.address, wallet.privateKey);
-      await displayWallet();
-      showToast("Wallet generated!");
-    } catch (err) {
-      
-      showError(err, 'Wallet generation');
-    }
-  });
+  const generateBtn = document.getElementById("generateBtn");
+  if (generateBtn) {
+    generateBtn.addEventListener("click", async () => {
+      try {
+        wallet = ethers.Wallet.createRandom().connect(provider);
+        saveWallet(wallet.address, wallet.privateKey);
+        await displayWallet();
+        showToast("Wallet generated!");
+      } catch (err) {
+        
+        showError(err, 'Wallet generation');
+      }
+    });
+  }
 
-  document.getElementById("importBtn").addEventListener("click", () => {
-    document.getElementById("importSection").classList.toggle("hidden");
-    document.getElementById("privateKeyInput").focus();
-  });
+  const importBtn = document.getElementById("importBtn");
+  if (importBtn) {
+    importBtn.addEventListener("click", () => {
+      document.getElementById("importSection").classList.toggle("hidden");
+      document.getElementById("privateKeyInput").focus();
+    });
+  }
 
   document
     .getElementById("confirmImportBtn")
@@ -6463,10 +6529,13 @@ function setupEventListeners() {
       }
     });
 
-  document.getElementById("cancelImportBtn").addEventListener("click", () => {
-    document.getElementById("importSection").classList.add("hidden");
-    document.getElementById("privateKeyInput").value = "";
-  });
+  const cancelImportBtn = document.getElementById("cancelImportBtn");
+  if (cancelImportBtn) {
+    cancelImportBtn.addEventListener("click", () => {
+      document.getElementById("importSection").classList.add("hidden");
+      document.getElementById("privateKeyInput").value = "";
+    });
+  }
 
   // Copy buttons
   document.querySelectorAll(".copy-btn").forEach((btn) => {
@@ -6486,21 +6555,27 @@ function setupEventListeners() {
 
   // Download key button removed - moved to Settings tab
 
-  document.getElementById("refreshBtn").addEventListener("click", async () => {
-    try {
-      await fetchAllBalances();
-      showToast("Refreshed!");
-    } catch (err) {
-      
-      showToast("Failed to refresh");
-    }
-  });
+  const refreshBtn = document.getElementById("refreshBtn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", async () => {
+      try {
+        await fetchAllBalances();
+        showToast("Refreshed!");
+      } catch (err) {
+        
+        showToast("Failed to refresh");
+      }
+    });
+  }
 
   // Add token functionality
-  document.getElementById("addTokenBtn").addEventListener("click", () => {
-    document.getElementById("addTokenSection").classList.toggle("hidden");
-    document.getElementById("newTokenAddress").focus();
-  });
+  const addTokenBtn = document.getElementById("addTokenBtn");
+  if (addTokenBtn) {
+    addTokenBtn.addEventListener("click", () => {
+      document.getElementById("addTokenSection").classList.toggle("hidden");
+      document.getElementById("newTokenAddress").focus();
+    });
+  }
 
   // Live detection of token type
   document.getElementById("newTokenAddress")?.addEventListener("input", async (e) => {
@@ -6627,16 +6702,19 @@ function setupEventListeners() {
     });
 
   // Send functionality
-  document.getElementById("maxBtn").addEventListener("click", async () => {
-    try {
-      const max = await calculateMaxAmount();
-      document.getElementById("amount").value = parseFloat(max).toFixed(6);
-      await updateEstimatedTotal();
-    } catch (err) {
-      
-      showToast("Failed to calculate max");
-    }
-  });
+  const maxBtn = document.getElementById("maxBtn");
+  if (maxBtn) {
+    maxBtn.addEventListener("click", async () => {
+      try {
+        const max = await calculateMaxAmount();
+        document.getElementById("amount").value = parseFloat(max).toFixed(6);
+        await updateEstimatedTotal();
+      } catch (err) {
+        
+        showToast("Failed to calculate max");
+      }
+    });
+  }
 
   // Debounced ENS resolution handler
   const handleAddressInput = debounce(async (value) => {
@@ -6669,15 +6747,19 @@ function setupEventListeners() {
     updateEstimatedTotal();
   }, CONSTANTS.ENS_RESOLVE_DELAY);
   
-  document.getElementById("toAddress").addEventListener("input", (e) => {
-    handleAddressInput(e.target.value.trim());
-  });
+  const toAddress = document.getElementById("toAddress");
+  if (toAddress) {
+    toAddress.addEventListener("input", (e) => {
+      handleAddressInput(e.target.value.trim());
+    });
+  }
 
   // Debounced amount input handler
   const handleAmountInput = debounce(updateEstimatedTotal, 300);
-  document
-    .getElementById("amount")
-    .addEventListener("input", handleAmountInput);
+  const amountInput = document.getElementById("amount");
+  if (amountInput) {
+    amountInput.addEventListener("input", handleAmountInput);
+  }
 
   // Gas options
   document.querySelectorAll(".gas-option").forEach((btn) => {
@@ -6696,9 +6778,9 @@ function setupEventListeners() {
     });
   });
 
-  document
-    .getElementById("customGasPrice")
-    .addEventListener("input", async () => {
+  const customGasPrice = document.getElementById("customGasPrice");
+  if (customGasPrice) {
+    customGasPrice.addEventListener("input", async () => {
       if (selectedGasSpeed === "custom") {
         const max = document.getElementById("customGasPrice").value;
         const priority =
@@ -6713,8 +6795,10 @@ function setupEventListeners() {
         }
       }
     });
+  }
 
-  document.getElementById("sendBtn").addEventListener("click", sendTransaction);
+  const sendBtn = document.getElementById("sendBtn");
+  if (sendBtn) sendBtn.addEventListener("click", sendTransaction);
   
   // IOU Mode functionality
   document.getElementById("createIouBtn")?.addEventListener("click", createIOUSlip);
@@ -6936,20 +7020,23 @@ function setupEventListeners() {
       }
     });
 
-  document.getElementById("autoRefresh").addEventListener("change", (e) => {
-    if (e.target.checked) {
-      if (wallet) {
-        autoRefreshInterval = setManagedInterval(() => {
-          fetchAllBalances();
-          updateGasPrices();
-        }, 15000);
+  const autoRefreshToggle = document.getElementById("autoRefresh");
+  if (autoRefreshToggle) {
+    autoRefreshToggle.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        if (wallet) {
+          autoRefreshInterval = setManagedInterval(() => {
+            fetchAllBalances();
+            updateGasPrices();
+          }, 15000);
+        }
+      } else {
+        clearManagedInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
       }
-    } else {
-      clearManagedInterval(autoRefreshInterval);
-      autoRefreshInterval = null;
-    }
-    localStorage.setItem("auto_refresh", e.target.checked);
-  });
+      localStorage.setItem("auto_refresh", e.target.checked);
+    });
+  }
 
   // Default wallet toggle handler
   const defaultWalletToggle = document.getElementById("defaultWallet");
@@ -7044,8 +7131,10 @@ function setupEventListeners() {
     }
   });
 
-  document.getElementById("exportWallets").addEventListener("click", () => {
-    try {
+  const exportWalletsBtn = document.getElementById("exportWallets");
+  if (exportWalletsBtn) {
+    exportWalletsBtn.addEventListener("click", () => {
+      try {
       const data = localStorage.getItem(LS_WALLETS) || "[]";
       const blob = new Blob([data], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -7060,10 +7149,13 @@ function setupEventListeners() {
     } catch (err) {
       
       showToast("Export failed");
-    }
-  });
+      }
+    });
+  }
 
-  document.getElementById("clearData").addEventListener("click", () => {
+  const clearDataBtn = document.getElementById("clearData");
+  if (clearDataBtn) {
+    clearDataBtn.addEventListener("click", () => {
     if (
       confirm(
         "Delete all data, wallets, and custom tokens? This cannot be undone!"
@@ -7071,12 +7163,14 @@ function setupEventListeners() {
     ) {
       localStorage.clear();
       location.reload();
-    }
-  });
+      }
+    });
+  }
 
   // Load auto-refresh setting
   const autoRefresh = localStorage.getItem("auto_refresh") === "true";
-  document.getElementById("autoRefresh").checked = autoRefresh;
+  const autoRefreshCheckbox = document.getElementById("autoRefresh");
+  if (autoRefreshCheckbox) autoRefreshCheckbox.checked = autoRefresh;
   
   // Setup swap event listeners
   setupSwapEventListeners();
@@ -7090,11 +7184,7 @@ const ZROUTER_ABI = [
   "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
 ];
 
-// zQuoter ABI for getting best quotes
-const ZQUOTER_ABI = [
-  "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)",
-  "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
-];
+// ZQUOTER_ABI already moved to top of file
 
 // Note: Multicall3 is for batching view calls only, not state-changing transactions
 // Each approval must be a separate transaction

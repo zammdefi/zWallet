@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tab Fix Test</title>
+    <style>
+        .tab { padding: 10px; margin: 5px; cursor: pointer; }
+        .tab.active { background: #007bff; color: white; }
+        .tab-content { display: none; padding: 20px; border: 1px solid #ccc; }
+        .tab-content.active { display: block; }
+        .status { margin: 20px 0; padding: 10px; background: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <h1>Testing Tab Fix</h1>
+    
+    <div class="status" id="status">
+        <h3>Initialization Status:</h3>
+        <div id="init-status"></div>
+    </div>
+    
+    <div class="tabs">
+        <button class="tab active" data-tab="wallet">Wallet</button>
+        <button class="tab" data-tab="send">Send</button>
+        <button class="tab" data-tab="txs">Txs</button>
+        <button class="tab" data-tab="settings">Settings</button>
+    </div>
+    
+    <div id="wallet-tab" class="tab-content active">Wallet Content</div>
+    <div id="send-tab" class="tab-content">Send Content</div>
+    <div id="txs-tab" class="tab-content">Txs Content</div>
+    <div id="settings-tab" class="tab-content">Settings Content</div>
+    
+    <script>
+        // Test the fix - declare ABIs before using them
+        const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
+        const ZQUOTER_ABI = [
+            "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)"
+        ];
+        
+        let initStatus = document.getElementById('init-status');
+        
+        async function init() {
+            try {
+                initStatus.innerHTML += "<p>✅ Starting initialization...</p>";
+                
+                // Simulate the problematic code pattern (now fixed)
+                await Promise.all([
+                    testInitProvider(),
+                    new Promise(resolve => setTimeout(resolve, 100))
+                ]);
+                
+                initStatus.innerHTML += "<p>✅ Initialization completed successfully!</p>";
+                
+                // Setup tab handlers
+                setupTabs();
+                
+                initStatus.innerHTML += "<p>✅ Tab handlers setup completed!</p>";
+                
+            } catch (error) {
+                initStatus.innerHTML += `<p>❌ Error during init: ${error.message}</p>`;
+            }
+        }
+        
+        async function testInitProvider() {
+            // Test the guard pattern
+            if (typeof ZQUOTER_ABI !== 'undefined') {
+                console.log("ZQUOTER_ABI is defined, would create contract here");
+                initStatus.innerHTML += "<p>✅ ZQUOTER_ABI is defined correctly</p>";
+            } else {
+                throw new Error("ZQUOTER_ABI is not defined!");
+            }
+        }
+        
+        function setupTabs() {
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', () => handleTabClick(tab));
+            });
+        }
+        
+        function handleTabClick(tab) {
+            // Remove active from all tabs and contents
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            // Add active to clicked tab
+            tab.classList.add('active');
+            
+            // Find and activate content
+            const contentId = tab.dataset.tab + '-tab';
+            const content = document.getElementById(contentId);
+            if (content) {
+                content.classList.add('active');
+                initStatus.innerHTML += `<p>✅ Switched to ${tab.dataset.tab} tab</p>`;
+            } else {
+                initStatus.innerHTML += `<p>❌ Content not found for ${tab.dataset.tab}</p>`;
+            }
+        }
+        
+        // Start the test
+        init();
+    </script>
+</body>
+</html>
