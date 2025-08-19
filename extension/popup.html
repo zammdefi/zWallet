@@ -13,7 +13,7 @@
     <!-- Security: Content Security Policy -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com https://etherscan.io; object-src 'none'; base-uri 'self'"
+      content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com https://etherscan.io https://mainnet.base.org https://base.llamarpc.com https://base.publicnode.com https://basescan.org; object-src 'none'; base-uri 'self'"
     />
 
     <title>zWallet</title>
@@ -187,6 +187,7 @@
           min-height: 44px;
           touch-action: manipulation;
           -webkit-appearance: none;
+          appearance: none;
         }
         
         input:focus, select:focus, textarea:focus {
@@ -747,6 +748,59 @@
       .max-btn:hover:not(:disabled) {
         opacity: 0.9;
         background: var(--accent) !important;
+      }
+      
+      /* EIP-7702 Delegation Status Styles */
+      .delegation-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        margin: 4px 0;
+      }
+      
+      .delegation-status.active {
+        background: rgba(0, 255, 0, 0.1);
+        border-color: rgba(0, 255, 0, 0.3);
+        color: #00ff00;
+      }
+      
+      .delegation-status.inactive {
+        background: var(--hover);
+        border-color: var(--border);
+        color: var(--dim);
+      }
+      
+      .delegation-status.other {
+        background: rgba(255, 165, 0, 0.1);
+        border-color: rgba(255, 165, 0, 0.3);
+        color: orange;
+      }
+      
+      .delegation-status .status-icon {
+        font-size: 14px;
+      }
+      
+      .delegation-status .status-address {
+        font-family: "Courier New", monospace;
+        font-size: 10px;
+        opacity: 0.8;
+      }
+      
+      .batch-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 6px;
+        background: rgba(0, 123, 255, 0.1);
+        border: 1px solid rgba(0, 123, 255, 0.3);
+        border-radius: 3px;
+        font-size: 10px;
+        color: #007bff;
+        margin-left: 8px;
       }
 
       .token-grid {
@@ -1476,7 +1530,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.4</span>
+          <span>zWallet v0.0.5</span>
         </div>
         <div class="title-right">
           <button class="icon-btn network-btn" id="baseNetworkToggle" title="Switch to Base" aria-label="Switch network">
@@ -1528,6 +1582,8 @@
                 type="password"
                 id="privateKeyInput"
                 placeholder="Private key"
+                autocomplete="off"
+                aria-label="Private key"
               />
               <button id="confirmImportBtn">Import</button>
               <button id="cancelImportBtn">Cancel</button>
@@ -1547,6 +1603,7 @@
                   <strong>Address</strong>
                   <div style="display: flex; align-items: center; gap: 8px;">
                     <div class="mono" id="address" style="flex: 1;"></div>
+                    <div id="delegationStatus" style="margin-top: 8px;"></div>
                     <a id="etherscanLink" href="#" target="_blank" style="color: var(--text-secondary); font-size: 10px; text-decoration: none; opacity: 0.7; transition: opacity 0.2s;" title="View on Etherscan">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
@@ -1873,7 +1930,7 @@
 
             <div id="customRpcSection" class="hidden">
               <label for="customRpcUrl">Custom RPC URL</label>
-              <input type="text" id="customRpcUrl" placeholder="https://..." />
+              <input type="url" id="customRpcUrl" placeholder="https://..." aria-label="Custom RPC URL" />
               <button id="saveCustomRpc">Save Custom RPC</button>
             </div>
           </div>
@@ -1909,6 +1966,23 @@
               <strong>⚡ Default Wallet Active</strong>
               <p style="margin-top: 8px;">zWallet will intercept connection requests from other wallets. When sites try to connect to MetaMask, Coinbase, or WalletConnect, zWallet will respond instead.</p>
               <p style="margin-top: 8px;">Refresh any open dApp tabs for changes to take effect.</p>
+            </div>
+          </div>
+          
+          <div class="section">
+            <h2>EIP-7702 Smart Account Features</h2>
+            <div style="margin-bottom: 12px; padding: 12px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+              <strong>🔗 About EIP-7702</strong>
+              <p style="margin-top: 8px;">EIP-7702 allows your regular wallet to temporarily gain smart contract capabilities, enabling batched transactions (approve + swap in one tx) and other advanced features.</p>
+              <p style="margin-top: 8px; color: var(--dim);">Supported on: Ethereum Mainnet, Base, and testnets</p>
+            </div>
+            <div id="eip7702Status" style="margin-bottom: 12px;"></div>
+            <button id="enable7702Btn" style="margin-bottom: 8px;">Enable 7702 Batching</button>
+            <button id="revoke7702Btn" class="hidden">Revoke 7702 Delegation</button>
+            <div id="eip7702Info" class="hidden" style="margin-top: 12px; padding: 12px; background: rgba(0, 255, 0, 0.1); border: 1px solid rgba(0, 255, 0, 0.3); font-size: 11px;">
+              <strong>✓ 7702 Delegation Active</strong>
+              <p style="margin-top: 8px;">Your wallet can now batch approve and swap operations in a single transaction, saving gas and time.</p>
+              <p style="margin-top: 8px;">Delegated to: <span class="mono" id="delegatedToAddress" style="font-size: 10px;"></span></p>
             </div>
           </div>
 
@@ -2046,9 +2120,14 @@
 
     <div id="toast" class="toast"></div>
 
-    <script src="ethers.umd.min.js"></script>
+    <!-- Try CDN first for latest version, fallback to local -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js" 
+            integrity="sha512-UXYETj+vXKSURF1UlgVRLzWRS9ZiQTv3lcL4rbeLyqTXCPNZC6PTLF/Ik3uxm2Zo+E109cUpJPZfLxJsCgKSng==" 
+            crossorigin="anonymous"
+            onerror="this.onerror=null; this.src='ethers.umd.min.js'; console.log('Using local ethers.js');"></script>
     <script src="visual-id.js"></script>
     <script src="qrcode-valid.js"></script>
+    <script src="eip7702.js"></script>
     <script src="popup.js"></script>
 
     <!-- Transaction Confirmation Modal -->

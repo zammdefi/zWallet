@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EIP-7702 Integration Test</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 {
+            color: #00ff00;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+        }
+        .section {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        button:hover {
+            background: #00dd00;
+        }
+        button:disabled {
+            background: #666;
+            color: #999;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .status.info {
+            background: rgba(0, 123, 255, 0.1);
+            border: 1px solid rgba(0, 123, 255, 0.3);
+            color: #4a9eff;
+        }
+        .status.success {
+            background: rgba(0, 255, 0, 0.1);
+            border: 1px solid rgba(0, 255, 0, 0.3);
+            color: #00ff00;
+        }
+        .status.error {
+            background: rgba(255, 0, 0, 0.1);
+            border: 1px solid rgba(255, 0, 0, 0.3);
+            color: #ff4444;
+        }
+        .batch-indicator {
+            display: inline-block;
+            padding: 2px 6px;
+            background: rgba(0, 123, 255, 0.2);
+            border: 1px solid rgba(0, 123, 255, 0.4);
+            border-radius: 3px;
+            font-size: 10px;
+            margin-left: 10px;
+        }
+        pre {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 11px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js" 
+            integrity="sha512-UXYETj+vXKSURF1UlgVRLzWRS9ZiQTv3lcL4rbeLyqTXCPNZC6PTLF/Ik3uxm2Zo+E109cUpJPZfLxJsCgKSng==" 
+            crossorigin="anonymous"></script>
+    <script src="extension/eip7702.js"></script>
+</head>
+<body>
+    <h1>EIP-7702 Integration Test</h1>
+    
+    <div class="section">
+        <h2>Wallet Connection</h2>
+        <button id="connectBtn">Connect Wallet</button>
+        <div id="walletStatus"></div>
+        <div style="margin-top: 10px; font-size: 11px; color: #888;">
+            Supported networks: Ethereum Mainnet, Base, Sepolia, Base Sepolia
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2>Delegation Status</h2>
+        <div id="delegationStatus"></div>
+        <button id="checkBtn" disabled>Check Delegation</button>
+        <button id="enableBtn" disabled>Enable 7702 Delegation</button>
+        <button id="revokeBtn" disabled>Revoke Delegation</button>
+    </div>
+    
+    <div class="section">
+        <h2>Test Batched Operation</h2>
+        <p>This will demonstrate approve + swap in a single transaction</p>
+        <button id="batchTestBtn" disabled>Test Batched Approve + Swap</button>
+        <div id="batchStatus"></div>
+    </div>
+    
+    <div class="section">
+        <h2>Transaction Log</h2>
+        <pre id="txLog">No transactions yet...</pre>
+    </div>
+
+    <script>
+        let provider, signer, account;
+        const EXECUTOR_ADDRESS = "0x00000000BEBEDB7C30ee418158e26E31a5A8f3E2";
+        
+        // Log function
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('txLog');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = `[${timestamp}] ${message}\n`;
+            if (logEl.textContent === 'No transactions yet...') {
+                logEl.textContent = entry;
+            } else {
+                logEl.textContent += entry;
+            }
+            console.log(message);
+        }
+        
+        // Connect wallet
+        async function connectWallet() {
+            try {
+                if (!window.ethereum) {
+                    alert('Please install MetaMask or another Web3 wallet');
+                    return;
+                }
+                
+                provider = new ethers.BrowserProvider(window.ethereum);
+                await provider.send("eth_requestAccounts", []);
+                signer = await provider.getSigner();
+                account = await signer.getAddress();
+                
+                const network = await provider.getNetwork();
+                const chainId = Number(network.chainId);
+                
+                // Determine network name
+                let networkName = 'Unknown';
+                switch(chainId) {
+                    case 1: networkName = 'Ethereum Mainnet'; break;
+                    case 8453: networkName = 'Base'; break;
+                    case 11155111: networkName = 'Sepolia'; break;
+                    case 84532: networkName = 'Base Sepolia'; break;
+                    default: networkName = `Chain ${chainId}`;
+                }
+                
+                // Check if 7702 is supported
+                const isSupported = await EIP7702.isSupported(provider);
+                
+                document.getElementById('walletStatus').innerHTML = `
+                    <div class="status success">
+                        Connected: ${account.slice(0, 6)}...${account.slice(-4)}<br>
+                        Network: ${networkName}<br>
+                        7702 Support: ${isSupported ? '✅ Yes' : '❌ No'}
+                    </div>
+                `;
+                
+                // Enable buttons
+                document.getElementById('checkBtn').disabled = false;
+                document.getElementById('enableBtn').disabled = false;
+                document.getElementById('revokeBtn').disabled = false;
+                document.getElementById('batchTestBtn').disabled = false;
+                
+                log(`Connected to wallet: ${account} on chain ${chainId}`);
+                
+                // Auto-check delegation
+                await checkDelegation();
+                
+            } catch (error) {
+                console.error('Connection error:', error);
+                document.getElementById('walletStatus').innerHTML = `
+                    <div class="status error">Connection failed: ${error.message}</div>
+                `;
+            }
+        }
+        
+        // Check delegation status
+        async function checkDelegation() {
+            try {
+                const delegation = await EIP7702.checkDelegation(account, provider);
+                
+                let statusHTML = '';
+                if (delegation.isDelegated) {
+                    if (delegation.isOurExecutor) {
+                        statusHTML = `
+                            <div class="status success">
+                                ✅ 7702 Delegation Active
+                                <span class="batch-indicator">⚡ Batching Enabled</span><br>
+                                Delegated to: ${delegation.delegatedTo}
+                            </div>
+                        `;
+                        document.getElementById('enableBtn').style.display = 'none';
+                        document.getElementById('revokeBtn').style.display = 'inline-block';
+                    } else {
+                        statusHTML = `
+                            <div class="status info">
+                                ⚠️ Delegated to different contract<br>
+                                Address: ${delegation.delegatedTo}
+                            </div>
+                        `;
+                    }
+                } else {
+                    statusHTML = `
+                        <div class="status info">
+                            Standard EOA (no delegation)
+                        </div>
+                    `;
+                    document.getElementById('enableBtn').style.display = 'inline-block';
+                    document.getElementById('revokeBtn').style.display = 'none';
+                }
+                
+                document.getElementById('delegationStatus').innerHTML = statusHTML;
+                log(`Delegation check: ${delegation.isDelegated ? 'Active' : 'Inactive'}`);
+                
+            } catch (error) {
+                document.getElementById('delegationStatus').innerHTML = `
+                    <div class="status error">Check failed: ${error.message}</div>
+                `;
+                log(`Delegation check failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // Enable delegation
+        async function enableDelegation() {
+            try {
+                document.getElementById('enableBtn').disabled = true;
+                document.getElementById('enableBtn').textContent = 'Enabling...';
+                
+                log('Sending delegation transaction...');
+                
+                const receipt = await EIP7702.sendDelegation(signer);
+                
+                if (receipt.status === 1) {
+                    document.getElementById('delegationStatus').innerHTML = `
+                        <div class="status success">
+                            ✅ Delegation enabled successfully!<br>
+                            Tx: ${receipt.hash.slice(0, 10)}...${receipt.hash.slice(-8)}
+                        </div>
+                    `;
+                    log(`Delegation enabled! Tx: ${receipt.hash}`);
+                    
+                    // Re-check status
+                    setTimeout(checkDelegation, 2000);
+                } else {
+                    throw new Error('Transaction failed');
+                }
+                
+            } catch (error) {
+                document.getElementById('delegationStatus').innerHTML = `
+                    <div class="status error">Enable failed: ${error.message}</div>
+                `;
+                log(`Enable delegation failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('enableBtn').disabled = false;
+                document.getElementById('enableBtn').textContent = 'Enable 7702 Delegation';
+            }
+        }
+        
+        // Revoke delegation
+        async function revokeDelegation() {
+            try {
+                if (!confirm('Are you sure you want to revoke the delegation?')) {
+                    return;
+                }
+                
+                document.getElementById('revokeBtn').disabled = true;
+                document.getElementById('revokeBtn').textContent = 'Revoking...';
+                
+                log('Revoking delegation...');
+                
+                const receipt = await EIP7702.revokeDelegation(signer);
+                
+                if (receipt.status === 1) {
+                    document.getElementById('delegationStatus').innerHTML = `
+                        <div class="status success">
+                            ✅ Delegation revoked successfully!<br>
+                            Tx: ${receipt.hash.slice(0, 10)}...${receipt.hash.slice(-8)}
+                        </div>
+                    `;
+                    log(`Delegation revoked! Tx: ${receipt.hash}`);
+                    
+                    // Re-check status
+                    setTimeout(checkDelegation, 2000);
+                } else {
+                    throw new Error('Transaction failed');
+                }
+                
+            } catch (error) {
+                document.getElementById('delegationStatus').innerHTML = `
+                    <div class="status error">Revoke failed: ${error.message}</div>
+                `;
+                log(`Revoke delegation failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('revokeBtn').disabled = false;
+                document.getElementById('revokeBtn').textContent = 'Revoke Delegation';
+            }
+        }
+        
+        // Test batched operation
+        async function testBatchedOperation() {
+            try {
+                const delegation = await EIP7702.checkDelegation(account, provider);
+                
+                if (!delegation.isOurExecutor) {
+                    alert('Please enable 7702 delegation first');
+                    return;
+                }
+                
+                document.getElementById('batchTestBtn').disabled = true;
+                document.getElementById('batchTestBtn').textContent = 'Testing...';
+                
+                // Example: Create test batch calls (you would need actual token addresses)
+                const testCalls = [
+                    {
+                        target: "0x0000000000000000000000000000000000000001", // Example address
+                        value: "0",
+                        data: "0x" // Example calldata
+                    },
+                    {
+                        target: "0x0000000000000000000000000000000000000002", // Example address
+                        value: "0",
+                        data: "0x" // Example calldata
+                    }
+                ];
+                
+                const batchedCalldata = EIP7702.encodeBatchedCalls(testCalls);
+                
+                document.getElementById('batchStatus').innerHTML = `
+                    <div class="status info">
+                        Prepared batched transaction with ${testCalls.length} calls
+                        <span class="batch-indicator">⚡ 7702 Batch</span><br>
+                        <small>Calldata: ${batchedCalldata.slice(0, 20)}...</small>
+                    </div>
+                `;
+                
+                log(`Batched test prepared: ${testCalls.length} calls`);
+                
+                // In a real scenario, you would send this transaction
+                // const tx = await signer.sendTransaction({
+                //     type: 4,
+                //     to: account,
+                //     data: batchedCalldata
+                // });
+                
+            } catch (error) {
+                document.getElementById('batchStatus').innerHTML = `
+                    <div class="status error">Test failed: ${error.message}</div>
+                `;
+                log(`Batch test failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('batchTestBtn').disabled = false;
+                document.getElementById('batchTestBtn').textContent = 'Test Batched Approve + Swap';
+            }
+        }
+        
+        // Event listeners
+        document.getElementById('connectBtn').addEventListener('click', connectWallet);
+        document.getElementById('checkBtn').addEventListener('click', checkDelegation);
+        document.getElementById('enableBtn').addEventListener('click', enableDelegation);
+        document.getElementById('revokeBtn').addEventListener('click', revokeDelegation);
+        document.getElementById('batchTestBtn').addEventListener('click', testBatchedOperation);
+        
+        // Auto-connect if already connected
+        if (window.ethereum && window.ethereum.selectedAddress) {
+            connectWallet();
+        }
+    </script>
+</body>
+</html>

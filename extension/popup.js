@@ -39,6 +39,81 @@ function throttle(func, limit) {
 }
 
 /**
+ * Batch DOM updates for better performance
+ * @param {Array<Function>} updates - Array of DOM update functions
+ */
+function batchDOMUpdates(updates) {
+  requestAnimationFrame(() => {
+    const fragment = document.createDocumentFragment();
+    updates.forEach(update => {
+      if (typeof update === 'function') {
+        update(fragment);
+      }
+    });
+  });
+}
+
+/**
+ * Optimized element text update
+ * @param {string} id - Element ID
+ * @param {string} text - Text to set
+ */
+const updateElementText = (() => {
+  const pendingUpdates = new Map();
+  let rafId = null;
+  
+  const flush = () => {
+    pendingUpdates.forEach((text, id) => {
+      const el = document.getElementById(id);
+      if (el && el.textContent !== text) {
+        el.textContent = text;
+      }
+    });
+    pendingUpdates.clear();
+    rafId = null;
+  };
+  
+  return (id, text) => {
+    pendingUpdates.set(id, text);
+    if (!rafId) {
+      rafId = requestAnimationFrame(flush);
+    }
+  };
+})();
+
+/**
+ * Make RPC call with retry and exponential backoff
+ * @param {Function} fn - Function to retry
+ * @param {number} maxRetries - Maximum retry attempts
+ * @param {number} baseDelay - Base delay in ms
+ * @returns {Promise} Result of function
+ */
+async function withRetry(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry on user rejection or invalid params
+      if (error.code === 4001 || error.code === -32602) {
+        throw error;
+      }
+      
+      if (attempt < maxRetries - 1) {
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+/**
  * Optimized formatters
  */
 const formatBalance = (value, decimals = 18) => {
@@ -128,11 +203,37 @@ let passwordModalReject = null;
 // Password caching for session (clears on extension close)
 let sessionPasswordCache = new Map();
 const PASSWORD_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_ENTRIES = 10; // Maximum number of cached passwords
 
-// Transaction rate limiting
+// Transaction rate limiting and nonce management
 let lastTransactionTime = 0;
 let pendingTransactionCount = 0;
 const MAX_PENDING_TRANSACTIONS = 3;
+let nonceManager = new Map(); // Track nonces per address for replay protection
+
+/**
+ * Get next nonce with replay protection
+ * @param {string} address - Wallet address
+ * @returns {Promise<number>} Next nonce to use
+ */
+async function getNextNonce(address) {
+  const networkNonce = await provider.getTransactionCount(address, 'pending');
+  const localNonce = nonceManager.get(address) || networkNonce;
+  
+  // Use the higher of network or local nonce to prevent replay
+  const nextNonce = Math.max(networkNonce, localNonce);
+  nonceManager.set(address, nextNonce + 1);
+  
+  return nextNonce;
+}
+
+/**
+ * Reset nonce tracking for an address
+ * @param {string} address - Wallet address
+ */
+function resetNonce(address) {
+  nonceManager.delete(address);
+}
 
 /**
  * Creates a confirmation button with countdown timer for security
@@ -816,6 +917,12 @@ function securePasswordPrompt(title, message, requireConfirm = false, cacheKey =
       document.removeEventListener('keydown', escapeHandler);
       // Cache password for session if cacheKey provided
       if (!requireConfirm && cacheKey) {
+        // Check cache size limit and remove oldest entry if needed
+        if (sessionPasswordCache.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = sessionPasswordCache.keys().next().value;
+          sessionPasswordCache.delete(firstKey);
+        }
+        
         sessionPasswordCache.set(cacheKey, {
           password: result,
           timestamp: Date.now()
@@ -1033,11 +1140,70 @@ let pendingIouMessage = null;
 let pendingIouAmount = null;
 
 // Event listener management for cleanup
-const eventListeners = new Map();
+// Use WeakMap for automatic garbage collection of event listeners
+const eventListenersWeak = new WeakMap();
+const activeListeners = new Set();
 const abortControllers = new Map();
 const activeTimeouts = new Set();
 const activeIntervals = new Set();
 const cleanupCallbacks = new Set();
+
+/**
+ * Add event listener with automatic cleanup tracking
+ * @param {EventTarget} element - Element to add listener to
+ * @param {string} event - Event name
+ * @param {Function} handler - Event handler
+ * @param {Object} options - Event listener options
+ */
+function addManagedEventListener(element, event, handler, options = {}) {
+  if (!element) return;
+  
+  // Create AbortController for this listener
+  const controller = new AbortController();
+  const signal = controller.signal;
+  
+  // Add listener with abort signal
+  element.addEventListener(event, handler, { ...options, signal });
+  
+  // Track for cleanup
+  if (!eventListenersWeak.has(element)) {
+    eventListenersWeak.set(element, new Map());
+  }
+  const elementListeners = eventListenersWeak.get(element);
+  
+  if (!elementListeners.has(event)) {
+    elementListeners.set(event, new Set());
+  }
+  elementListeners.get(event).add({ handler, controller });
+  
+  activeListeners.add({ element, event, handler, controller });
+  
+  return controller;
+}
+
+/**
+ * Remove all event listeners for an element
+ * @param {EventTarget} element - Element to clean up
+ */
+function removeElementListeners(element) {
+  const elementListeners = eventListenersWeak.get(element);
+  if (elementListeners) {
+    elementListeners.forEach((handlers) => {
+      handlers.forEach(({ controller }) => {
+        controller.abort();
+      });
+    });
+    eventListenersWeak.delete(element);
+  }
+  
+  // Clean from active listeners
+  activeListeners.forEach(listener => {
+    if (listener.element === element) {
+      listener.controller.abort();
+      activeListeners.delete(listener);
+    }
+  });
+}
 
 // Cache configuration for balance data
 
@@ -1462,7 +1628,7 @@ async function init() {
         try {
           // Show password prompt
           const pass = await securePasswordPrompt('Unlock Wallet', `Enter password to unlock ${label}:`, false, `wallet_${entry.address}`);
-          const pk = await decryptPK(
+          let pk = await decryptPK(
               entry.crypto,
               pass,
               entry.address.toLowerCase()
@@ -1489,6 +1655,8 @@ async function init() {
             }
 
             wallet = new ethers.Wallet(pk, provider);
+            // Clear private key from memory after wallet creation
+            pk = null;
             
             // Update selector to show current wallet
             const selector = document.getElementById("walletSelector");
@@ -1662,7 +1830,7 @@ function handleConnectionRequest(requestId, pendingRequest) {
         return;
       }
       
-      // Store connected site
+      // Store connected site and current wallet in chrome.storage for cross-context access
       chrome.storage.local.set({ 
         [`connected_${pendingRequest.origin}`]: true,
         'current_wallet': wallet.address 
@@ -2071,7 +2239,7 @@ function loadWallets() {
 
 async function saveWallet(address, privateKey) {
   const pass = await securePasswordPrompt('Create Password', 'Create a strong password to encrypt your wallet:', true);
-  if (!pass) return;
+  if (!pass) return false; // Return false to indicate cancellation
   const payload = await encryptPK(privateKey, pass, {
     aad: address.toLowerCase(),
   });
@@ -2087,6 +2255,7 @@ async function saveWallet(address, privateKey) {
     localStorage.setItem(LS_LAST, address);
   }
   updateWalletSelectorFrom(stored);
+  return true; // Return true to indicate success
 }
 
 function deleteWallet(address) {
@@ -2275,6 +2444,14 @@ async function toggleNetwork() {
   
   // Save preference
   localStorage.setItem('network_mode', currentNetwork);
+  
+  // Notify background script of chain change for dApp connections
+  if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({
+      type: 'CHAIN_CHANGED',
+      chainId: isBaseMode ? '0x2105' : '0x1'
+    });
+  }
   
   // Update the header network button icon
   updateBaseNetworkToggleIcon();
@@ -3827,9 +4004,31 @@ async function displayWallet() {
   document.getElementById("balanceSection").classList.remove("hidden");
 
   const address = wallet.address;
+  
+  // Store current wallet in chrome.storage for cross-context access
+  chrome.storage.local.set({ 'current_wallet': address });
+  
+  // Also notify background script for immediate updates
+  chrome.runtime.sendMessage({
+    type: 'ACCOUNT_CHANGED',
+    account: address
+  }).catch(() => {});
+  
   document.getElementById("address").textContent =
     address.slice(0, 6) + "..." + address.slice(-4);
   document.getElementById("address").title = address;
+  
+  // Display EIP-7702 delegation status
+  const delegationStatusEl = document.getElementById("delegationStatus");
+  if (delegationStatusEl && typeof EIP7702 !== 'undefined') {
+    try {
+      const statusHTML = await EIP7702.getDelegationStatusHTML(address, provider);
+      delegationStatusEl.innerHTML = statusHTML;
+    } catch (err) {
+      console.log("Could not check delegation status:", err);
+      delegationStatusEl.innerHTML = '';
+    }
+  }
   
   // Set explorer link based on network
   const etherscanLink = document.getElementById("etherscanLink");
@@ -4392,8 +4591,8 @@ async function sendTransaction() {
     pendingTransactionCount++;
 
     try {
-      // Get the current nonce to prevent replay attacks
-      const nonce = await wallet.getNonce();
+      // Get the next nonce with replay protection
+      const nonce = await getNextNonce(wallet.address);
     
     let tx;
     if (selectedToken === "ETH") {
@@ -4528,6 +4727,8 @@ async function sendTransaction() {
       errorMsg = "Transaction rejected";
     } else if (err.message.includes("nonce")) {
       errorMsg = "Nonce error - try again";
+      // Reset nonce tracking on nonce errors
+      resetNonce(wallet.address);
     } else if (err.code === "UNKNOWN_ERROR" || err.code === -32603) {
       errorMsg = "Network error - check balance and try again";
     }
@@ -4856,7 +5057,7 @@ function setupEventListeners() {
       // For multi-wallet, ask for password to unlock the specific wallet
       try {
         const pass = await securePasswordPrompt('Switch Wallet', `Enter password for ${addr.slice(0,6)}...${addr.slice(-4)}:`, false, `wallet_${addr}`);
-        const pk = await decryptPK(
+        let pk = await decryptPK(
           entry.crypto,
           pass,
           entry.address.toLowerCase()
@@ -4883,6 +5084,8 @@ function setupEventListeners() {
         }
 
         wallet = new ethers.Wallet(pk, provider);
+        // Clear private key from memory after wallet creation
+        pk = null;
         await displayWallet();
 
         localStorage.setItem(LS_LAST, addr);
@@ -4916,7 +5119,15 @@ function setupEventListeners() {
     generateBtn.addEventListener("click", async () => {
       try {
         wallet = ethers.Wallet.createRandom().connect(provider);
-        saveWallet(wallet.address, wallet.privateKey);
+        const saved = await saveWallet(wallet.address, wallet.privateKey);
+        
+        // Check if saveWallet was cancelled
+        if (saved === false) {
+          wallet = null; // Clear the wallet instance
+          showToast("Generation cancelled - please create a password to secure your wallet", 3000, 'info');
+          return;
+        }
+        
         await displayWallet();
         showToast("Wallet generated!");
       } catch (err) {
@@ -4968,7 +5179,16 @@ function setupEventListeners() {
           return;
         }
         
-        await saveWallet(wallet.address, wallet.privateKey);
+        const saved = await saveWallet(wallet.address, wallet.privateKey);
+        
+        // Check if saveWallet was cancelled (returns undefined when password cancelled)
+        if (saved === false) {
+          // User cancelled password creation
+          wallet = null; // Clear the wallet instance
+          showToast("Import cancelled - please create a password to secure your wallet", 3000, 'info');
+          return;
+        }
+        
         await displayWallet();
         
         // Clear sensitive data immediately
@@ -5526,7 +5746,7 @@ function setupEventListeners() {
   const defaultWalletInfo = document.getElementById("defaultWalletInfo");
   
   if (defaultWalletToggle) {
-    // Load saved setting
+    // Load saved setting from chrome.storage
     chrome.storage.local.get(['zwalletDefault'], (result) => {
       if (result.zwalletDefault) {
         defaultWalletToggle.checked = true;
@@ -5537,10 +5757,8 @@ function setupEventListeners() {
     defaultWalletToggle.addEventListener("change", (e) => {
       const isDefault = e.target.checked;
       
-      // Save setting
+      // Save setting to chrome.storage for cross-context access
       chrome.storage.local.set({ zwalletDefault: isDefault }, () => {
-        
-        
         // Show/hide info box
         if (isDefault) {
           defaultWalletInfo.classList.remove('hidden');
@@ -5795,6 +6013,7 @@ let bestSwapRoute = null;
 let tokenSelectorTarget = null; // 'from' or 'to'
 let swapSimulationTimeout = null; // Debounce timer
 let isSimulating = false; // Prevent concurrent simulations
+let simulationLock = Promise.resolve(); // Atomic lock for race condition prevention
 
 // AMM sources enum from zQuoter contract
 const AMM_SOURCES = {
@@ -6382,15 +6601,19 @@ async function simulateSwap() {
     return;
   }
   
-  // Prevent concurrent simulations
-  if (isSimulating) {
-    
-    return;
-  }
-  
-  isSimulating = true;
+  // Prevent concurrent simulations with atomic lock
+  const currentLock = simulationLock;
+  let lockResolve;
+  simulationLock = new Promise(resolve => { lockResolve = resolve; });
   
   try {
+    await currentLock; // Wait for any previous simulation to complete
+    
+    if (isSimulating) {
+      return; // Double-check after acquiring lock
+    }
+    
+    isSimulating = true;
     const fromToken = TOKENS[swapFromToken];
     const toToken = TOKENS[swapToToken];
     
@@ -6686,6 +6909,7 @@ async function simulateSwap() {
     document.getElementById("swapBtn").disabled = false;
   } finally {
     isSimulating = false;
+    lockResolve(); // Release the lock for next simulation
   }
 }
 
@@ -6731,11 +6955,25 @@ async function executeSwap() {
   }
   
   try {
-    // Check if approval is needed for non-ETH tokens
+    // Check if we should use EIP-7702 batching
+    const needsApproval = swapFromToken !== "ETH";
+    const shouldBatch = needsApproval && await EIP7702.shouldUseBatching(
+      wallet.address,
+      provider,
+      needsApproval
+    );
+    
+    // If using 7702 batching, execute batched swap
+    if (shouldBatch) {
+      await executeBatchedSwap();
+      return;
+    }
+    
+    // Regular flow: Check if approval is needed for non-ETH tokens
     if (swapFromToken !== "ETH") {
       const fromToken = TOKENS[swapFromToken];
-      const needsApproval = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
-      if (!needsApproval) return;
+      const approved = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
+      if (!approved) return;
     }
     
     let callData, msgValue;
@@ -7013,6 +7251,264 @@ async function executeSwap() {
     showToast(`Swap failed: ${errorMessage}`);
   }
 }
+// Execute batched swap using EIP-7702 delegation
+async function executeBatchedSwap() {
+  try {
+    const fromToken = TOKENS[swapFromToken];
+    const statusEl = document.getElementById("swapStatus");
+    
+    // Show batching indicator
+    statusEl.innerHTML = '<div class="status">Preparing batched transaction (approve + swap)...<span class="batch-indicator">⚡ 7702 Batch</span></div>';
+    
+    // First check if delegation is active
+    const delegation = await EIP7702.checkDelegation(wallet.address, provider);
+    if (!delegation.isOurExecutor) {
+      statusEl.innerHTML = '<div class="status info">Setting up 7702 delegation for batching...</div>';
+    }
+    
+    // Get approval data
+    const approvalPayload = fromToken.isERC6909
+      ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, fromToken.address)
+      : await zWalletContract.checkERC20RouterApproval(wallet.address, fromToken.address, bestSwapRoute.amountIn, true);
+    
+    if (!approvalPayload || approvalPayload === "0x") {
+      // Already approved, fall back to regular swap
+      await executeRegularSwap();
+      return;
+    }
+    
+    // Get swap calldata
+    let swapCallData, msgValue;
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+    
+    if (swapFromToken === "ETH") {
+      msgValue = bestSwapRoute.amountIn;
+      swapCallData = await zWalletContract.swapETHToToken(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+        wallet.address,
+        deadline,
+        bestSwapRoute.fee
+      );
+    } else if (swapToToken === "ETH") {
+      msgValue = 0n;
+      swapCallData = await zWalletContract.swapTokenToETH(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+        wallet.address,
+        deadline,
+        bestSwapRoute.fee
+      );
+    } else {
+      msgValue = 0n;
+      swapCallData = await zWalletContract.swapTokenToToken(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+        wallet.address,
+        deadline,
+        bestSwapRoute.fee
+      );
+    }
+    
+    // Show simulation status if already delegated
+    if (delegation.isOurExecutor) {
+      statusEl.innerHTML = '<div class="status">Simulating batched transaction...<span class="batch-indicator">⚡ 7702 Batch</span></div>';
+    }
+    
+    // Create batched transaction (includes simulation)
+    let batchedTx;
+    try {
+      batchedTx = await EIP7702.createBatchedSwapTx({
+        signer: wallet,
+        tokenAddress: fromToken.address,
+        spenderAddress: ZROUTER_ADDRESS,
+        approveAmount: bestSwapRoute.amountIn,
+        approveData: approvalPayload,
+        swapData: swapCallData,
+        swapTarget: ZROUTER_ADDRESS,
+        swapValue: msgValue.toString(),
+        gasSettings: gasPrices.normal || {
+          maxFeePerGas: ethers.parseUnits("30", "gwei"),
+          maxPriorityFeePerGas: ethers.parseUnits("2", "gwei")
+        },
+        simulate: true // Enable simulation
+      });
+      
+      // If we get here, simulation passed (or delegation wasn't set yet)
+      if (delegation.isOurExecutor) {
+        statusEl.innerHTML = '<div class="status success">✓ Simulation successful<span class="batch-indicator">⚡ 7702 Batch</span></div>';
+      }
+    } catch (simError) {
+      // Simulation failed - show error and abort
+      statusEl.innerHTML = `<div class="status error">Simulation failed: ${simError.message}</div>`;
+      showToast(`Transaction would fail: ${simError.message}`);
+      return;
+    }
+    
+    // Show confirmation modal with batch indicator
+    const modal = document.getElementById("swapConfirmModal");
+    
+    // Prepare Swiss Knife decoder link for batched calldata
+    const fullCalldata = batchedTx.data;
+    const swissKnifeUrl = fullCalldata && fullCalldata !== '0x' && fullCalldata.length > 2
+      ? `https://calldata.swiss-knife.xyz/decoder?calldata=${fullCalldata}`
+      : null;
+    
+    modal.innerHTML = `
+      <div class="modal-content">
+        <h3>Confirm Batched Swap <span class="batch-indicator">⚡ 7702</span></h3>
+        <div class="confirm-row">
+          <span class="confirm-label">From:</span>
+          <span class="confirm-value">${bestSwapRoute.formattedAmountIn} ${swapFromToken}</span>
+        </div>
+        <div class="confirm-row">
+          <span class="confirm-label">To:</span>
+          <span class="confirm-value">${bestSwapRoute.formattedAmountOut} ${swapToToken}</span>
+        </div>
+        <div class="confirm-row">
+          <span class="confirm-label">Transaction Type:</span>
+          <span class="confirm-value">Batched (Approve + Swap)</span>
+        </div>
+        <div class="info" style="margin-top: 12px; padding: 8px; background: var(--info-bg); border: 1px solid var(--border); font-size: 11px;">
+          This transaction will approve and swap in a single atomic operation using EIP-7702 delegation.
+        </div>
+        ${swissKnifeUrl ? `
+        <div style="margin-top: 12px;">
+          <label style="font-weight: bold; font-size: 12px;">Batched Transaction Data</label>
+          <div style="margin-top: 8px;">
+            <textarea readonly style="width: 100%; height: 60px; font-family: monospace; font-size: 10px; resize: none; padding: 8px; border: 1px solid var(--border); background: var(--input-bg); color: var(--fg);">${fullCalldata.slice(0, 200)}...</textarea>
+            <a href="${swissKnifeUrl}" target="_blank" onclick="event.preventDefault(); chrome?.runtime?.sendMessage?.({action: 'open_external', url: '${swissKnifeUrl}'}) || window.open('${swissKnifeUrl}', '_blank')" style="display: inline-block; margin-top: 8px; font-size: 11px; color: var(--accent); text-decoration: underline;">
+              Decode with Swiss Knife →
+            </a>
+          </div>
+        </div>
+        ` : ''}
+        <div style="margin-top: 16px; display: flex; gap: 8px;">
+          <button id="confirmBatchSwapBtn" class="btn-confirm">Confirm</button>
+          <button id="cancelBatchSwapBtn" class="btn-cancel">Cancel</button>
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+    
+    const confirmBtn = document.getElementById("confirmBatchSwapBtn");
+    const cancelBtn = document.getElementById("cancelBatchSwapBtn");
+    
+    const userConfirmed = await createSecureConfirmation(confirmBtn, cancelBtn, null);
+    modal.classList.add("hidden");
+    
+    if (!userConfirmed) {
+      statusEl.innerHTML = '<div class="status">Swap cancelled</div>';
+      return;
+    }
+    
+    // Send batched transaction
+    statusEl.innerHTML = '<div style="color: var(--warning)">Sending batched transaction...</div>';
+    
+    const tx = await wallet.sendTransaction(batchedTx);
+    
+    statusEl.innerHTML = `<div style="color: var(--info)">Batched tx sent: ${tx.hash.slice(0, 10)}...</div>`;
+    
+    const receipt = await tx.wait();
+    
+    if (receipt.status === 1) {
+      const explorerUrl = isBaseMode 
+        ? `https://basescan.org/tx/${tx.hash}`
+        : `https://etherscan.io/tx/${tx.hash}`;
+      
+      statusEl.innerHTML = `
+        <div style="color: var(--success); font-weight: bold; margin-bottom: 8px;">
+          ✓ Batched swap successful! <span class="batch-indicator">⚡ 7702</span>
+        </div>
+        <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
+          View on ${isBaseMode ? "Basescan" : "Etherscan"} →
+        </a>
+      `;
+      
+      showToast("Batched swap successful!");
+      
+      // Clear inputs and refresh
+      document.getElementById("swapFromAmount").value = "";
+      document.getElementById("swapToAmount").value = "";
+      clearSwapQuote();
+      await fetchAllBalances();
+    } else {
+      throw new Error("Transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Batched swap error:", err);
+    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ Batched swap failed: ${err.message}</div>`;
+    showToast(`Batched swap failed: ${err.message}`);
+  }
+}
+
+// Execute regular swap (non-batched)
+async function executeRegularSwap() {
+  // This is the existing swap logic that continues after approval
+  // Moving it here for clarity when not using batching
+  let callData, msgValue;
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  
+  const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
+  
+  if (swapFromToken === "ETH") {
+    msgValue = bestSwapRoute.amountIn;
+    if (isCultSwap) {
+      callData = await zWalletContract.swapETHToCULT(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        wallet.address,
+        deadline
+      );
+    } else {
+      callData = await zWalletContract.swapETHToToken(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+        wallet.address,
+        deadline,
+        bestSwapRoute.fee
+      );
+    }
+  } else if (swapToToken === "ETH") {
+    msgValue = 0n;
+    if (isCultSwap) {
+      callData = await zWalletContract.swapCULTToETH(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        wallet.address,
+        deadline
+      );
+    } else {
+      callData = await zWalletContract.swapTokenToETH(
+        bestSwapRoute.amountIn,
+        bestSwapRoute.amountOutMin,
+        [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+        wallet.address,
+        deadline,
+        bestSwapRoute.fee
+      );
+    }
+  } else {
+    msgValue = 0n;
+    callData = await zWalletContract.swapTokenToToken(
+      bestSwapRoute.amountIn,
+      bestSwapRoute.amountOutMin,
+      [TOKENS[swapFromToken].address, TOKENS[swapToToken].address],
+      wallet.address,
+      deadline,
+      bestSwapRoute.fee
+    );
+  }
+  
+  // Continue with regular swap execution...
+  await showSwapConfirmationModal(callData, msgValue);
+}
+
 async function checkAndRequestApproval(token, amount) {
   if (!token || !token.address || !zWalletContract) return true;
   
@@ -7165,23 +7661,27 @@ async function showApprovalModal(token, isERC6909, calldata) {
     
     // Setup Swiss Knife decoder link with correct format (same as swap)
     const swissKnifeLink = document.getElementById('approvalSwissKnifeLink');
-    if (swissKnifeLink && calldata && calldata !== '0x' && calldata.length > 2) {
-      const decoderUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
-      
-      swissKnifeLink.href = decoderUrl;
-      swissKnifeLink.target = '_blank';
-      
-      // Override click behavior for extension compatibility
-      swissKnifeLink.onclick = (e) => {
-        e.preventDefault();
-        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-          chrome.runtime.sendMessage({ action: 'open_external', url: decoderUrl });
-        } else {
-          window.open(decoderUrl, '_blank', 'noopener,noreferrer');
-        }
-      };
-    } else if (swissKnifeLink) {
-      swissKnifeLink.style.display = 'none';
+    if (swissKnifeLink) {
+      if (calldata && calldata !== '0x' && calldata.length > 2) {
+        const decoderUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${calldata}`;
+        
+        // Set both href and onclick for maximum compatibility
+        swissKnifeLink.href = decoderUrl;
+        swissKnifeLink.target = '_blank';
+        swissKnifeLink.style.display = 'inline-block';
+        
+        // Override click behavior for extension compatibility
+        swissKnifeLink.onclick = (e) => {
+          e.preventDefault();
+          if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({ action: 'open_external', url: decoderUrl });
+          } else {
+            window.open(decoderUrl, '_blank', 'noopener,noreferrer');
+          }
+        };
+      } else {
+        swissKnifeLink.style.display = 'none';
+      }
     }
     
     const confirmBtn = document.getElementById('confirmApproval');
@@ -7556,27 +8056,35 @@ async function executeBridge() {
           <div style="font-size: 12px; margin-bottom: 8px;">
             Your ETH has been sent to the Base bridge contract.
           </div>
-          <div style="font-size: 11px;">
-            Your ETH will appear on Base in 1-2 minutes. Check your balance on:
-            <a href="https://basescan.org/address/${wallet.address}" target="_blank" style="color: var(--accent); text-decoration: underline;">
-              Base Explorer →
-            </a>
+          <div style="font-size: 11px; line-height: 1.6;">
+            <div style="margin-bottom: 4px;">
+              Bridge transaction: 
+              <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" style="color: var(--accent); text-decoration: underline;">
+                Etherscan →
+              </a>
+            </div>
+            <div>
+              Destination (1-2 min): 
+              <a href="https://basescan.org/address/${wallet.address}" target="_blank" style="color: var(--accent); text-decoration: underline;">
+                Basescan →
+              </a>
+            </div>
           </div>
         </div>
       `;
-      
-      // Show proper Etherscan link using our helper function
-      await showEtherscanLink(tx.hash);
     } else if (statusEl) {
       statusEl.innerHTML = `
         <div class="status error" style="padding: 12px; border-radius: 8px;">
           <div style="font-weight: bold; margin-bottom: 8px;">❌ Bridge Failed</div>
-          <div style="font-size: 12px;">Transaction was not successful. Please try again.</div>
+          <div style="font-size: 12px; margin-bottom: 8px;">Transaction was not successful. Please try again.</div>
+          <div style="font-size: 11px;">
+            View transaction: 
+            <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" style="color: var(--accent); text-decoration: underline;">
+              Etherscan →
+            </a>
+          </div>
         </div>
       `;
-      
-      // Still show transaction link for debugging
-      await showEtherscanLink(tx.hash);
     }
     
     showToast("Bridge successful! ETH will appear on Base soon", "success");
@@ -7608,3 +8116,201 @@ async function executeBridge() {
     pendingBridgeTx = null;
   }
 }
+
+// EIP-7702 Settings handlers
+async function update7702Status() {
+  if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
+  
+  const statusEl = document.getElementById("eip7702Status");
+  const enableBtn = document.getElementById("enable7702Btn");
+  const revokeBtn = document.getElementById("revoke7702Btn");
+  const infoEl = document.getElementById("eip7702Info");
+  const delegatedAddressEl = document.getElementById("delegatedToAddress");
+  
+  if (!statusEl || !enableBtn || !revokeBtn) return;
+  
+  try {
+    const delegation = await EIP7702.checkDelegation(wallet.address, provider);
+    
+    if (delegation.isDelegated) {
+      // Show current delegation status
+      if (delegation.isOurExecutor) {
+        statusEl.innerHTML = '<div class="delegation-status active"><span class="status-icon">🔗</span><span>7702 Batching Active</span></div>';
+        enableBtn.classList.add("hidden");
+        revokeBtn.classList.remove("hidden");
+        infoEl.classList.remove("hidden");
+        if (delegatedAddressEl) {
+          delegatedAddressEl.textContent = delegation.delegatedTo;
+        }
+      } else {
+        statusEl.innerHTML = `
+          <div class="delegation-status other">
+            <span class="status-icon">⚠️</span>
+            <span>Delegated to other contract</span>
+          </div>
+          <div style="margin-top: 8px; padding: 8px; background: rgba(255, 165, 0, 0.1); border: 1px solid rgba(255, 165, 0, 0.3); font-size: 11px; color: orange;">
+            <strong>Warning:</strong> Your account is currently delegated to a different contract (${delegation.delegatedTo.slice(0, 10)}...). 
+            Updating will replace this delegation. Multiple delegations can cause unexpected behavior.
+          </div>
+        `;
+        enableBtn.textContent = "Update Delegation";
+        enableBtn.classList.remove("hidden");
+        revokeBtn.classList.remove("hidden");
+        infoEl.classList.add("hidden");
+      }
+    } else {
+      statusEl.innerHTML = '<div class="delegation-status inactive"><span class="status-icon">⭕</span><span>Standard EOA Mode</span></div>';
+      enableBtn.textContent = "Enable 7702 Batching";
+      enableBtn.classList.remove("hidden");
+      revokeBtn.classList.add("hidden");
+      infoEl.classList.add("hidden");
+    }
+    
+    // Check if network supports 7702
+    const isSupported = await EIP7702.isSupported(provider);
+    if (!isSupported) {
+      const networkName = isBaseMode ? "this network" : "this network";
+      statusEl.innerHTML += `<div style="margin-top: 8px; color: var(--warning); font-size: 11px;">⚠️ EIP-7702 not supported on ${networkName}</div>`;
+      enableBtn.disabled = true;
+      revokeBtn.disabled = true;
+    } else {
+      // Show network support confirmation
+      const networkName = isBaseMode ? "Base" : "Ethereum";
+      if (statusEl.innerHTML.indexOf("not supported") === -1) {
+        statusEl.innerHTML += `<div style="margin-top: 4px; color: var(--dim); font-size: 10px;">✓ 7702 supported on ${networkName}</div>`;
+      }
+    }
+  } catch (err) {
+    console.error("Error checking 7702 status:", err);
+    statusEl.innerHTML = '<div style="color: var(--error); font-size: 11px;">Could not check delegation status</div>';
+  }
+}
+
+// Enable 7702 delegation
+async function enable7702Delegation() {
+  if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
+  
+  const enableBtn = document.getElementById("enable7702Btn");
+  const statusEl = document.getElementById("eip7702Status");
+  
+  try {
+    enableBtn.disabled = true;
+    enableBtn.textContent = "Enabling...";
+    
+    // Check if already delegated
+    const currentDelegation = await EIP7702.checkDelegation(wallet.address, provider);
+    if (currentDelegation.isOurExecutor) {
+      showToast("Already delegated to the batch executor");
+      await update7702Status();
+      return;
+    }
+    
+    // Send delegation transaction
+    statusEl.innerHTML = '<div style="color: var(--warning)">Sending delegation transaction...</div>';
+    
+    const receipt = await EIP7702.sendDelegation(wallet);
+    
+    if (receipt.status === 1) {
+      showToast("7702 delegation enabled successfully!");
+      statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation successful!</div>';
+      
+      // Update UI
+      await update7702Status();
+      
+      // Also update main wallet display
+      await displayWallet();
+    } else {
+      throw new Error("Delegation transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Failed to enable 7702:", err);
+    let errorMsg = err.message || "Unknown error";
+    
+    // Handle common errors
+    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
+      errorMsg = "Transaction cancelled";
+    } else if (errorMsg.includes("insufficient funds")) {
+      errorMsg = "Insufficient gas funds";
+    }
+    
+    showToast(`Failed to enable 7702: ${errorMsg}`);
+    statusEl.innerHTML = `<div style="color: var(--error)">Failed: ${errorMsg}</div>`;
+  } finally {
+    enableBtn.disabled = false;
+    enableBtn.textContent = "Enable 7702 Batching";
+  }
+}
+
+// Revoke 7702 delegation
+async function revoke7702Delegation() {
+  if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
+  
+  const revokeBtn = document.getElementById("revoke7702Btn");
+  const statusEl = document.getElementById("eip7702Status");
+  
+  try {
+    revokeBtn.disabled = true;
+    revokeBtn.textContent = "Revoking...";
+    
+    // Confirm revocation
+    if (!confirm("Are you sure you want to revoke 7702 delegation? You will lose batching capabilities.")) {
+      return;
+    }
+    
+    statusEl.innerHTML = '<div style="color: var(--warning)">Revoking delegation...</div>';
+    
+    const receipt = await EIP7702.revokeDelegation(wallet);
+    
+    if (receipt.status === 1) {
+      showToast("7702 delegation revoked successfully");
+      statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation revoked</div>';
+      
+      // Update UI
+      await update7702Status();
+      
+      // Also update main wallet display
+      await displayWallet();
+    } else {
+      throw new Error("Revocation transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Failed to revoke 7702:", err);
+    let errorMsg = err.message || "Unknown error";
+    
+    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
+      errorMsg = "Transaction cancelled";
+    }
+    
+    showToast(`Failed to revoke 7702: ${errorMsg}`);
+    statusEl.innerHTML = `<div style="color: var(--error)">Failed: ${errorMsg}</div>`;
+  } finally {
+    revokeBtn.disabled = false;
+    revokeBtn.textContent = "Revoke 7702 Delegation";
+  }
+}
+
+// Add event listeners for 7702 buttons
+document.addEventListener("DOMContentLoaded", () => {
+  const enable7702Btn = document.getElementById("enable7702Btn");
+  const revoke7702Btn = document.getElementById("revoke7702Btn");
+  
+  if (enable7702Btn) {
+    enable7702Btn.addEventListener("click", enable7702Delegation);
+  }
+  
+  if (revoke7702Btn) {
+    revoke7702Btn.addEventListener("click", revoke7702Delegation);
+  }
+  
+  // Update 7702 status when switching to settings tab
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', async () => {
+      if (tab.dataset.tab === 'settings' && wallet) {
+        await update7702Status();
+      }
+    });
+  });
+});

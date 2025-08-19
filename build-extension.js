@@ -13,7 +13,11 @@ const EXTENSION_FILES = [
   'content.js',
   'inject.js',
   'icon.png',
-  'ethers.umd.min.js'
+  'icon16.png',
+  'icon48.png',
+  'icon128.png',
+  'ethers.umd.min.js',
+  'eip7702.js'
 ];
 
 // Build function
@@ -57,7 +61,7 @@ function buildExtension() {
     console.error('❌ Failed to parse manifest.json:', error.message);
     process.exit(1);
   }
-  const version = manifest.version || '0.0.4';
+  const version = manifest.version || '0.0.5';
   
   console.log(`\n📦 Building zWallet v${version}...`);
   

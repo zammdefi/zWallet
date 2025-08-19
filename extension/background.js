@@ -7,6 +7,16 @@ let pendingRequests = {};
 let accountCache = null;
 let chainId = '0x1'; // Default to mainnet
 
+// Load connected sites from storage on startup
+chrome.storage.local.get(null, (items) => {
+  for (const key in items) {
+    if (key.startsWith('connected_')) {
+      const origin = key.replace('connected_', '');
+      connectedSites[origin] = true;
+    }
+  }
+});
+
 
 // Handle messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -29,6 +39,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === 'USER_RESPONSE') {
     const pending = pendingRequests[request.requestId];
     if (pending) {
+      // If approved and it's a connection request, update connectedSites
+      if (request.response.result && pending.request.method === 'eth_requestAccounts') {
+        connectedSites[pending.origin] = true;
+      }
       pending.sendResponse(request.response);
       delete pendingRequests[request.requestId];
     }
@@ -46,6 +60,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'keepAlive') {
     sendResponse({ status: 'alive' });
     return true;
+  }
+  
+  // Handle chain change from popup
+  if (request.type === 'CHAIN_CHANGED') {
+    chainId = request.chainId;
+    
+    // Notify all connected dApps of chain change
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'PROVIDER_EVENT',
+          data: {
+            event: 'chainChanged',
+            params: chainId
+          }
+        }).catch(() => {});
+      });
+    });
+    return true;
+  }
+  
+  // Handle settings request from content script
+  if (request.type === 'GET_SETTINGS') {
+    chrome.storage.local.get(['zwalletDefault', 'current_wallet'], (result) => {
+      sendResponse({ 
+        isDefault: result.zwalletDefault || false,
+        hasWallet: !!result.current_wallet
+      });
+    });
+    return true; // Will respond asynchronously
   }
 });
 
@@ -70,6 +114,16 @@ async function handleProviderRequest(request, sender, sendResponse) {
         const requestId = Date.now().toString();
         pendingRequests[requestId] = { sendResponse, request, origin };
         
+        // Add timeout cleanup for pending request
+        setTimeout(() => {
+          if (pendingRequests[requestId]) {
+            pendingRequests[requestId].sendResponse({ 
+              error: { code: -32603, message: 'Request timeout' }
+            });
+            delete pendingRequests[requestId];
+          }
+        }, 60000); // 1 minute timeout
+        
         const popupUrl = new URL(chrome.runtime.getURL('popup.html'));
         popupUrl.searchParams.set('request', requestId);
         popupUrl.searchParams.set('type', 'connect');
@@ -88,6 +142,16 @@ async function handleProviderRequest(request, sender, sendResponse) {
       // Show transaction approval popup
       const requestId = Date.now().toString();
       pendingRequests[requestId] = { sendResponse, request, origin };
+      
+      // Add timeout cleanup for pending request
+      setTimeout(() => {
+        if (pendingRequests[requestId]) {
+          pendingRequests[requestId].sendResponse({ 
+            error: { code: -32603, message: 'Request timeout' }
+          });
+          delete pendingRequests[requestId];
+        }
+      }, 60000); // 1 minute timeout
       
       const txPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
       txPopupUrl.searchParams.set('request', requestId);
@@ -111,7 +175,7 @@ async function handleProviderRequest(request, sender, sendResponse) {
       break;
       
     case 'web3_clientVersion':
-      sendResponse({ result: 'zWallet/0.0.4' });
+      sendResponse({ result: 'zWallet/0.0.5' });
       break;
       
     case 'eth_syncing':
@@ -148,6 +212,16 @@ async function handleProviderRequest(request, sender, sendResponse) {
       // Show signing popup
       const signRequestId = Date.now().toString();
       pendingRequests[signRequestId] = { sendResponse, request, origin };
+      
+      // Add timeout cleanup for pending request
+      setTimeout(() => {
+        if (pendingRequests[signRequestId]) {
+          pendingRequests[signRequestId].sendResponse({ 
+            error: { code: -32603, message: 'Request timeout' }
+          });
+          delete pendingRequests[signRequestId];
+        }
+      }, 60000); // 1 minute timeout
       
       const signPopupUrl = new URL(chrome.runtime.getURL('popup.html'));
       signPopupUrl.searchParams.set('request', signRequestId);
@@ -214,7 +288,14 @@ async function handleProviderRequest(request, sender, sendResponse) {
 // Forward requests to Ethereum provider
 async function forwardToProvider(request, sendResponse) {
   try {
-    const response = await fetch('https://eth.llamarpc.com', {
+    // Use appropriate RPC based on current chain
+    let rpcUrl = 'https://eth.llamarpc.com';
+    if (chainId === '0x2105') {
+      // Use Base RPC endpoint
+      rpcUrl = 'https://base.llamarpc.com';
+    }
+    
+    const response = await fetch(rpcUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -245,15 +326,31 @@ async function forwardToProvider(request, sendResponse) {
 
 // Handle chain switching
 function handleChainSwitch(request, sendResponse) {
-  // For now, we only support mainnet
-  if (request.params[0].chainId === '0x1') {
-    chainId = '0x1';
+  const requestedChainId = request.params[0].chainId;
+  
+  // Support both Ethereum mainnet and Base
+  if (requestedChainId === '0x1' || requestedChainId === '0x2105') {
+    chainId = requestedChainId;
+    
+    // Notify all tabs of chain change
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'PROVIDER_EVENT',
+          data: {
+            event: 'chainChanged',
+            params: chainId
+          }
+        }).catch(() => {});
+      });
+    });
+    
     sendResponse({ result: null });
   } else {
     sendResponse({ 
       error: {
         code: 4902,
-        message: 'Unrecognized chain ID'
+        message: 'Unrecognized chain ID. Supported: Ethereum (0x1) and Base (0x2105)'
       }
     });
   }
@@ -326,31 +423,49 @@ async function getAccounts() {
   });
 }
 
-// Listen for account changes
+// Listen for storage changes
 chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local' && changes.current_wallet) {
-    const newAccount = changes.current_wallet.newValue;
-    accountCache = newAccount;
-    
-    // Notify all connected sites of account change
-    Object.keys(connectedSites).forEach(origin => {
-      // Send accountsChanged event to all tabs from this origin
-      chrome.tabs.query({ url: origin + '/*' }, (tabs) => {
-        tabs.forEach(tab => {
-          chrome.tabs.sendMessage(tab.id, {
-            type: 'PROVIDER_EVENT',
-            data: {
-              event: 'accountsChanged',
-              params: newAccount ? [newAccount] : []
-            }
-          }).catch(() => {});
+  if (namespace === 'local') {
+    // Handle account changes
+    if (changes.current_wallet) {
+      const newAccount = changes.current_wallet.newValue;
+      accountCache = newAccount;
+      
+      // Notify all connected sites of account change
+      Object.keys(connectedSites).forEach(origin => {
+        // Send accountsChanged event to all tabs from this origin
+        chrome.tabs.query({ url: origin + '/*' }, (tabs) => {
+          tabs.forEach(tab => {
+            chrome.tabs.sendMessage(tab.id, {
+              type: 'PROVIDER_EVENT',
+              data: {
+                event: 'accountsChanged',
+                params: newAccount ? [newAccount] : []
+              }
+            }).catch(() => {});
+          });
         });
       });
-    });
+    }
+    
+    // Handle connected site changes
+    for (const key in changes) {
+      if (key.startsWith('connected_')) {
+        const origin = key.replace('connected_', '');
+        if (changes[key].newValue) {
+          connectedSites[origin] = true;
+        } else {
+          delete connectedSites[origin];
+        }
+      }
+    }
   }
 });
 
-// Keep service worker alive
-setInterval(() => {
-  chrome.storage.local.get(null, () => {});
-}, 20000);
+// Also listen for direct messages from popup (for immediate updates)
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === 'ACCOUNT_CHANGED') {
+    // Account change is handled via storage listener above
+    return;
+  }
+});

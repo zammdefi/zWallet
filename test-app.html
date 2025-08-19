@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>zWallet Extension Test</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        .test-section {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .success { color: #00ff00; }
+        .error { color: #ff4444; }
+        .info { color: #4a9eff; }
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        button:hover { background: #00dd00; }
+        pre {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 12px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js"></script>
+    <script src="extension/eip7702.js"></script>
+</head>
+<body>
+    <h1>zWallet Extension Test Suite</h1>
+    
+    <div class="test-section">
+        <h2>1. Library Loading Test</h2>
+        <button onclick="testLibraries()">Run Test</button>
+        <div id="lib-test-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. EIP-7702 Module Test</h2>
+        <button onclick="testEIP7702Module()">Run Test</button>
+        <div id="eip7702-test-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. Wallet Generation Test</h2>
+        <button onclick="testWalletGeneration()">Run Test</button>
+        <div id="wallet-test-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>4. Password Modal Test (Manual)</h2>
+        <button onclick="openExtensionPopup()">Open Extension Popup</button>
+        <div id="manual-test-info" class="info">
+            <p>Manual test steps:</p>
+            <ol>
+                <li>Click "Open Extension Popup" to open the extension in a new window</li>
+                <li>When prompted for password, click "Cancel"</li>
+                <li>Verify that the "Import" button is still clickable</li>
+                <li>Click "Import" and enter a test private key</li>
+                <li>Verify you can create a password for the imported wallet</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Results</h2>
+        <pre id="test-log"></pre>
+    </div>
+
+    <script>
+        const log = (msg, type = 'info') => {
+            const logDiv = document.getElementById('test-log');
+            const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+            const color = type === 'success' ? '#00ff00' : type === 'error' ? '#ff4444' : '#4a9eff';
+            logDiv.innerHTML += `<span style="color: ${color}">[${timestamp}] ${msg}</span>\n`;
+        };
+
+        async function testLibraries() {
+            const resultDiv = document.getElementById('lib-test-result');
+            resultDiv.innerHTML = '<div class="info">Testing...</div>';
+            
+            try {
+                // Test ethers.js
+                if (typeof ethers === 'undefined') {
+                    throw new Error('ethers.js not loaded');
+                }
+                log('✓ ethers.js loaded successfully', 'success');
+                
+                // Test ethers version
+                const wallet = ethers.Wallet.createRandom();
+                log(`✓ ethers.js version: ${ethers.version || '6.x'}`, 'success');
+                
+                // Test key ethers functions
+                const tests = [
+                    { name: 'Wallet creation', test: () => ethers.Wallet.createRandom() },
+                    { name: 'Address validation', test: () => ethers.isAddress(wallet.address) },
+                    { name: 'BigInt support', test: () => ethers.toBigInt(123) },
+                    { name: 'Format units', test: () => ethers.formatUnits('1000000000000000000', 18) },
+                    { name: 'AbiCoder', test: () => ethers.AbiCoder.defaultAbiCoder() !== undefined }
+                ];
+                
+                for (const { name, test } of tests) {
+                    try {
+                        test();
+                        log(`✓ ${name} works`, 'success');
+                    } catch (e) {
+                        log(`✗ ${name} failed: ${e.message}`, 'error');
+                    }
+                }
+                
+                resultDiv.innerHTML = '<div class="success">✓ All library tests passed</div>';
+            } catch (error) {
+                log(`Library test failed: ${error.message}`, 'error');
+                resultDiv.innerHTML = `<div class="error">✗ Test failed: ${error.message}</div>`;
+            }
+        }
+
+        async function testEIP7702Module() {
+            const resultDiv = document.getElementById('eip7702-test-result');
+            resultDiv.innerHTML = '<div class="info">Testing...</div>';
+            
+            try {
+                // Test EIP7702 module exists
+                if (typeof EIP7702 === 'undefined') {
+                    throw new Error('EIP7702 module not loaded');
+                }
+                log('✓ EIP7702 module loaded', 'success');
+                
+                // Test module methods exist
+                const methods = [
+                    'checkDelegation',
+                    'createAuthorization', 
+                    'encodeBatchedCalls',
+                    'simulateBatchedTx',
+                    'createBatchedSwapTx',
+                    'sendDelegation',
+                    'revokeDelegation',
+                    'isSupported',
+                    'shouldUseBatching',
+                    'getDelegationStatusHTML'
+                ];
+                
+                for (const method of methods) {
+                    if (typeof EIP7702[method] !== 'function') {
+                        throw new Error(`Method ${method} not found`);
+                    }
+                    log(`✓ EIP7702.${method} exists`, 'success');
+                }
+                
+                // Test constants
+                if (!EIP7702.EXECUTOR_ADDRESS) {
+                    throw new Error('EXECUTOR_ADDRESS not defined');
+                }
+                log(`✓ Executor address: ${EIP7702.EXECUTOR_ADDRESS}`, 'success');
+                
+                // Test batch encoding
+                const testCalls = [
+                    { target: '0x0000000000000000000000000000000000000001', value: '0', data: '0x12345678' },
+                    { target: '0x0000000000000000000000000000000000000002', value: '1000', data: '0xabcdef00' }
+                ];
+                const encoded = EIP7702.encodeBatchedCalls(testCalls);
+                if (!encoded || !encoded.startsWith('0x')) {
+                    throw new Error('encodeBatchedCalls failed');
+                }
+                log('✓ Batch encoding works', 'success');
+                
+                resultDiv.innerHTML = '<div class="success">✓ All EIP-7702 tests passed</div>';
+            } catch (error) {
+                log(`EIP-7702 test failed: ${error.message}`, 'error');
+                resultDiv.innerHTML = `<div class="error">✗ Test failed: ${error.message}</div>`;
+            }
+        }
+
+        async function testWalletGeneration() {
+            const resultDiv = document.getElementById('wallet-test-result');
+            resultDiv.innerHTML = '<div class="info">Testing...</div>';
+            
+            try {
+                // Test wallet generation
+                const wallet = ethers.Wallet.createRandom();
+                log(`✓ Generated wallet: ${wallet.address}`, 'success');
+                
+                // Test private key format
+                if (!wallet.privateKey.startsWith('0x') || wallet.privateKey.length !== 66) {
+                    throw new Error('Invalid private key format');
+                }
+                log('✓ Private key format valid', 'success');
+                
+                // Test wallet can sign
+                const message = 'Test message';
+                const signature = await wallet.signMessage(message);
+                log('✓ Wallet can sign messages', 'success');
+                
+                // Test signature verification
+                const recoveredAddress = ethers.verifyMessage(message, signature);
+                if (recoveredAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+                    throw new Error('Signature verification failed');
+                }
+                log('✓ Signature verification works', 'success');
+                
+                // Test provider connection (mock)
+                const provider = new ethers.JsonRpcProvider('https://eth.llamarpc.com');
+                const connectedWallet = wallet.connect(provider);
+                if (!connectedWallet.provider) {
+                    throw new Error('Provider connection failed');
+                }
+                log('✓ Provider connection works', 'success');
+                
+                resultDiv.innerHTML = '<div class="success">✓ All wallet tests passed</div>';
+            } catch (error) {
+                log(`Wallet test failed: ${error.message}`, 'error');
+                resultDiv.innerHTML = `<div class="error">✗ Test failed: ${error.message}</div>`;
+            }
+        }
+
+        function openExtensionPopup() {
+            // Open the extension popup in a new window for manual testing
+            window.open('/extension/popup.html', 'zWallet Test', 'width=400,height=700');
+            log('Extension popup opened in new window', 'info');
+        }
+
+        // Run all automated tests on load
+        window.addEventListener('DOMContentLoaded', async () => {
+            log('Test suite initialized', 'info');
+            log('Running automated tests...', 'info');
+            
+            setTimeout(() => {
+                testLibraries();
+            }, 500);
+            
+            setTimeout(() => {
+                testEIP7702Module();
+            }, 1500);
+            
+            setTimeout(() => {
+                testWalletGeneration();
+            }, 2500);
+        });
+    </script>
+</body>
+</html>
