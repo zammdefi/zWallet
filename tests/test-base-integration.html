@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Base Network Integration Test for zWallet</title>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #0052FF 0%, #1652F0 100%);
+            color: white;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-align: center;
+        }
+        
+        .test-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .test-section h2 {
+            margin-top: 0;
+            color: #88CCFF;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #0052FF 0%, #1652F0 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+            transition: all 0.3s ease;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 82, 255, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .result {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .success {
+            background: rgba(0, 255, 0, 0.1);
+            border: 1px solid rgba(0, 255, 0, 0.3);
+        }
+        
+        .error {
+            background: rgba(255, 0, 0, 0.1);
+            border: 1px solid rgba(255, 0, 0, 0.3);
+        }
+        
+        .info {
+            background: rgba(0, 150, 255, 0.1);
+            border: 1px solid rgba(0, 150, 255, 0.3);
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-connected {
+            background: #00ff00;
+        }
+        
+        .status-disconnected {
+            background: #ff0000;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .network-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .network-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .network-card.active {
+            border: 2px solid #00ff00;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔗 Base Network Integration Test</h1>
+        
+        <div class="test-section">
+            <h2>Connection Status</h2>
+            <div>
+                <span class="status-indicator status-disconnected" id="statusIndicator"></span>
+                <span id="connectionStatus">Not Connected</span>
+            </div>
+            <div id="accountInfo" style="margin-top: 10px;"></div>
+            <button onclick="connectWallet()">Connect zWallet</button>
+            <button onclick="disconnectWallet()">Disconnect</button>
+        </div>
+
+        <div class="test-section">
+            <h2>Network Information</h2>
+            <div class="network-info">
+                <div class="network-card" id="ethCard">
+                    <h3>Ethereum</h3>
+                    <p>Chain ID: 0x1 (1)</p>
+                    <button onclick="switchToEthereum()">Switch to Ethereum</button>
+                </div>
+                <div class="network-card" id="baseCard">
+                    <h3>Base</h3>
+                    <p>Chain ID: 0x2105 (8453)</p>
+                    <button onclick="switchToBase()">Switch to Base</button>
+                </div>
+            </div>
+            <div id="networkResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Provider Tests</h2>
+            <button onclick="testProviderMethods()">Test Provider Methods</button>
+            <button onclick="getChainId()">Get Chain ID</button>
+            <button onclick="getNetworkVersion()">Get Network Version</button>
+            <button onclick="getBlockNumber()">Get Block Number</button>
+            <button onclick="getGasPrice()">Get Gas Price</button>
+            <div id="providerResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Transaction Tests</h2>
+            <button onclick="sendTestTransaction()">Send Test Transaction (0.0001 ETH)</button>
+            <button onclick="signMessage()">Sign Message</button>
+            <button onclick="signTypedData()">Sign Typed Data</button>
+            <div id="transactionResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Event Listeners</h2>
+            <button onclick="setupEventListeners()">Setup Event Listeners</button>
+            <button onclick="removeEventListeners()">Remove Event Listeners</button>
+            <div id="eventResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Compatibility Tests</h2>
+            <button onclick="testMetaMaskCompatibility()">Test MetaMask Compatibility</button>
+            <button onclick="testWeb3Compatibility()">Test Web3 Compatibility</button>
+            <button onclick="testEIP1193()">Test EIP-1193 Compliance</button>
+            <div id="compatResult" class="result"></div>
+        </div>
+    </div>
+
+    <script>
+        let accounts = [];
+        let currentChainId = null;
+
+        // Utility function to display results
+        function displayResult(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `result ${type}`;
+        }
+
+        // Check if zWallet is available
+        function checkProvider() {
+            if (typeof window.ethereum !== 'undefined') {
+                displayResult('providerResult', 'Provider detected: ' + (window.ethereum.isZWallet ? 'zWallet' : 'Other'), 'success');
+                return true;
+            } else {
+                displayResult('providerResult', 'No Web3 provider detected. Please install zWallet extension.', 'error');
+                return false;
+            }
+        }
+
+        // Connect wallet
+        async function connectWallet() {
+            if (!checkProvider()) return;
+            
+            try {
+                accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+                
+                document.getElementById('statusIndicator').className = 'status-indicator status-connected';
+                document.getElementById('connectionStatus').textContent = 'Connected';
+                document.getElementById('accountInfo').textContent = `Account: ${accounts[0]}\nChain ID: ${currentChainId}`;
+                
+                updateNetworkCards(currentChainId);
+                displayResult('networkResult', `Connected to ${getNetworkName(currentChainId)}`, 'success');
+            } catch (error) {
+                displayResult('networkResult', `Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Disconnect wallet
+        function disconnectWallet() {
+            accounts = [];
+            currentChainId = null;
+            document.getElementById('statusIndicator').className = 'status-indicator status-disconnected';
+            document.getElementById('connectionStatus').textContent = 'Not Connected';
+            document.getElementById('accountInfo').textContent = '';
+            displayResult('networkResult', 'Disconnected', 'info');
+        }
+
+        // Get network name from chain ID
+        function getNetworkName(chainId) {
+            switch(chainId) {
+                case '0x1': return 'Ethereum Mainnet';
+                case '0x2105': return 'Base';
+                default: return `Unknown (${chainId})`;
+            }
+        }
+
+        // Update network cards UI
+        function updateNetworkCards(chainId) {
+            document.getElementById('ethCard').classList.toggle('active', chainId === '0x1');
+            document.getElementById('baseCard').classList.toggle('active', chainId === '0x2105');
+        }
+
+        // Switch to Ethereum
+        async function switchToEthereum() {
+            if (!checkProvider()) return;
+            
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: '0x1' }],
+                });
+                currentChainId = '0x1';
+                updateNetworkCards(currentChainId);
+                displayResult('networkResult', 'Switched to Ethereum Mainnet', 'success');
+            } catch (error) {
+                displayResult('networkResult', `Failed to switch: ${error.message}`, 'error');
+            }
+        }
+
+        // Switch to Base
+        async function switchToBase() {
+            if (!checkProvider()) return;
+            
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: '0x2105' }],
+                });
+                currentChainId = '0x2105';
+                updateNetworkCards(currentChainId);
+                displayResult('networkResult', 'Switched to Base', 'success');
+            } catch (error) {
+                if (error.code === 4902) {
+                    displayResult('networkResult', 'Base network not added to wallet', 'error');
+                } else {
+                    displayResult('networkResult', `Failed to switch: ${error.message}`, 'error');
+                }
+            }
+        }
+
+        // Test provider methods
+        async function testProviderMethods() {
+            if (!checkProvider()) return;
+            
+            const methods = [
+                'eth_chainId',
+                'net_version',
+                'web3_clientVersion',
+                'eth_syncing',
+                'eth_coinbase'
+            ];
+            
+            let results = 'Provider Methods Test:\n\n';
+            
+            for (const method of methods) {
+                try {
+                    const result = await window.ethereum.request({ method });
+                    results += `${method}: ${JSON.stringify(result)}\n`;
+                } catch (error) {
+                    results += `${method}: ERROR - ${error.message}\n`;
+                }
+            }
+            
+            displayResult('providerResult', results, 'info');
+        }
+
+        // Get chain ID
+        async function getChainId() {
+            if (!checkProvider()) return;
+            
+            try {
+                const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+                displayResult('providerResult', `Chain ID: ${chainId} (${parseInt(chainId, 16)})`, 'success');
+            } catch (error) {
+                displayResult('providerResult', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Get network version
+        async function getNetworkVersion() {
+            if (!checkProvider()) return;
+            
+            try {
+                const version = await window.ethereum.request({ method: 'net_version' });
+                displayResult('providerResult', `Network Version: ${version}`, 'success');
+            } catch (error) {
+                displayResult('providerResult', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Get block number
+        async function getBlockNumber() {
+            if (!checkProvider()) return;
+            
+            try {
+                const blockNumber = await window.ethereum.request({ method: 'eth_blockNumber' });
+                displayResult('providerResult', `Block Number: ${parseInt(blockNumber, 16)}`, 'success');
+            } catch (error) {
+                displayResult('providerResult', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Get gas price
+        async function getGasPrice() {
+            if (!checkProvider()) return;
+            
+            try {
+                const gasPrice = await window.ethereum.request({ method: 'eth_gasPrice' });
+                const gwei = parseInt(gasPrice, 16) / 1e9;
+                displayResult('providerResult', `Gas Price: ${gwei.toFixed(2)} Gwei`, 'success');
+            } catch (error) {
+                displayResult('providerResult', `Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Send test transaction
+        async function sendTestTransaction() {
+            if (!checkProvider() || accounts.length === 0) {
+                displayResult('transactionResult', 'Please connect wallet first', 'error');
+                return;
+            }
+            
+            try {
+                const txHash = await window.ethereum.request({
+                    method: 'eth_sendTransaction',
+                    params: [{
+                        from: accounts[0],
+                        to: accounts[0], // Send to self
+                        value: '0x5af3107a4000', // 0.0001 ETH in hex
+                        gas: '0x5208', // 21000 in hex
+                    }],
+                });
+                displayResult('transactionResult', `Transaction sent: ${txHash}`, 'success');
+            } catch (error) {
+                displayResult('transactionResult', `Transaction failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Sign message
+        async function signMessage() {
+            if (!checkProvider() || accounts.length === 0) {
+                displayResult('transactionResult', 'Please connect wallet first', 'error');
+                return;
+            }
+            
+            try {
+                const message = 'Test message for zWallet on ' + getNetworkName(currentChainId);
+                const signature = await window.ethereum.request({
+                    method: 'personal_sign',
+                    params: [message, accounts[0]],
+                });
+                displayResult('transactionResult', `Message signed:\n${signature}`, 'success');
+            } catch (error) {
+                displayResult('transactionResult', `Signing failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Sign typed data
+        async function signTypedData() {
+            if (!checkProvider() || accounts.length === 0) {
+                displayResult('transactionResult', 'Please connect wallet first', 'error');
+                return;
+            }
+            
+            const typedData = {
+                types: {
+                    EIP712Domain: [
+                        { name: 'name', type: 'string' },
+                        { name: 'version', type: 'string' },
+                        { name: 'chainId', type: 'uint256' },
+                    ],
+                    Test: [
+                        { name: 'message', type: 'string' },
+                        { name: 'timestamp', type: 'uint256' },
+                    ],
+                },
+                primaryType: 'Test',
+                domain: {
+                    name: 'zWallet Test',
+                    version: '1',
+                    chainId: parseInt(currentChainId, 16),
+                },
+                message: {
+                    message: 'Testing typed data on ' + getNetworkName(currentChainId),
+                    timestamp: Math.floor(Date.now() / 1000),
+                },
+            };
+            
+            try {
+                const signature = await window.ethereum.request({
+                    method: 'eth_signTypedData_v4',
+                    params: [accounts[0], JSON.stringify(typedData)],
+                });
+                displayResult('transactionResult', `Typed data signed:\n${signature}`, 'success');
+            } catch (error) {
+                displayResult('transactionResult', `Signing failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            if (!checkProvider()) return;
+            
+            let events = [];
+            
+            window.ethereum.on('accountsChanged', (accs) => {
+                accounts = accs;
+                events.push(`accountsChanged: ${accs}`);
+                displayResult('eventResult', events.join('\n'), 'info');
+            });
+            
+            window.ethereum.on('chainChanged', (chainId) => {
+                currentChainId = chainId;
+                updateNetworkCards(chainId);
+                events.push(`chainChanged: ${chainId}`);
+                displayResult('eventResult', events.join('\n'), 'info');
+            });
+            
+            window.ethereum.on('connect', (info) => {
+                events.push(`connect: ${JSON.stringify(info)}`);
+                displayResult('eventResult', events.join('\n'), 'info');
+            });
+            
+            window.ethereum.on('disconnect', (error) => {
+                events.push(`disconnect: ${error}`);
+                displayResult('eventResult', events.join('\n'), 'info');
+            });
+            
+            displayResult('eventResult', 'Event listeners attached. Perform actions to see events.', 'success');
+        }
+
+        // Remove event listeners
+        function removeEventListeners() {
+            if (!checkProvider()) return;
+            
+            window.ethereum.removeAllListeners();
+            displayResult('eventResult', 'All event listeners removed', 'info');
+        }
+
+        // Test MetaMask compatibility
+        function testMetaMaskCompatibility() {
+            if (!checkProvider()) return;
+            
+            let results = 'MetaMask Compatibility Test:\n\n';
+            
+            // Check MetaMask specific properties
+            results += `isMetaMask: ${window.ethereum.isMetaMask}\n`;
+            results += `_metamask exists: ${!!window.ethereum._metamask}\n`;
+            
+            if (window.ethereum._metamask) {
+                results += `_metamask.isUnlocked: ${typeof window.ethereum._metamask.isUnlocked === 'function'}\n`;
+                results += `_metamask.requestBatch: ${typeof window.ethereum._metamask.requestBatch === 'function'}\n`;
+            }
+            
+            displayResult('compatResult', results, 'info');
+        }
+
+        // Test Web3 compatibility
+        function testWeb3Compatibility() {
+            let results = 'Web3 Compatibility Test:\n\n';
+            
+            results += `window.ethereum exists: ${!!window.ethereum}\n`;
+            results += `window.web3 exists: ${!!window.web3}\n`;
+            
+            if (window.web3) {
+                results += `web3.currentProvider exists: ${!!window.web3.currentProvider}\n`;
+            }
+            
+            displayResult('compatResult', results, 'info');
+        }
+
+        // Test EIP-1193 compliance
+        async function testEIP1193() {
+            if (!checkProvider()) return;
+            
+            let results = 'EIP-1193 Compliance Test:\n\n';
+            
+            // Check required methods
+            const requiredMethods = ['request', 'on', 'removeListener'];
+            for (const method of requiredMethods) {
+                results += `${method}: ${typeof window.ethereum[method] === 'function' ? '✅' : '❌'}\n`;
+            }
+            
+            // Check events
+            results += '\nEvent Emitter Methods:\n';
+            const eventMethods = ['on', 'once', 'off', 'emit', 'removeListener', 'removeAllListeners'];
+            for (const method of eventMethods) {
+                results += `${method}: ${typeof window.ethereum[method] === 'function' ? '✅' : '❌'}\n`;
+            }
+            
+            // Test request method
+            try {
+                const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+                results += `\nrequest() method works: ✅ (chainId: ${chainId})`;
+            } catch (error) {
+                results += `\nrequest() method failed: ❌ (${error.message})`;
+            }
+            
+            displayResult('compatResult', results, 'info');
+        }
+
+        // Initial check on page load
+        window.addEventListener('load', () => {
+            checkProvider();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Base Network Token Test - zWallet</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #0052FF 0%, #003BB5 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+        }
+        .test-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .test-section h2 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #0052FF;
+            padding-bottom: 10px;
+        }
+        .token-list {
+            list-style: none;
+            padding: 0;
+        }
+        .token-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            margin: 8px 0;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+        }
+        .token-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .token-symbol {
+            font-weight: bold;
+            color: #0052FF;
+        }
+        .token-address {
+            font-family: monospace;
+            font-size: 12px;
+            color: #666;
+        }
+        .balance {
+            font-weight: bold;
+            color: #28a745;
+        }
+        .test-button {
+            background: #0052FF;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        .test-button:hover {
+            background: #003BB5;
+        }
+        .network-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #0052FF;
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .success {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .log-output {
+            background: #1e1e1e;
+            color: #0f0;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        .loading {
+            color: #ffc107;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔵 Base Network Token Integration Test</h1>
+        <p>Testing zWallet contract on Base with DAI, USDC, USDT, and ETH</p>
+        <p>Contract: <code>0xA64E4B7aCf500bB3D353299af1D15c9EEc9D2323</code></p>
+    </div>
+
+    <div class="test-container">
+        <div class="test-section">
+            <h2>Token Configuration</h2>
+            <ul class="token-list" id="tokenList">
+                <li class="token-item">
+                    <div class="token-info">
+                        <span class="token-symbol">ETH</span>
+                        <span class="network-badge">BASE</span>
+                    </div>
+                    <span class="token-address">Native Token</span>
+                </li>
+                <li class="token-item">
+                    <div class="token-info">
+                        <span class="token-symbol">DAI</span>
+                        <span class="network-badge">BASE</span>
+                    </div>
+                    <span class="token-address">0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb</span>
+                </li>
+                <li class="token-item">
+                    <div class="token-info">
+                        <span class="token-symbol">USDC</span>
+                        <span class="network-badge">BASE</span>
+                    </div>
+                    <span class="token-address">0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913</span>
+                </li>
+                <li class="token-item">
+                    <div class="token-info">
+                        <span class="token-symbol">USDT</span>
+                        <span class="network-badge">BASE</span>
+                    </div>
+                    <span class="token-address">0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2</span>
+                </li>
+            </ul>
+        </div>
+
+        <div class="test-section">
+            <h2>Test Controls</h2>
+            <button class="test-button" onclick="testZwalletContract()">Test zWallet Contract</button>
+            <button class="test-button" onclick="testBatchView()">Test Batch View</button>
+            <button class="test-button" onclick="testENSResolution()">Test ENS Resolution</button>
+            <button class="test-button" onclick="testTokenMetadata()">Test Token Metadata</button>
+            <button class="test-button" onclick="runAllTests()">Run All Tests</button>
+            
+            <div id="testStatus" style="margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Results</h2>
+        <div id="testResults"></div>
+        <div class="log-output" id="logOutput"></div>
+    </div>
+
+    <script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js"></script>
+    <script>
+        // Base network configuration
+        const BASE_RPC = 'https://mainnet.base.org';
+        const ZWALLET_ADDRESS_BASE = '0xA64E4B7aCf500bB3D353299af1D15c9EEc9D2323';
+        
+        // Token addresses on Base
+        const BASE_TOKENS = {
+            ETH: { address: null, symbol: 'ETH', name: 'Ethereum', decimals: 18 },
+            DAI: {
+                address: '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb',
+                symbol: 'DAI',
+                name: 'Dai',
+                decimals: 18
+            },
+            USDC: {
+                address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+                symbol: 'USDC',
+                name: 'USD Coin',
+                decimals: 6
+            },
+            USDT: {
+                address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
+                symbol: 'USDT',
+                name: 'Tether',
+                decimals: 6
+            }
+        };
+
+        // zWallet ABI (only the functions we need for testing)
+        const ZWALLET_ABI = [
+            'function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)',
+            'function whatIsTheNameOf(address user) view returns (string ensName)',
+            'function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)',
+            'function getBalanceOf(address owner, address token, uint256 id) view returns (uint256 raw, uint256 bal)'
+        ];
+
+        let provider;
+        let zWalletContract;
+
+        function log(message, type = 'info') {
+            const logOutput = document.getElementById('logOutput');
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? '#ff4444' : type === 'success' ? '#44ff44' : '#0f0';
+            logOutput.innerHTML += `<div style="color: ${color}">[${timestamp}] ${message}</div>`;
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+
+        async function init() {
+            try {
+                log('Initializing Base network provider...');
+                provider = new ethers.providers.JsonRpcProvider(BASE_RPC);
+                
+                const network = await provider.getNetwork();
+                log(`Connected to network: ${network.name} (Chain ID: ${network.chainId})`, 'success');
+                
+                if (network.chainId !== 8453) {
+                    log('Warning: Not connected to Base network (expected chain ID 8453)', 'error');
+                }
+                
+                zWalletContract = new ethers.Contract(ZWALLET_ADDRESS_BASE, ZWALLET_ABI, provider);
+                log('zWallet contract initialized', 'success');
+                
+            } catch (error) {
+                log(`Initialization error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testZwalletContract() {
+            const status = document.getElementById('testStatus');
+            status.innerHTML = '<span class="loading">Testing zWallet contract...</span>';
+            
+            try {
+                log('Testing zWallet contract deployment...');
+                const code = await provider.getCode(ZWALLET_ADDRESS_BASE);
+                
+                if (code === '0x') {
+                    throw new Error('No contract found at address');
+                }
+                
+                log(`Contract code size: ${code.length} bytes`, 'success');
+                status.innerHTML = '<span class="success">✓ zWallet contract verified on Base</span>';
+                
+            } catch (error) {
+                log(`Contract test failed: ${error.message}`, 'error');
+                status.innerHTML = '<span class="error">✗ Contract test failed</span>';
+            }
+        }
+
+        async function testBatchView() {
+            const status = document.getElementById('testStatus');
+            status.innerHTML = '<span class="loading">Testing batch view...</span>';
+            
+            try {
+                log('Testing batchView with test address...');
+                const testAddress = '0x0000000000000000000000000000000000000001';
+                
+                // Prepare token arrays
+                const tokenAddresses = [];
+                const tokenIds = [];
+                
+                for (const [symbol, token] of Object.entries(BASE_TOKENS)) {
+                    tokenAddresses.push(token.address || ethers.constants.AddressZero);
+                    tokenIds.push(0); // No ERC6909 tokens on Base
+                    log(`Adding ${symbol}: ${token.address || 'Native'}`);
+                }
+                
+                log('Calling batchView...');
+                const result = await zWalletContract.batchView(testAddress, tokenAddresses, tokenIds);
+                
+                log('BatchView results:', 'success');
+                log(`ENS Name: ${result.ensName || 'None'}`);
+                log(`Tokens returned: ${result.tokensOut.length}`);
+                
+                // Display token information
+                for (let i = 0; i < result.symbols.length; i++) {
+                    log(`  ${result.symbols[i]}: Balance = ${ethers.utils.formatUnits(result.balances[i], result.decimals[i])}`);
+                }
+                
+                status.innerHTML = '<span class="success">✓ Batch view successful</span>';
+                
+            } catch (error) {
+                log(`Batch view failed: ${error.message}`, 'error');
+                status.innerHTML = '<span class="error">✗ Batch view failed</span>';
+            }
+        }
+
+        async function testENSResolution() {
+            const status = document.getElementById('testStatus');
+            status.innerHTML = '<span class="loading">Testing ENS resolution...</span>';
+            
+            try {
+                log('Testing ENS resolution for vitalik.eth...');
+                const ensName = await zWalletContract.whatIsTheNameOf('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045');
+                
+                if (ensName) {
+                    log(`ENS name resolved: ${ensName}`, 'success');
+                    status.innerHTML = '<span class="success">✓ ENS resolution working</span>';
+                } else {
+                    log('No ENS name found (expected for Base)', 'info');
+                    status.innerHTML = '<span class="success">✓ ENS resolution tested</span>';
+                }
+                
+            } catch (error) {
+                log(`ENS resolution error: ${error.message}`, 'error');
+                status.innerHTML = '<span class="error">✗ ENS resolution failed</span>';
+            }
+        }
+
+        async function testTokenMetadata() {
+            const status = document.getElementById('testStatus');
+            status.innerHTML = '<span class="loading">Testing token metadata...</span>';
+            
+            try {
+                log('Testing token metadata retrieval...');
+                
+                for (const [symbol, token] of Object.entries(BASE_TOKENS)) {
+                    if (token.address) {
+                        log(`Fetching metadata for ${symbol}...`);
+                        const metadata = await zWalletContract.getMetadata(token.address);
+                        log(`  ${symbol}: Name="${metadata.name}", Symbol="${metadata.symbol}", Decimals=${metadata.decimals}`, 'success');
+                    }
+                }
+                
+                status.innerHTML = '<span class="success">✓ Token metadata verified</span>';
+                
+            } catch (error) {
+                log(`Metadata test failed: ${error.message}`, 'error');
+                status.innerHTML = '<span class="error">✗ Metadata test failed</span>';
+            }
+        }
+
+        async function runAllTests() {
+            log('Running all tests...', 'info');
+            await testZwalletContract();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await testBatchView();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await testENSResolution();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await testTokenMetadata();
+            log('All tests completed!', 'success');
+        }
+
+        // Initialize on load
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

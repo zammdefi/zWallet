@@ -22,11 +22,11 @@ const mockWindow = {
       }
     },
     AbiCoder: {
-      defaultAbiCoder: {
+      defaultAbiCoder: () => ({
         encode: (types, values) => {
           return '0x' + Buffer.from(JSON.stringify({types, values})).toString('hex');
         }
-      }
+      })
     },
     toBigInt: (val) => BigInt(val),
     isAddress: (addr) => /^0x[0-9a-fA-F]{40}$/.test(addr),

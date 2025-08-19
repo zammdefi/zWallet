@@ -5,15 +5,15 @@
 const EIP7702 = {
   // BasicEOABatchExecutor contract address (canonical singleton via CREATE2)
   // Same address on all supported chains (Ethereum, Base, testnets)
-  EXECUTOR_ADDRESS: "0x00000000BEBEDB7C30ee418158e26E31a5A8f3E2",
+  EXECUTOR_ADDRESS: '0x00000000BEBEDB7C30ee418158e26E31a5A8f3E2',
   
   // ERC-7821 modes
-  MODE_SINGLE_NO_OPDATA: "0x0100000000000000000000000000000000000000000000000000000000000000",
+  MODE_SINGLE_NO_OPDATA: '0x0100000000000000000000000000000000000000000000000000000000000000',
   
   // ERC-7821 ABI for batch executor
   EXECUTOR_ABI: [
-    "function execute(bytes32 mode, bytes executionData) payable",
-    "function supportsExecutionMode(bytes32 mode) view returns (bool)"
+    'function execute(bytes32 mode, bytes executionData) payable',
+    'function supportsExecutionMode(bytes32 mode) view returns (bool)'
   ],
   
   /**
@@ -27,10 +27,10 @@ const EIP7702 = {
       const code = await provider.getCode(address);
       
       // Check for delegation indicator (0xef0100 prefix)
-      if (code && code.startsWith("0xef0100")) {
+      if (code && code.startsWith('0xef0100')) {
         // Extract the delegated address (20 bytes after the 3-byte prefix)
         // 0xef0100 is 8 characters (including 0x), so address starts at position 8
-        const delegatedTo = "0x" + code.slice(8, 48);
+        const delegatedTo = '0x' + code.slice(8, 48);
         
         // Check if it's delegated to our executor
         const isOurExecutor = delegatedTo.toLowerCase() === this.EXECUTOR_ADDRESS.toLowerCase();
@@ -48,7 +48,7 @@ const EIP7702 = {
         isOurExecutor: false
       };
     } catch (error) {
-      console.error("Error checking delegation:", error);
+      console.error('Error checking delegation:', error);
       return {
         isDelegated: false,
         delegatedTo: null,
@@ -67,7 +67,7 @@ const EIP7702 = {
    */
   async createAuthorization(signer, chainId, delegateAddress = null, isSelfSigned = true) {
     const address = delegateAddress || this.EXECUTOR_ADDRESS;
-    const currentNonce = await signer.provider.getTransactionCount(await signer.getAddress(), "latest");
+    const currentNonce = await signer.provider.getTransactionCount(await signer.getAddress(), 'latest');
     
     // For self-delegation (sender == authorizer), use nonce + 1
     // This is because the sender's nonce increments before processing authorizations
@@ -90,7 +90,7 @@ const EIP7702 = {
   encodeBatchedCalls(calls) {
     // Validate input
     if (!Array.isArray(calls) || calls.length === 0) {
-      throw new Error("Calls must be a non-empty array");
+      throw new Error('Calls must be a non-empty array');
     }
     
     // Create interface for encoding
@@ -110,7 +110,7 @@ const EIP7702 = {
       }
       
       // Validate and format value
-      let value = call.value || "0";
+      let value = call.value || '0';
       try {
         // Ensure value is a valid BigNumber string
         value = ethers.toBigInt(value).toString();
@@ -119,7 +119,7 @@ const EIP7702 = {
       }
       
       // Validate data
-      const data = call.data || "0x";
+      const data = call.data || '0x';
       if (typeof data !== 'string' || !data.startsWith('0x')) {
         throw new Error(`Call ${index}: Invalid data - must be hex string starting with 0x`);
       }
@@ -135,12 +135,12 @@ const EIP7702 = {
     // The contract expects: abi.encode(Call[]) for mode without opData
     const coder = ethers.AbiCoder.defaultAbiCoder();
     const executionData = coder.encode(
-      ["tuple(address target, uint256 value, bytes data)[]"],
+      ['tuple(address target, uint256 value, bytes data)[]'],
       [formattedCalls]
     );
     
     // Encode the full execute call
-    return iface.encodeFunctionData("execute", [this.MODE_SINGLE_NO_OPDATA, executionData]);
+    return iface.encodeFunctionData('execute', [this.MODE_SINGLE_NO_OPDATA, executionData]);
   },
   
   /**
@@ -149,7 +149,7 @@ const EIP7702 = {
    * @returns {Object} Simulation result
    */
   async simulateBatchedTx(params) {
-    const { from, to, data, value = "0", provider } = params;
+    const { from, to, data, value = '0', provider } = params;
     
     try {
       // Use eth_call to simulate the transaction
@@ -167,13 +167,13 @@ const EIP7702 = {
       };
     } catch (error) {
       // Parse the error to get useful information
-      let errorMessage = error.message || "Unknown error";
+      let errorMessage = error.message || 'Unknown error';
       
       // Common error patterns
-      if (errorMessage.includes("revert")) {
-        errorMessage = "Transaction would revert";
-      } else if (errorMessage.includes("insufficient")) {
-        errorMessage = "Insufficient funds or allowance";
+      if (errorMessage.includes('revert')) {
+        errorMessage = 'Transaction would revert';
+      } else if (errorMessage.includes('insufficient')) {
+        errorMessage = 'Insufficient funds or allowance';
       }
       
       return {
@@ -198,7 +198,7 @@ const EIP7702 = {
       approveData,
       swapData,
       swapTarget,
-      swapValue = "0",
+      swapValue = '0',
       gasSettings,
       simulate = true // Add option to simulate
     } = params;
@@ -213,7 +213,7 @@ const EIP7702 = {
       // Approve call
       {
         target: tokenAddress,
-        value: "0",
+        value: '0',
         data: approveData
       },
       // Swap call
@@ -253,7 +253,7 @@ const EIP7702 = {
     
     // Add authorization list if not already delegated
     if (!delegation.isOurExecutor) {
-      const authorization = await this.createAuthorization(signer, chainId);
+        const authorization = await this.createAuthorization(signer, chainId);
       tx.authorizationList = [authorization];
     }
     
@@ -278,7 +278,7 @@ const EIP7702 = {
     const tx = await signer.sendTransaction({
       type: 4,
       to: account,
-      data: "0x", // No calldata needed for just delegation
+      data: '0x', // No calldata needed for just delegation
       authorizationList: [authorization]
     });
     
@@ -293,7 +293,7 @@ const EIP7702 = {
   async revokeDelegation(signer) {
     const chainId = Number((await signer.provider.getNetwork()).chainId);
     const account = await signer.getAddress();
-    const currentNonce = await signer.provider.getTransactionCount(account, "latest");
+    const currentNonce = await signer.provider.getTransactionCount(account, 'latest');
     
     // Create revocation authorization (delegate to zero address)
     const revokeAuth = await signer.authorize({
@@ -306,16 +306,16 @@ const EIP7702 = {
     const tx = await signer.sendTransaction({
       type: 4,
       to: account,
-      data: "0x",
+      data: '0x',
       authorizationList: [revokeAuth]
     });
     
     return await tx.wait();
   },
   
-  /**
+/**
    * Check if the current environment supports EIP-7702
-   * @param {ethers.Provider} provider - Ethers provider
+   * @param {import('ethers').Provider} provider - Ethers provider
    * @returns {boolean} True if 7702 is supported
    */
   async isSupported(provider) {
@@ -328,14 +328,14 @@ const EIP7702 = {
       const supportedChains = [
         1,        // Ethereum Mainnet (after Pectra)
         8453,     // Base Mainnet (confirmed by user as live)
-        11155111, // Sepolia testnet
+        11155111, // Sepolia testnet 
         84532,    // Base Sepolia testnet
         // Add more chains as they adopt 7702
       ];
       
       return supportedChains.includes(chainId);
     } catch (error) {
-      console.error("Error checking 7702 support:", error);
+      console.error('Error checking 7702 support:', error);
       return false;
     }
   },
@@ -408,3 +408,4 @@ const EIP7702 = {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = EIP7702;
 }
+

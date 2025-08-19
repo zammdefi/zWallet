@@ -3,78 +3,47 @@
 const fs = require('fs');
 const path = require('path');
 
-console.log('🔨 Building smart standalone zWallet...');
+console.log('🔨 Building standalone zWallet...');
 
 // Read the base HTML
 let html = fs.readFileSync(path.join(__dirname, 'extension', 'popup.html'), 'utf8');
 
-// Read the popup.js content
-let popupJs = fs.readFileSync(path.join(__dirname, 'extension', 'popup.js'), 'utf8');
+// Read all JavaScript modules
+const jsFiles = [
+  'visual-id.js',
+  'qrcode.js', 
+  'eip7702.js',
+  'popup.js'
+];
 
-// Read visual-id.js content if it exists
-let visualIdJs = '';
-const visualIdPath = path.join(__dirname, 'extension', 'visual-id.js');
-if (fs.existsSync(visualIdPath)) {
-  visualIdJs = fs.readFileSync(visualIdPath, 'utf8');
+let combinedJs = '';
+for (const file of jsFiles) {
+  const filePath = path.join(__dirname, 'extension', file);
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    combinedJs += `\n// ${file}\n${content}\n`;
+  }
 }
 
-// Wrap Chrome API calls for standalone version
-popupJs = popupJs.replace(/chrome\.storage\.local\.(get|set)/g, (match, method) => {
-  if (method === 'get') {
-    return `(typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.get : (keys, callback) => callback({}))`;
-  } else {
-    return `(typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local.set : (data, callback) => callback && callback())`;
-  }
+// Update CSP for standalone version - allow inline scripts and data URIs
+html = html.replace(
+  /<meta\s+http-equiv="Content-Security-Policy"[^>]*content="[^"]*"[^>]*>/gi,
+  `<meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src *; object-src 'none'; base-uri 'self'">`
+);
+
+// Remove individual script tags and replace with combined inline script
+const scriptTags = jsFiles.map(f => `<script src="${f}"></script>`).join('\\s*');
+const scriptRegex = new RegExp(scriptTags, 'g');
+html = html.replace(scriptRegex, `<script>\n${combinedJs}\n</script>`);
+
+// If script tags weren't found together, remove them individually and add combined at the end of head
+jsFiles.forEach(file => {
+  html = html.replace(new RegExp(`<script src="${file}"></script>\\s*`, 'g'), '');
 });
 
-// Handle chrome.tabs API
-popupJs = popupJs.replace(/chrome\.tabs\.query/g, 
-  `(typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.query : (query, callback) => callback([]))`
-);
-
-popupJs = popupJs.replace(/chrome\.tabs\.sendMessage/g,
-  `(typeof chrome !== 'undefined' && chrome.tabs ? chrome.tabs.sendMessage : () => Promise.reject('Not in extension'))`
-);
-
-// Handle chrome.runtime API
-popupJs = popupJs.replace(/chrome\.runtime\.sendMessage/g,
-  `(typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.sendMessage : () => {})`
-);
-
-popupJs = popupJs.replace(/chrome\.runtime\.onMessage\.addListener/g,
-  `(typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.onMessage.addListener : () => {})`
-);
-
-// Remove extension-specific meta tags
-html = html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/gi, '');
-
-// Replace local ethers script with CDN version
-html = html.replace(
-  /<script src="ethers\.umd\.min\.js"><\/script>/g,
-  '<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js" integrity="sha256-Jlrx7irtiV+Pl9aJ9t3aZ4iL6FcO6eYitSbJR4arfhI=" crossorigin="anonymous"></script>'
-);
-
-// Remove visual-id.js script tag first (if exists)
-html = html.replace(/<script src="visual-id\.js"><\/script>\s*/g, '');
-
-// Replace popup.js script tag with combined inline content
-// Include visual-id.js first if it exists, then popup.js
-const combinedJs = visualIdJs ? `${visualIdJs}\n\n${popupJs}` : popupJs;
-html = html.replace(
-  /<script src="popup\.js"><\/script>/g,
-  `<script>\n${combinedJs}\n</script>`
-);
-
-// Make sure we don't have duplicate script tags
-html = html.replace(/<script>\s*<\/script>/g, '');
-
-// Add favicon if icon.txt exists
-if (fs.existsSync(path.join(__dirname, 'icon.txt'))) {
-  const iconBase64 = fs.readFileSync(path.join(__dirname, 'icon.txt'), 'utf8').trim();
-  html = html.replace(
-    '</title>',
-    `</title>\n    <link rel="icon" type="image/png" href="data:image/png;base64,${iconBase64}">`
-  );
+// Add combined script before closing body if not already added
+if (!html.includes(combinedJs.substring(0, 100))) {
+  html = html.replace('</body>', `<script>\n${combinedJs}\n</script>\n</body>`);
 }
 
 // Add standalone styles
@@ -130,4 +99,4 @@ console.log('🌐 Deploy options:');
 console.log('  1. IPFS: ipfs add zWallet.html');
 console.log('  2. GitHub Pages: commit and push');
 console.log('  3. Vercel/Netlify: drag and drop');
-console.log('  4. Local: open index.html in browser');
+console.log('  4. Local: open zWallet.html in browser');

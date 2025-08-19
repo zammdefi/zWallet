@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USDC IOU Test - Base & Ethereum</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        .container {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .network-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .network-btn {
+            padding: 10px 20px;
+            border: 2px solid #444;
+            background: #333;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .network-btn.active {
+            background: #00ff00;
+            color: #000;
+            border-color: #00ff00;
+        }
+        .network-btn.base.active {
+            background: #0052FF;
+            color: #fff;
+            border-color: #0052FF;
+        }
+        .form-group {
+            margin: 15px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #fff;
+            border-radius: 4px;
+        }
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        button:hover { background: #00dd00; }
+        .success { color: #00ff00; }
+        .error { color: #ff4444; }
+        .info { color: #4a9eff; }
+        pre {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 12px;
+        }
+        .network-info {
+            background: #333;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .domain-info {
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js"></script>
+</head>
+<body>
+    <h1>🪙 USDC IOU Test Suite</h1>
+    
+    <div class="container">
+        <h2>Network Configuration</h2>
+        <div class="network-selector">
+            <button class="network-btn active" id="eth-btn" onclick="selectNetwork('ethereum')">
+                ⟠ Ethereum Mainnet
+            </button>
+            <button class="network-btn base" id="base-btn" onclick="selectNetwork('base')">
+                🔵 Base Network
+            </button>
+        </div>
+        <div class="network-info" id="network-info"></div>
+    </div>
+
+    <div class="container">
+        <h2>Create USDC IOU</h2>
+        <div class="form-group">
+            <label>From Address (Your Wallet):</label>
+            <input type="text" id="from-address" placeholder="0x..." />
+        </div>
+        <div class="form-group">
+            <label>To Address:</label>
+            <input type="text" id="to-address" placeholder="0x..." />
+        </div>
+        <div class="form-group">
+            <label>Amount (USDC):</label>
+            <input type="number" id="amount" placeholder="100" step="0.01" />
+        </div>
+        <div class="form-group">
+            <label>Private Key (for signing):</label>
+            <input type="password" id="private-key" placeholder="0x..." />
+        </div>
+        <button onclick="generateIOU()">Generate & Sign IOU</button>
+        <button onclick="verifySignature()">Verify Last Signature</button>
+    </div>
+
+    <div class="container">
+        <h2>IOU Result</h2>
+        <pre id="iou-result"></pre>
+    </div>
+
+    <div class="container">
+        <h2>Test Log</h2>
+        <pre id="test-log"></pre>
+    </div>
+
+    <script>
+        // Network configurations
+        const NETWORKS = {
+            ethereum: {
+                name: 'Ethereum Mainnet',
+                chainId: 1,
+                usdcAddress: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                domainSeparator: null, // Will be computed
+                domain: {
+                    name: 'USD Coin',
+                    version: '2',
+                    chainId: 1,
+                    verifyingContract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
+                }
+            },
+            base: {
+                name: 'Base Network',
+                chainId: 8453,
+                usdcAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+                domainSeparator: '0x02fa7265e7c5d81118673727957699e4d68f74cd74b7db77da710fe8a2c7834f',
+                domain: {
+                    name: 'USD Coin',
+                    version: '2',
+                    chainId: 8453,
+                    verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+                }
+            }
+        };
+
+        // EIP-3009 types
+        const EIP3009_TYPES = {
+            TransferWithAuthorization: [
+                { name: 'from', type: 'address' },
+                { name: 'to', type: 'address' },
+                { name: 'value', type: 'uint256' },
+                { name: 'validAfter', type: 'uint256' },
+                { name: 'validBefore', type: 'uint256' },
+                { name: 'nonce', type: 'bytes32' }
+            ]
+        };
+
+        let currentNetwork = 'ethereum';
+        let lastIOU = null;
+
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('test-log');
+            const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+            const color = type === 'success' ? '#00ff00' : type === 'error' ? '#ff4444' : '#4a9eff';
+            logEl.innerHTML += `<span style="color: ${color}">[${timestamp}] ${message}</span>\n`;
+        }
+
+        function selectNetwork(network) {
+            currentNetwork = network;
+            document.querySelectorAll('.network-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(network === 'ethereum' ? 'eth-btn' : 'base-btn').classList.add('active');
+            
+            const config = NETWORKS[network];
+            document.getElementById('network-info').innerHTML = `
+                <div><strong>Network:</strong> ${config.name}</div>
+                <div><strong>Chain ID:</strong> ${config.chainId}</div>
+                <div><strong>USDC Address:</strong> <span class="domain-info">${config.usdcAddress}</span></div>
+                ${config.domainSeparator ? `<div><strong>Domain Separator:</strong> <span class="domain-info">${config.domainSeparator}</span></div>` : ''}
+            `;
+            
+            log(`Switched to ${config.name}`, 'info');
+        }
+
+        async function generateIOU() {
+            try {
+                const fromAddress = document.getElementById('from-address').value;
+                const toAddress = document.getElementById('to-address').value;
+                const amount = document.getElementById('amount').value;
+                const privateKey = document.getElementById('private-key').value;
+
+                if (!fromAddress || !toAddress || !amount || !privateKey) {
+                    throw new Error('Please fill in all fields');
+                }
+
+                // Create wallet from private key
+                const wallet = new ethers.Wallet(privateKey);
+                
+                // Verify from address matches wallet
+                if (wallet.address.toLowerCase() !== fromAddress.toLowerCase()) {
+                    throw new Error('Private key does not match from address');
+                }
+
+                log(`Creating IOU on ${NETWORKS[currentNetwork].name}...`, 'info');
+
+                // Prepare IOU data
+                const value = ethers.parseUnits(amount, 6); // USDC has 6 decimals
+                const validAfter = 0;
+                const now = Math.floor(Date.now() / 1000);
+                const validBefore = now + (30 * 86400); // Valid for 30 days
+                const nonce = ethers.hexlify(ethers.randomBytes(32));
+
+                // Create EIP-712 message
+                const message = {
+                    from: fromAddress,
+                    to: toAddress,
+                    value: value.toString(),
+                    validAfter: validAfter.toString(),
+                    validBefore: validBefore.toString(),
+                    nonce: nonce
+                };
+
+                // Sign the message
+                const domain = NETWORKS[currentNetwork].domain;
+                const types = { TransferWithAuthorization: EIP3009_TYPES.TransferWithAuthorization };
+                const signature = await wallet.signTypedData(domain, types, message);
+                
+                // Extract v, r, s
+                const sig = ethers.Signature.from(signature);
+
+                // Create IOU slip
+                const iouSlip = {
+                    type: 'transfer',
+                    network: currentNetwork,
+                    chainId: NETWORKS[currentNetwork].chainId,
+                    verifyingContract: NETWORKS[currentNetwork].usdcAddress,
+                    from: fromAddress,
+                    to: toAddress,
+                    value: value.toString(),
+                    amount: amount,
+                    validAfter: Number(validAfter),
+                    validBefore: Number(validBefore),
+                    nonce: nonce,
+                    v: sig.v,
+                    r: sig.r,
+                    s: sig.s,
+                    signature: signature,
+                    created: new Date().toISOString(),
+                    domainSeparator: NETWORKS[currentNetwork].domainSeparator || 'computed'
+                };
+
+                lastIOU = iouSlip;
+                document.getElementById('iou-result').textContent = JSON.stringify(iouSlip, null, 2);
+                
+                log(`IOU created successfully on ${NETWORKS[currentNetwork].name}!`, 'success');
+                log(`Signature: ${signature.substring(0, 20)}...`, 'success');
+
+                // Download IOU
+                const blob = new Blob([JSON.stringify(iouSlip, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `usdc-iou-${currentNetwork}-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                
+                log('IOU downloaded as JSON file', 'success');
+
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function verifySignature() {
+            try {
+                if (!lastIOU) {
+                    throw new Error('No IOU to verify. Generate one first.');
+                }
+
+                log('Verifying signature...', 'info');
+
+                // Recreate the message
+                const message = {
+                    from: lastIOU.from,
+                    to: lastIOU.to,
+                    value: lastIOU.value,
+                    validAfter: lastIOU.validAfter.toString(),
+                    validBefore: lastIOU.validBefore.toString(),
+                    nonce: lastIOU.nonce
+                };
+
+                // Recover signer
+                const domain = NETWORKS[lastIOU.network].domain;
+                const types = { TransferWithAuthorization: EIP3009_TYPES.TransferWithAuthorization };
+                
+                const recoveredAddress = ethers.verifyTypedData(
+                    domain,
+                    types,
+                    message,
+                    lastIOU.signature
+                );
+
+                if (recoveredAddress.toLowerCase() === lastIOU.from.toLowerCase()) {
+                    log(`✅ Signature valid! Signer: ${recoveredAddress}`, 'success');
+                } else {
+                    log(`❌ Signature invalid! Expected: ${lastIOU.from}, Got: ${recoveredAddress}`, 'error');
+                }
+
+            } catch (error) {
+                log(`Verification error: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        // Initialize
+        selectNetwork('ethereum');
+        log('USDC IOU Test Suite initialized', 'info');
+        log('Ready to test both Ethereum and Base network IOUs', 'info');
+
+        // Pre-fill test values
+        document.getElementById('from-address').value = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb7';
+        document.getElementById('to-address').value = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+        document.getElementById('amount').value = '100';
+    </script>
+</body>
+</html>

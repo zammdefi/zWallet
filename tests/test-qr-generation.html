@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Generation Test - zWallet</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #0052FF;
+            padding-bottom: 10px;
+        }
+        
+        .test-section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .input-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        
+        button {
+            background: #0052FF;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        
+        button:hover {
+            background: #0040CC;
+        }
+        
+        .qr-display {
+            text-align: center;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            min-height: 300px;
+        }
+        
+        #qrImage {
+            max-width: 256px;
+            margin: 0 auto;
+            display: block;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            padding: 10px;
+        }
+        
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .test-addresses {
+            margin-top: 15px;
+        }
+        
+        .test-addresses button {
+            background: #6c757d;
+            font-size: 14px;
+            padding: 8px 15px;
+            margin: 5px;
+        }
+        
+        .test-addresses button:hover {
+            background: #545b62;
+        }
+        
+        .instructions {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .instructions h3 {
+            margin-top: 0;
+            color: #856404;
+        }
+        
+        .instructions ul {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 QR Code Generation Test</h1>
+    
+    <div class="instructions">
+        <h3>Testing Instructions:</h3>
+        <ul>
+            <li>Enter an Ethereum address or use test addresses below</li>
+            <li>Click "Generate QR Code" to create the QR code</li>
+            <li>Test scanning with MetaMask Mobile, Trust Wallet, or other wallet apps</li>
+            <li>The QR should contain only the plain address (lowercase, with 0x prefix)</li>
+        </ul>
+    </div>
+    
+    <div class="test-section">
+        <h2>Address Input</h2>
+        <div class="input-group">
+            <label for="addressInput">Ethereum Address:</label>
+            <input type="text" id="addressInput" placeholder="0x..." value="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0">
+        </div>
+        
+        <button onclick="generateQR()">Generate QR Code</button>
+        <button onclick="clearQR()">Clear</button>
+        
+        <div class="test-addresses">
+            <p><strong>Test Addresses:</strong></p>
+            <button onclick="setTestAddress('0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0')">Test Address 1</button>
+            <button onclick="setTestAddress('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48')">USDC Contract</button>
+            <button onclick="setTestAddress('0xdAC17F958D2ee523a2206206994597C13D831ec7')">USDT Contract</button>
+            <button onclick="setTestAddress('0x0000000000000000000000000000000000000000')">Zero Address</button>
+            <button onclick="setTestAddress('invalid')">Invalid Address</button>
+        </div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Generated QR Code</h2>
+        <div id="status" class="status info">Enter an address and click Generate</div>
+        
+        <div class="qr-display">
+            <img id="qrImage" style="display: none;" alt="QR Code">
+            <div id="qrPlaceholder">
+                <p style="color: #999; margin-top: 100px;">QR code will appear here</p>
+            </div>
+        </div>
+        
+        <div id="qrData" style="margin-top: 20px; display: none;">
+            <h3>QR Code Data:</h3>
+            <p><strong>Input:</strong> <span id="inputData" style="font-family: monospace;"></span></p>
+            <p><strong>Encoded:</strong> <span id="encodedData" style="font-family: monospace;"></span></p>
+            <p><strong>Format:</strong> Plain Ethereum address (scannable by wallets)</p>
+        </div>
+    </div>
+    
+    <!-- Load the QR code library -->
+    <script src="extension/qrcode.js"></script>
+    
+    <script>
+        function setTestAddress(address) {
+            document.getElementById('addressInput').value = address;
+        }
+        
+        function generateQR() {
+            const addressInput = document.getElementById('addressInput');
+            const address = addressInput.value.trim();
+            const statusDiv = document.getElementById('status');
+            const qrImage = document.getElementById('qrImage');
+            const qrPlaceholder = document.getElementById('qrPlaceholder');
+            const qrDataDiv = document.getElementById('qrData');
+            
+            if (!address) {
+                showStatus('Please enter an Ethereum address', 'error');
+                return;
+            }
+            
+            // Store original input
+            document.getElementById('inputData').textContent = address;
+            
+            try {
+                // Generate QR code
+                if (typeof window.generateQRCode === 'function') {
+                    const qrDataUrl = window.generateQRCode(address, 256);
+                    
+                    if (qrDataUrl) {
+                        qrImage.src = qrDataUrl;
+                        qrImage.style.display = 'block';
+                        qrPlaceholder.style.display = 'none';
+                        qrDataDiv.style.display = 'block';
+                        
+                        // Show what was encoded
+                        let encoded = address.trim();
+                        if (encoded.toLowerCase().startsWith('ethereum:')) {
+                            encoded = encoded.substring(9);
+                        }
+                        if (!encoded.startsWith('0x')) {
+                            encoded = '0x' + encoded;
+                        }
+                        encoded = encoded.toLowerCase();
+                        
+                        document.getElementById('encodedData').textContent = encoded;
+                        
+                        showStatus('QR code generated successfully! Test scanning with your wallet app.', 'success');
+                    } else {
+                        showStatus('QR generation returned null - check address format', 'error');
+                    }
+                } else {
+                    showStatus('QR code generator not loaded', 'error');
+                }
+            } catch (error) {
+                showStatus('Error generating QR code: ' + error.message, 'error');
+                console.error('QR generation error:', error);
+            }
+        }
+        
+        function clearQR() {
+            document.getElementById('addressInput').value = '';
+            document.getElementById('qrImage').style.display = 'none';
+            document.getElementById('qrPlaceholder').style.display = 'block';
+            document.getElementById('qrData').style.display = 'none';
+            showStatus('Enter an address and click Generate', 'info');
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = 'status ' + type;
+        }
+        
+        // Test on page load
+        window.addEventListener('load', function() {
+            if (typeof window.generateQRCode === 'function') {
+                console.log('✅ QR code generator loaded successfully');
+            } else {
+                console.error('❌ QR code generator not found');
+                showStatus('QR code library failed to load', 'error');
+            }
+        });
+    </script>
+</body>
+</html>

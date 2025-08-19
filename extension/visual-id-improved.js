@@ -1,6 +1,8 @@
-// Minimal visual identifier for zWallet - combines blockie-style avatar with QR capability
+// Enhanced visual identifier for zWallet - optimized blockie-style avatar with proper QR capability
 
-// Simple cache for performance
+/**
+ * Cache for generated visual identifiers to improve performance
+ */
 const visualCache = new Map();
 const MAX_CACHE_SIZE = 100;
 
@@ -41,16 +43,16 @@ function generateSeeds(address) {
 }
 
 /**
- * Generate a simple blockie avatar using canvas
+ * Generate a blockie avatar using canvas with caching
  * @param {string} address - Ethereum address
- * @param {number} size - Size in pixels (default: 64)
+ * @param {number} size - Size of the avatar (default: 64)
  * @param {Object} options - Additional options
- * @returns {string} Data URL of the avatar
+ * @returns {string} Data URL of the generated avatar
  */
 function createBlockie(address, size = 64, options = {}) {
-  // Input validation
-  if (!address || typeof address !== 'string') {
-    console.warn('Invalid address for blockie');
+  // Validate input
+  if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    console.warn('Invalid Ethereum address for blockie generation');
     address = '0x0000000000000000000000000000000000000000';
   }
   
@@ -70,13 +72,12 @@ function createBlockie(address, size = 64, options = {}) {
   } = options;
   
   const seeds = generateSeeds(address);
-  
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d', { alpha: false });
   
-  // Enable smoothing for better quality
+  // Enable image smoothing for better quality
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   
@@ -185,79 +186,23 @@ function drawShape(ctx, x, y, radius, shape) {
 }
 
 /**
- * Add logo to QR code
- * @param {string} qrDataUrl - Base64 data URL of QR code
- * @param {string} logoText - Text to display as logo
- * @param {number} size - Size of the QR code
- * @returns {string} Data URL with logo added
- */
-function addLogoToQR(qrDataUrl, logoText, size) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  
-  const img = new Image();
-  img.src = qrDataUrl;
-  
-  return new Promise((resolve) => {
-    img.onload = () => {
-      // Draw original QR code
-      ctx.drawImage(img, 0, 0, size, size);
-      
-      // Add white background for logo
-      const logoSize = size * 0.2;
-      const logoX = (size - logoSize) / 2;
-      const logoY = (size - logoSize) / 2;
-      const padding = logoSize * 0.1;
-      
-      // White background with rounded corners
-      ctx.fillStyle = '#ffffff';
-      const radius = logoSize * 0.1;
-      ctx.beginPath();
-      ctx.moveTo(logoX - padding + radius, logoY - padding);
-      ctx.lineTo(logoX + logoSize + padding - radius, logoY - padding);
-      ctx.quadraticCurveTo(logoX + logoSize + padding, logoY - padding,
-        logoX + logoSize + padding, logoY - padding + radius);
-      ctx.lineTo(logoX + logoSize + padding, logoY + logoSize + padding - radius);
-      ctx.quadraticCurveTo(logoX + logoSize + padding, logoY + logoSize + padding,
-        logoX + logoSize + padding - radius, logoY + logoSize + padding);
-      ctx.lineTo(logoX - padding + radius, logoY + logoSize + padding);
-      ctx.quadraticCurveTo(logoX - padding, logoY + logoSize + padding,
-        logoX - padding, logoY + logoSize + padding - radius);
-      ctx.lineTo(logoX - padding, logoY - padding + radius);
-      ctx.quadraticCurveTo(logoX - padding, logoY - padding,
-        logoX - padding + radius, logoY - padding);
-      ctx.fill();
-      
-      // Draw logo text
-      ctx.fillStyle = '#000000';
-      ctx.font = `bold ${logoSize * 0.4}px -apple-system, system-ui, monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(logoText, size / 2, size / 2);
-      
-      resolve(canvas.toDataURL('image/png'));
-    };
-    
-    img.onerror = () => {
-      resolve(qrDataUrl); // Return original on error
-    };
-  });
-}
-
-/**
- * Generate proper QR code using the qrcode.js library if available
+ * Generate a proper QR code using the qrcode.js library if available
  * Falls back to simple pattern if library not loaded
  * @param {string} text - Text to encode
- * @param {number} size - Size in pixels (default: 256)
+ * @param {number} size - Size of the QR code (default: 256)
  * @param {Object} options - Additional options
- * @returns {string|Promise<string>} Data URL of the QR code
+ * @returns {string} Data URL of the QR code
  */
-function generateSimpleQR(text, size = 256, options = {}) {
+function generateQRCode(text, size = 256, options = {}) {
   // Validate input
   if (!text || typeof text !== 'string') {
     throw new Error('Invalid text for QR code generation');
+  }
+  
+  // Check cache
+  const cacheKey = `qr_${text}_${size}_${JSON.stringify(options)}`;
+  if (visualCache.has(cacheKey)) {
+    return visualCache.get(cacheKey);
   }
   
   const {
@@ -269,12 +214,6 @@ function generateSimpleQR(text, size = 256, options = {}) {
     logoText = 'zW',
     logoSize = 0.2  // Logo size as percentage of QR size
   } = options;
-  
-  // Check cache
-  const cacheKey = `qr_${text}_${size}_${JSON.stringify(options)}`;
-  if (visualCache.has(cacheKey)) {
-    return visualCache.get(cacheKey);
-  }
   
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -320,206 +259,48 @@ function generateSimpleQR(text, size = 256, options = {}) {
           }
         }
       }
-      
-      // Add logo if requested
-      if (logo) {
-        const logoSizePx = size * logoSize;
-        const logoX = (size - logoSizePx) / 2;
-        const logoY = (size - logoSizePx) / 2;
-        const padding = logoSizePx * 0.1;
-        
-        // White background with rounded corners
-        ctx.fillStyle = lightColor;
-        const radius = logoSizePx * 0.1;
-        ctx.beginPath();
-        ctx.moveTo(logoX - padding + radius, logoY - padding);
-        ctx.lineTo(logoX + logoSizePx + padding - radius, logoY - padding);
-        ctx.quadraticCurveTo(logoX + logoSizePx + padding, logoY - padding, 
-          logoX + logoSizePx + padding, logoY - padding + radius);
-        ctx.lineTo(logoX + logoSizePx + padding, logoY + logoSizePx + padding - radius);
-        ctx.quadraticCurveTo(logoX + logoSizePx + padding, logoY + logoSizePx + padding,
-          logoX + logoSizePx + padding - radius, logoY + logoSizePx + padding);
-        ctx.lineTo(logoX - padding + radius, logoY + logoSizePx + padding);
-        ctx.quadraticCurveTo(logoX - padding, logoY + logoSizePx + padding,
-          logoX - padding, logoY + logoSizePx + padding - radius);
-        ctx.lineTo(logoX - padding, logoY - padding + radius);
-        ctx.quadraticCurveTo(logoX - padding, logoY - padding,
-          logoX - padding + radius, logoY - padding);
-        ctx.fill();
-        
-        // Draw logo text
-        ctx.fillStyle = darkColor;
-        ctx.font = `bold ${logoSizePx * 0.4}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(logoText, size / 2, size / 2);
-      }
-      
-      const dataUrl = canvas.toDataURL('image/png');
-      visualCache.set(cacheKey, dataUrl);
-      manageCacheSize();
-      return dataUrl;
     } catch (error) {
       console.warn('QRCode library error, falling back to simple pattern', error);
+      return generateSimpleQRPattern(canvas, ctx, text, size, options);
     }
+  } else {
+    // Fallback to simple pattern
+    return generateSimpleQRPattern(canvas, ctx, text, size, options);
   }
   
-  // Try to use the window.generateQRCode if available
-  if (typeof window.generateQRCode === 'function') {
-    try {
-      const qrDataUrl = window.generateQRCode(text, size);
-      if (qrDataUrl) {
-        // Add logo if requested
-        if (logo && logoText) {
-          // Return promise for async logo addition
-          return addLogoToQR(qrDataUrl, logoText, size).then(result => {
-            visualCache.set(cacheKey, result);
-            manageCacheSize();
-            return result;
-          });
-        }
-        visualCache.set(cacheKey, qrDataUrl);
-        manageCacheSize();
-        return qrDataUrl;
-      }
-    } catch (e) {
-      console.warn('Falling back to simple QR pattern:', e);
-    }
-  }
-  
-  // Fallback: simple QR pattern
-  // White background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, size, size);
-  
-  // QR code parameters
-  const moduleCount = 25; // Version 2 QR code
-  const cellSize = size / (moduleCount + 8); // Add quiet zone
-  const qrMargin = cellSize * 4;
-  
-  // Create deterministic pattern from text
-  const data = Array.from(text).map(c => c.charCodeAt(0));
-  
-  ctx.fillStyle = '#000000';
-  
-  // Helper function for finder patterns
-  const drawFinderPattern = (centerRow, centerCol) => {
-    // Outer black square
-    ctx.fillRect(
-      qrMargin + (centerCol - 3) * cellSize,
-      qrMargin + (centerRow - 3) * cellSize,
-      cellSize * 7,
-      cellSize * 7
-    );
+  // Add logo if requested
+  if (logo) {
+    const logoSizePx = size * logoSize;
+    const logoX = (size - logoSizePx) / 2;
+    const logoY = (size - logoSizePx) / 2;
+    const padding = logoSizePx * 0.1;
     
-    // Inner white square
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(
-      qrMargin + (centerCol - 2) * cellSize,
-      qrMargin + (centerRow - 2) * cellSize,
-      cellSize * 5,
-      cellSize * 5
-    );
+    // White background with rounded corners
+    ctx.fillStyle = lightColor;
+    const radius = logoSizePx * 0.1;
+    ctx.beginPath();
+    ctx.moveTo(logoX - padding + radius, logoY - padding);
+    ctx.lineTo(logoX + logoSizePx + padding - radius, logoY - padding);
+    ctx.quadraticCurveTo(logoX + logoSizePx + padding, logoY - padding, 
+      logoX + logoSizePx + padding, logoY - padding + radius);
+    ctx.lineTo(logoX + logoSizePx + padding, logoY + logoSizePx + padding - radius);
+    ctx.quadraticCurveTo(logoX + logoSizePx + padding, logoY + logoSizePx + padding,
+      logoX + logoSizePx + padding - radius, logoY + logoSizePx + padding);
+    ctx.lineTo(logoX - padding + radius, logoY + logoSizePx + padding);
+    ctx.quadraticCurveTo(logoX - padding, logoY + logoSizePx + padding,
+      logoX - padding, logoY + logoSizePx + padding - radius);
+    ctx.lineTo(logoX - padding, logoY - padding + radius);
+    ctx.quadraticCurveTo(logoX - padding, logoY - padding,
+      logoX - padding + radius, logoY - padding);
+    ctx.fill();
     
-    // Center black square
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(
-      qrMargin + (centerCol - 1) * cellSize,
-      qrMargin + (centerRow - 1) * cellSize,
-      cellSize * 3,
-      cellSize * 3
-    );
-  };
-  
-  // Draw three finder patterns
-  drawFinderPattern(3, 3);
-  drawFinderPattern(3, moduleCount - 4);
-  drawFinderPattern(moduleCount - 4, 3);
-  
-  // Draw timing patterns
-  for (let i = 8; i < moduleCount - 8; i += 2) {
-    ctx.fillRect(qrMargin + 6 * cellSize, qrMargin + i * cellSize, cellSize, cellSize);
-    ctx.fillRect(qrMargin + i * cellSize, qrMargin + 6 * cellSize, cellSize, cellSize);
+    // Draw logo text
+    ctx.fillStyle = darkColor;
+    ctx.font = `bold ${logoSizePx * 0.4}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(logoText, size / 2, size / 2);
   }
-  
-  // Draw alignment pattern (for version 2+)
-  if (moduleCount > 21) {
-    const alignPos = moduleCount - 7;
-    ctx.fillRect(
-      qrMargin + (alignPos - 2) * cellSize,
-      qrMargin + (alignPos - 2) * cellSize,
-      cellSize * 5,
-      cellSize * 5
-    );
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(
-      qrMargin + (alignPos - 1) * cellSize,
-      qrMargin + (alignPos - 1) * cellSize,
-      cellSize * 3,
-      cellSize * 3
-    );
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(
-      qrMargin + alignPos * cellSize,
-      qrMargin + alignPos * cellSize,
-      cellSize,
-      cellSize
-    );
-  }
-  
-  // Generate data area pattern
-  for (let row = 0; row < moduleCount; row++) {
-    for (let col = 0; col < moduleCount; col++) {
-      // Skip function patterns
-      if ((row < 9 && col < 9) || 
-          (row < 9 && col >= moduleCount - 8) ||
-          (row >= moduleCount - 8 && col < 9) ||
-          (row === 6) || (col === 6)) {
-        continue;
-      }
-      
-      // Generate deterministic bit from data
-      const index = row * moduleCount + col;
-      const byte = data[index % data.length] || 0;
-      const bit = ((byte ^ (index * 31)) >> (index % 8)) & 1;
-      
-      if (bit) {
-        ctx.fillRect(
-          qrMargin + col * cellSize,
-          qrMargin + row * cellSize,
-          cellSize,
-          cellSize
-        );
-      }
-    }
-  }
-  
-  // Add logo in center
-  const centerLogoSize = cellSize * 7;
-  const logoX = (size - centerLogoSize) / 2;
-  const logoY = (size - centerLogoSize) / 2;
-  
-  // White background for logo with rounded corners
-  ctx.fillStyle = '#ffffff';
-  const radius = cellSize;
-  ctx.beginPath();
-  ctx.moveTo(logoX + radius, logoY);
-  ctx.lineTo(logoX + centerLogoSize - radius, logoY);
-  ctx.quadraticCurveTo(logoX + centerLogoSize, logoY, logoX + centerLogoSize, logoY + radius);
-  ctx.lineTo(logoX + centerLogoSize, logoY + centerLogoSize - radius);
-  ctx.quadraticCurveTo(logoX + centerLogoSize, logoY + centerLogoSize, logoX + centerLogoSize - radius, logoY + centerLogoSize);
-  ctx.lineTo(logoX + radius, logoY + centerLogoSize);
-  ctx.quadraticCurveTo(logoX, logoY + centerLogoSize, logoX, logoY + centerLogoSize - radius);
-  ctx.lineTo(logoX, logoY + radius);
-  ctx.quadraticCurveTo(logoX, logoY, logoX + radius, logoY);
-  ctx.fill();
-  
-  // Draw "zW" logo
-  ctx.fillStyle = '#000000';
-  ctx.font = `bold ${centerLogoSize * 0.35}px -apple-system, system-ui, monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('zW', size / 2, size / 2);
   
   const dataUrl = canvas.toDataURL('image/png');
   
@@ -528,6 +309,92 @@ function generateSimpleQR(text, size = 256, options = {}) {
   manageCacheSize();
   
   return dataUrl;
+}
+
+/**
+ * Generate simple QR-like pattern as fallback
+ */
+function generateSimpleQRPattern(canvas, ctx, text, size, options) {
+  const { darkColor = '#000000', lightColor = '#ffffff', margin = 4 } = options;
+  
+  // Fill background
+  ctx.fillStyle = lightColor;
+  ctx.fillRect(0, 0, size, size);
+  
+  // Create deterministic pattern
+  const moduleCount = 25;
+  const cellSize = (size - margin * 2) / moduleCount;
+  const seeds = generateSeeds('0x' + Array.from(text).map(c => 
+    c.charCodeAt(0).toString(16).padStart(2, '0')
+  ).join(''));
+  
+  ctx.fillStyle = darkColor;
+  
+  // Draw position detection patterns
+  const drawFinderPattern = (centerRow, centerCol) => {
+    for (let r = -3; r <= 3; r++) {
+      for (let c = -3; c <= 3; c++) {
+        const absR = Math.abs(r);
+        const absC = Math.abs(c);
+        if (absR <= 3 && absC <= 3 && 
+            (absR === 3 || absC === 3 || (absR <= 1 && absC <= 1))) {
+          ctx.fillRect(
+            margin + (centerCol + c) * cellSize,
+            margin + (centerRow + r) * cellSize,
+            cellSize,
+            cellSize
+          );
+        }
+      }
+    }
+  };
+  
+  // Draw finder patterns
+  drawFinderPattern(3, 3);
+  drawFinderPattern(3, moduleCount - 4);
+  drawFinderPattern(moduleCount - 4, 3);
+  
+  // Draw timing patterns
+  for (let i = 8; i < moduleCount - 8; i++) {
+    if (i % 2 === 0) {
+      ctx.fillRect(margin + 6 * cellSize, margin + i * cellSize, cellSize, cellSize);
+      ctx.fillRect(margin + i * cellSize, margin + 6 * cellSize, cellSize, cellSize);
+    }
+  }
+  
+  // Fill data area with pattern
+  for (let row = 0; row < moduleCount; row++) {
+    for (let col = 0; col < moduleCount; col++) {
+      // Skip finder pattern areas
+      if ((row < 8 && col < 8) || 
+          (row < 8 && col >= moduleCount - 8) ||
+          (row >= moduleCount - 8 && col < 8)) {
+        continue;
+      }
+      
+      // Skip timing patterns
+      if (row === 6 || col === 6) {
+        continue;
+      }
+      
+      // Generate pattern from seeds
+      const index = row * moduleCount + col;
+      const seedIndex = Math.floor(index / 32);
+      const bitIndex = index % 32;
+      const isDark = ((seeds[seedIndex % seeds.length] >> bitIndex) & 1) === 1;
+      
+      if (isDark) {
+        ctx.fillRect(
+          margin + col * cellSize,
+          margin + row * cellSize,
+          cellSize,
+          cellSize
+        );
+      }
+    }
+  }
+  
+  return canvas.toDataURL('image/png');
 }
 
 /**
@@ -586,7 +453,7 @@ function generateIDCard(address, options = {}) {
   
   // Generate QR code
   const qrSize = blockieSize;
-  const qrData = generateSimpleQR(address, qrSize, { logo: true });
+  const qrData = generateQRCode(address, qrSize, { logo: true });
   const qrImg = new Image();
   qrImg.src = qrData;
   
@@ -626,25 +493,26 @@ function generateIDCard(address, options = {}) {
 }
 
 /**
- * Clear the visual cache
+ * Clear visual cache
  */
 function clearVisualCache() {
   visualCache.clear();
 }
 
-// Export for use
+// Export for use (both module and global)
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { 
-    createBlockie, 
-    generateSimpleQR, 
+  module.exports = {
+    createBlockie,
+    generateQRCode,
     generateIDCard,
-    clearVisualCache 
+    clearVisualCache
   };
 } else {
-  window.zWalletVisual = { 
-    createBlockie, 
-    generateSimpleQR, 
+  window.zWalletVisual = {
+    createBlockie,
+    generateQRCode,
+    generateSimpleQR: generateQRCode, // Backward compatibility
     generateIDCard,
-    clearVisualCache 
+    clearVisualCache
   };
 }

@@ -147,8 +147,8 @@ test('Error handling is implemented', () => {
     throw new Error('No try-catch blocks found in popup.js');
   }
   
-  // Check for error logging
-  if (!popupJs.includes('catch (err')) {
+  // Check for error logging (accepts both err and _err patterns)
+  if (!popupJs.includes('catch (err') && !popupJs.includes('catch (_err')) {
     throw new Error('No error catching found in popup.js');
   }
 });
@@ -175,10 +175,12 @@ test('RPC retry mechanism is implemented', () => {
   }
 });
 
-test('DOM batch updates are implemented', () => {
+test('DOM updates use efficient patterns', () => {
   const popupJs = fs.readFileSync('extension/popup.js', 'utf8');
-  if (!popupJs.includes('batchDOMUpdates')) {
-    throw new Error('DOM batch updates not found');
+  // We removed batchDOMUpdates as it was unused dead code
+  // The app uses DocumentFragment for efficient updates instead
+  if (!popupJs.includes('DocumentFragment')) {
+    throw new Error('DocumentFragment pattern not found');
   }
 });
 

@@ -1,6 +1,64 @@
-if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
-  document.documentElement.classList.add("is-extension");
+// Chrome API compatibility layer for both extension and standalone environments
+const isExtensionEnvironment = typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id;
+
+if (isExtensionEnvironment) {
+  document.documentElement.classList.add('is-extension');
+} else {
+  // Create Chrome API stubs for standalone environment
+  window.chrome = window.chrome || {};
+  
+  chrome.runtime = chrome.runtime || {
+    sendMessage: () => Promise.resolve(),
+    onMessage: { addListener: () => {} },
+    id: null
+  };
+  
+  chrome.storage = chrome.storage || {
+    local: {
+      get: (keys, callback) => {
+        // Use localStorage as fallback - but for chrome.storage compatibility
+        const result = {};
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        keyList.forEach(key => {
+          const value = localStorage.getItem(`chrome_storage_${key}`);
+          if (value) {
+            try {
+              result[key] = JSON.parse(value);
+            } catch {
+              result[key] = value;
+            }
+          }
+        });
+        if (callback) callback(result);
+        return Promise.resolve(result);
+      },
+      set: (data, callback) => {
+        // Use localStorage as fallback - but for chrome.storage compatibility
+        Object.entries(data).forEach(([key, value]) => {
+          localStorage.setItem(`chrome_storage_${key}`, JSON.stringify(value));
+        });
+        if (callback) callback();
+        return Promise.resolve();
+      }
+    }
+  };
+  
+  chrome.tabs = chrome.tabs || {
+    query: (query, callback) => {
+      if (callback) callback([]);
+      return Promise.resolve([]);
+    },
+    sendMessage: () => Promise.resolve()
+  };
 }
+
+// Global state variables for IOU handling
+let pendingIouMessage = null;
+let pendingIouAmount = null;
+
+// Timeout variables for cleanup
+let ensResolveTimeout = null;
+let gasUpdateTimeout = null;
 
 // Performance optimizations and utilities
 /**
@@ -36,6 +94,38 @@ function throttle(func, limit) {
       setTimeout(() => inThrottle = false, limit);
     }
   };
+}
+
+/**
+ * Make RPC call with retry and exponential backoff
+ * @param {Function} fn - Function to retry
+ * @param {number} maxRetries - Maximum retry attempts
+ * @param {number} baseDelay - Base delay in ms
+ * @returns {Promise} Result of function
+ */
+async function withRetry(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry on user rejection or invalid params
+      if (error.code === 4001 || error.code === -32602) {
+        throw error;
+      }
+      
+      if (attempt < maxRetries - 1) {
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
 }
 
 /**
@@ -82,46 +172,14 @@ const updateElementText = (() => {
 })();
 
 /**
- * Make RPC call with retry and exponential backoff
- * @param {Function} fn - Function to retry
- * @param {number} maxRetries - Maximum retry attempts
- * @param {number} baseDelay - Base delay in ms
- * @returns {Promise} Result of function
- */
-async function withRetry(fn, maxRetries = 3, baseDelay = 1000) {
-  let lastError;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-      
-      // Don't retry on user rejection or invalid params
-      if (error.code === 4001 || error.code === -32602) {
-        throw error;
-      }
-      
-      if (attempt < maxRetries - 1) {
-        // Exponential backoff with jitter
-        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-  
-  throw lastError;
-}
-
-/**
  * Optimized formatters
  */
 const formatBalance = (value, decimals = 18) => {
-  if (!value) return "0";
+  if (!value) return '0';
   try {
     return ethers.formatUnits(value, decimals);
   } catch {
-    return "0";
+    return '0';
   }
 };
 
@@ -200,16 +258,160 @@ let isBaseMode = false;
 let passwordModalCallback = null;
 let passwordModalReject = null;
 
-// Password caching for session (clears on extension close)
-let sessionPasswordCache = new Map();
-const PASSWORD_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+// Encrypted password caching for session (clears on extension close)
+const sessionPasswordCache = new Map();
+let PASSWORD_CACHE_DURATION = 5 * 60 * 1000; // Default 5 minutes
 const MAX_CACHE_ENTRIES = 10; // Maximum number of cached passwords
+let cacheEncryptionKey = null; // Derived encryption key for cache
+
+/**
+ * Initialize cache encryption key using Web Crypto API
+ * Uses a random key per session for maximum security
+ */
+async function initializeCacheEncryption() {
+  try {
+    // Generate a random encryption key for this session
+    cacheEncryptionKey = await crypto.subtle.generateKey(
+      {
+        name: 'AES-GCM',
+        length: 256
+      },
+      false, // Not extractable
+      ['encrypt', 'decrypt']
+    );
+  } catch (error) {
+    console.error('Failed to initialize cache encryption:', error);
+    // Disable caching if encryption fails
+    PASSWORD_CACHE_DURATION = 0;
+  }
+}
+
+/**
+ * Encrypt password for cache storage
+ * @param {string} password - Password to encrypt
+ * @returns {Promise<{encrypted: ArrayBuffer, iv: Uint8Array}>} Encrypted data
+ */
+async function encryptForCache(password) {
+  if (!cacheEncryptionKey) {
+    throw new Error('Cache encryption not initialized');
+  }
+  
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password);
+  
+  // Generate random IV for each encryption
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  
+  const encrypted = await crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: iv
+    },
+    cacheEncryptionKey,
+    data
+  );
+  
+  return { encrypted, iv };
+}
+
+/**
+ * Decrypt password from cache storage
+ * @param {ArrayBuffer} encrypted - Encrypted password
+ * @param {Uint8Array} iv - Initialization vector
+ * @returns {Promise<string>} Decrypted password
+ */
+async function decryptFromCache(encrypted, iv) {
+  if (!cacheEncryptionKey) {
+    throw new Error('Cache encryption not initialized');
+  }
+  
+  const decrypted = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: iv
+    },
+    cacheEncryptionKey,
+    encrypted
+  );
+  
+  const decoder = new TextDecoder();
+  return decoder.decode(decrypted);
+}
+
+/**
+ * Securely clear sensitive data from memory
+ * @param {any} data - Data to clear
+ */
+function secureClear(data) {
+  if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
+    // Overwrite buffer with random data
+    crypto.getRandomValues(new Uint8Array(data));
+  }
+  // For strings, we can't directly overwrite in JS, but we can 
+  // ensure references are cleared
+  data = null;
+}
+
+// Load password cache settings
+function loadPasswordCacheSettings() {
+  chrome.storage.local.get(['passwordCacheDuration'], (result) => {
+    if (result.passwordCacheDuration !== undefined) {
+      PASSWORD_CACHE_DURATION = result.passwordCacheDuration;
+      if (PASSWORD_CACHE_DURATION === 0) {
+        // Clear cache if disabled
+        sessionPasswordCache.clear();
+      }
+    }
+  });
+}
+
+// Initialize encryption and settings
+initializeCacheEncryption();
+loadPasswordCacheSettings();
+
+// Clear cache on extension unload for security
+window.addEventListener('beforeunload', () => {
+  // Securely clear all cached passwords
+  for (const [_key, value] of sessionPasswordCache.entries()) {
+    if (value.encrypted) {
+      secureClear(value.encrypted);
+      secureClear(value.iv);
+    }
+  }
+  sessionPasswordCache.clear();
+  cacheEncryptionKey = null;
+});
 
 // Transaction rate limiting and nonce management
 let lastTransactionTime = 0;
 let pendingTransactionCount = 0;
 const MAX_PENDING_TRANSACTIONS = 3;
 let nonceManager = new Map(); // Track nonces per address for replay protection
+
+// Load persisted nonce state
+function loadNonceState() {
+  chrome.storage.local.get(['nonceState'], (result) => {
+    if (result.nonceState) {
+      try {
+        const entries = JSON.parse(result.nonceState);
+        nonceManager = new Map(entries);
+      } catch (_e) {
+        nonceManager = new Map();
+      }
+    }
+  });
+}
+
+// Save nonce state
+function saveNonceState() {
+  const entries = Array.from(nonceManager.entries());
+  chrome.storage.local.set({ 
+    nonceState: JSON.stringify(entries) 
+  });
+}
+
+// Initialize nonce state
+loadNonceState();
 
 /**
  * Get next nonce with replay protection
@@ -224,6 +426,9 @@ async function getNextNonce(address) {
   const nextNonce = Math.max(networkNonce, localNonce);
   nonceManager.set(address, nextNonce + 1);
   
+  // Persist the updated nonce state
+  saveNonceState();
+  
   return nextNonce;
 }
 
@@ -233,6 +438,7 @@ async function getNextNonce(address) {
  */
 function resetNonce(address) {
   nonceManager.delete(address);
+  saveNonceState();
 }
 
 /**
@@ -406,7 +612,7 @@ function initPasswordModal() {
     }
     
     if (confirmGroup.style.display !== 'none' && password.length < 8) {
-      showPasswordError("Password must be at least 8 characters");
+      showPasswordError('Password must be at least 8 characters');
       return;
     }
     
@@ -496,6 +702,85 @@ function escapeHtml(text) {
 }
 
 /**
+ * Sanitize user input to prevent XSS and injection attacks
+ * @param {string} input - Input to sanitize
+ * @returns {string} Sanitized input
+ */
+function sanitizeInput(input) {
+  if (typeof input !== 'string') return '';
+  // Remove any HTML/script tags
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[<>"']/g, '')
+    .trim();
+}
+
+/**
+ * Safe element selector with fallback
+ * @param {string} id - Element ID
+ * @param {boolean} required - Whether element is required
+ * @returns {HTMLElement|null} Element or null
+ */
+function safeGetElement(id, required = false) {
+  const element = document.getElementById(id);
+  if (!element && required) {
+    console.error(`Required element not found: ${id}`);
+    if (required) throw new Error(`Required element not found: ${id}`);
+  }
+  return element;
+}
+
+/**
+ * Safe property access with null checking
+ * @param {object} obj - Object to access
+ * @param {string} path - Property path (e.g., 'a.b.c')
+ * @param {*} fallback - Fallback value
+ * @returns {*} Property value or fallback
+ */
+function safePropertyAccess(obj, path, fallback = null) {
+  if (!obj) return fallback;
+  
+  const keys = path.split('.');
+  let current = obj;
+  
+  for (const key of keys) {
+    if (current == null || typeof current !== 'object') {
+      return fallback;
+    }
+    current = current[key];
+  }
+  
+  return current ?? fallback;
+}
+
+/**
+ * Create managed AbortController for fetch requests
+ * @param {string} key - Unique key for the controller
+ * @returns {AbortController} New AbortController
+ */
+const abortControllers = new Map();
+function createManagedAbortController(key) {
+  // Cancel any existing controller with the same key
+  if (abortControllers.has(key)) {
+    const existing = abortControllers.get(key);
+    existing.abort();
+  }
+  
+  const controller = new AbortController();
+  abortControllers.set(key, controller);
+  
+  // Auto-cleanup after timeout
+  setTimeout(() => {
+    if (abortControllers.get(key) === controller) {
+      abortControllers.delete(key);
+    }
+  }, 30000); // 30 second timeout
+  
+  return controller;
+}
+
+/**
  * Comprehensive Input Validation System
  */
 class InputValidator {
@@ -527,7 +812,7 @@ class InputValidator {
       if (!ethers.isAddress(address)) {
         return { valid: false, error: 'Invalid Ethereum address' };
       }
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Invalid address' };
     }
     
@@ -630,7 +915,7 @@ class InputValidator {
       }
       
       return { valid: true, value, formatted: amount };
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Invalid amount' };
     }
   }
@@ -685,7 +970,7 @@ class InputValidator {
       }
       
       return { valid: true, url: parsed.href };
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Invalid URL format' };
     }
   }
@@ -720,7 +1005,7 @@ class InputValidator {
         return { valid: false, error: 'Invalid private key' };
       }
       return { valid: true, key: '0x' + key };
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Invalid private key format' };
     }
   }
@@ -746,7 +1031,7 @@ class InputValidator {
       }
       
       return { valid: true, address: addressValidation.address, isContract: true };
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Failed to verify contract' };
     }
   }
@@ -782,7 +1067,7 @@ class InputValidator {
     try {
       const value = ethers.parseUnits(gasPrice, 'gwei');
       return { valid: true, value, gwei: numGasPrice };
-    } catch (e) {
+    } catch (_e) {
       return { valid: false, error: 'Invalid gas price' };
     }
   }
@@ -861,12 +1146,19 @@ class InputValidator {
 }
 
 // Secure password prompt replacement
-function securePasswordPrompt(title, message, requireConfirm = false, cacheKey = null) {
+async function securePasswordPrompt(title, message, requireConfirm = false, cacheKey = null) {
   // Check cache first for non-creation prompts
-  if (!requireConfirm && cacheKey) {
+  if (!requireConfirm && cacheKey && cacheEncryptionKey) {
     const cached = sessionPasswordCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < PASSWORD_CACHE_DURATION) {
-      return Promise.resolve(cached.password);
+      try {
+        // Decrypt password from cache
+        const decryptedPassword = await decryptFromCache(cached.encrypted, cached.iv);
+        return decryptedPassword;
+      } catch (_error) {
+        // If decryption fails, remove corrupted entry and continue
+        sessionPasswordCache.delete(cacheKey);
+      }
     }
   }
   
@@ -913,25 +1205,38 @@ function securePasswordPrompt(title, message, requireConfirm = false, cacheKey =
     });
     
     // Set callbacks
-    passwordModalCallback = (result) => {
+    passwordModalCallback = async (result) => {
       document.removeEventListener('keydown', escapeHandler);
       // Cache password for session if cacheKey provided
-      if (!requireConfirm && cacheKey) {
-        // Check cache size limit and remove oldest entry if needed
-        if (sessionPasswordCache.size >= MAX_CACHE_ENTRIES) {
-          const firstKey = sessionPasswordCache.keys().next().value;
-          sessionPasswordCache.delete(firstKey);
-        }
-        
-        sessionPasswordCache.set(cacheKey, {
-          password: result,
-          timestamp: Date.now()
-        });
-        // Clear old cache entries
-        for (const [key, value] of sessionPasswordCache.entries()) {
-          if (Date.now() - value.timestamp > PASSWORD_CACHE_DURATION) {
-            sessionPasswordCache.delete(key);
+      if (!requireConfirm && cacheKey && cacheEncryptionKey) {
+        try {
+          // Check cache size limit and remove oldest entry if needed
+          if (sessionPasswordCache.size >= MAX_CACHE_ENTRIES) {
+            const firstKey = sessionPasswordCache.keys().next().value;
+            sessionPasswordCache.delete(firstKey);
           }
+          
+          // Encrypt password before caching
+          const { encrypted, iv } = await encryptForCache(result);
+          
+          sessionPasswordCache.set(cacheKey, {
+            encrypted: encrypted,
+            iv: iv,
+            timestamp: Date.now()
+          });
+          
+          // Clear old cache entries
+          for (const [_key, value] of sessionPasswordCache.entries()) {
+            if (Date.now() - value.timestamp > PASSWORD_CACHE_DURATION) {
+              // Securely clear the encrypted data
+              secureClear(value.encrypted);
+              secureClear(value.iv);
+              sessionPasswordCache.delete(key);
+            }
+          }
+        } catch (error) {
+          console.error('Failed to cache password securely:', error);
+          // Continue without caching on error
         }
       }
       resolve(result);
@@ -945,10 +1250,10 @@ function securePasswordPrompt(title, message, requireConfirm = false, cacheKey =
 
 // Generate dynamic coin SVG
 function generateCoinSVG(id) {
-  const isDark = document.documentElement.getAttribute("data-theme") === "dark";
-  const textColor = isDark ? "#ffffff" : "#000000";
-  const goldColor = isDark ? "#FFD700" : "#DAA520";
-  const shadowColor = isDark ? "#B8860B" : "#996515";
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const textColor = isDark ? '#ffffff' : '#000000';
+  const goldColor = isDark ? '#FFD700' : '#DAA520';
+  const shadowColor = isDark ? '#B8860B' : '#996515';
 
   return `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -976,138 +1281,185 @@ const TOKEN_LOGOS = {
 };
 
 // WETH address for ETH price
-const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+const WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
 
 // zQuoter contract for finding best swap routes
-const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
+const ZQUOTER_ADDRESS = '0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7';
 
 // zQuoter ABI for getting best quotes (moved here to be defined before use)
 const ZQUOTER_ABI = [
-  "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)",
-  "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
+  'function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)',
+  'function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)'
 ];
 
 // ERC6909 addresses
-const COINS_CONTRACT = "0x0000000000009710cd229bf635c4500029651ee8";
-const ZAMM_ID = "1334160193485309697971829933264346612480800613613";
+const COINS_CONTRACT = '0x0000000000009710cd229bf635c4500029651ee8';
+const ZAMM_ID = '1334160193485309697971829933264346612480800613613';
 
 // ZAMM AMM Contracts for price fetching and swapping
-const ZAMM_0_ADDRESS = "0x00000000000008882D72EfA6cCE4B6a40b24C860"; // Original ZAMM AMM for swapping ZAMM token
-const ZAMM_1_ADDRESS = "0x000000000000040470635eb91b7ce4d132d616ed"; // New ZAMM AMM for all other ERC6909 ID swaps
-const ZAMM_POOL_ID = "22979666169544372205220120853398704213623237650449182409187385558845249460832"; // ZAMM/ETH pool ID
+const ZAMM_0_ADDRESS = '0x00000000000008882D72EfA6cCE4B6a40b24C860'; // Original ZAMM AMM for swapping ZAMM token
+const ZAMM_1_ADDRESS = '0x000000000000040470635eb91b7ce4d132d616ed'; // New ZAMM AMM for all other ERC6909 ID swaps
+const ZAMM_POOL_ID = '22979666169544372205220120853398704213623237650449182409187385558845249460832'; // ZAMM/ETH pool ID
+const CULT_FEE_OR_HOOK = BigInt('57896044618658097711785492504343953926636021160616296542400437774503196477768'); // Special CULT pool identifier (0.4% fee)
 
 // Price checking is now handled through zWallet contract which wraps CTC
 
-const LS_WALLETS = "eth_wallets_v2";
-const LS_LAST = "last_wallet_addr";
+const LS_WALLETS = 'eth_wallets_v2';
+const LS_LAST = 'last_wallet_addr';
 
 const KEY_VERSION = 1;
-const DEFAULT_KDF = { kdf: "pbkdf2-sha256", iter: 600000 }; // OWASP 2024 recommended minimum
+const DEFAULT_KDF = { kdf: 'pbkdf2-sha256', iter: 600000 }; // OWASP 2024 recommended minimum
 
-// Default tokens configuration
-const DEFAULT_TOKENS = {
-  ETH: { address: null, symbol: "ETH", name: "Ethereum", decimals: 18 },
+// Default tokens configuration for Ethereum mainnet
+const DEFAULT_TOKENS_MAINNET = {
+  ETH: { address: null, symbol: 'ETH', name: 'Ethereum', decimals: 18 },
   ZAMM: {
     address: COINS_CONTRACT,
-    symbol: "ZAMM",
-    name: "ZAMM",
+    symbol: 'ZAMM',
+    name: 'ZAMM',
     decimals: 18,
     isERC6909: true,
     id: ZAMM_ID,
   },
   USDT: {
-    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-    symbol: "USDT",
-    name: "Tether",
+    address: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    symbol: 'USDT',
+    name: 'Tether',
     decimals: 6,
   },
   DAI: {
-    address: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-    symbol: "DAI",
-    name: "Dai",
+    address: '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+    symbol: 'DAI',
+    name: 'Dai',
     decimals: 18,
   },
   USDC: {
-    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    symbol: "USDC",
-    name: "USD Coin",
+    address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    symbol: 'USDC',
+    name: 'USD Coin',
     decimals: 6,
   },
   ENS: {
-    address: "0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72",
-    symbol: "ENS",
-    name: "ENS",
-    decimals: 18,
-  },
-  CULT: {
-    address: "0x0000000000c5dc95539589fbD24BE07c6C14eCa4",
-    symbol: "CULT",
-    name: "Milady Cult Coin",
+    address: '0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72',
+    symbol: 'ENS',
+    name: 'ENS',
     decimals: 18,
   },
 };
 
+// Default tokens configuration for Base network
+const DEFAULT_TOKENS_BASE = {
+  ETH: { address: null, symbol: 'ETH', name: 'Ethereum', decimals: 18 },
+  DAI: {
+    address: '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb',
+    symbol: 'DAI',
+    name: 'Dai',
+    decimals: 18,
+  },
+  USDC: {
+    address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    symbol: 'USDC',
+    name: 'USD Coin',
+    decimals: 6,
+  },
+  USDT: {
+    address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
+    symbol: 'USDT',
+    name: 'Tether',
+    decimals: 6,
+  },
+};
+
+// Dynamic default tokens based on network
+const DEFAULT_TOKENS = DEFAULT_TOKENS_MAINNET;
+
 // USDC EIP-3009 constants for IOU functionality  
-const USDC_EIP712_DOMAIN = Object.freeze({
-  name: "USD Coin",
-  version: "2",
+const USDC_EIP712_DOMAIN_MAINNET = Object.freeze({
+  name: 'USD Coin',
+  version: '2',
   chainId: 1,
-  verifyingContract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  verifyingContract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
 });
+
+const USDC_EIP712_DOMAIN_BASE = Object.freeze({
+  name: 'USD Coin',
+  version: '2',
+  chainId: 8453,
+  verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+});
+
+// Dynamic domain separator based on current network
+let USDC_EIP712_DOMAIN = USDC_EIP712_DOMAIN_MAINNET;
+
+// Base USDC domain separator (provided by user)
+const BASE_USDC_DOMAIN_SEPARATOR = '0x02fa7265e7c5d81118673727957699e4d68f74cd74b7db77da710fe8a2c7834f';
+
+// EIP-3009 type hashes
+const RECEIVE_WITH_AUTHORIZATION_TYPEHASH = '0xd099cc98ef71107a616c4f0f941f04c322d8e254fe26b3c6668db87aae413de8';
+const TRANSFER_WITH_AUTHORIZATION_TYPEHASH = '0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267';
 
 const EIP3009_TYPES = {
   TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" }
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' }
+  ],
+  ReceiveWithAuthorization: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' }
   ]
 };
 
-// zWallet contract address and ABI
-const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5";
+// zWallet contract addresses
+const ZWALLET_ADDRESS = '0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5'; // Mainnet
+const ZWALLET_ADDRESS_BASE = '0xA64E4B7aCf500bB3D353299af1D15c9EEc9D2323'; // Base
 const ZWALLET_ABI = [
   // Enhanced batch view with ENS and token type detection
-  "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)",
+  'function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)',
   // Individual getters
-  "function getBalanceOf(address owner, address token, uint256 id) view returns (uint256 raw, uint256 bal)",
-  "function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)",
-  "function getOwnerOf(address token, uint256 id) view returns (address owner)",
+  'function getBalanceOf(address owner, address token, uint256 id) view returns (uint256 raw, uint256 bal)',
+  'function getMetadata(address token) view returns (string name, string symbol, uint8 decimals)',
+  'function getOwnerOf(address token, uint256 id) view returns (address owner)',
   // Payload preparation
-  "function getERC20Transfer(address to, uint256 amount) pure returns (bytes)",
-  "function getERC20Approve(address spender, uint256 amount) pure returns (bytes)",
-  "function getERC6909Transfer(address to, uint256 id, uint256 amount) pure returns (bytes)",
-  "function getERC6909SetOperator(address spender, bool approved) pure returns (bytes)",
-  "function getERC721TransferFrom(address from, address to, uint256 tokenId) pure returns (bytes)",
+  'function getERC20Transfer(address to, uint256 amount) pure returns (bytes)',
+  'function getERC20Approve(address spender, uint256 amount) pure returns (bytes)',
+  'function getERC6909Transfer(address to, uint256 id, uint256 amount) pure returns (bytes)',
+  'function getERC6909SetOperator(address spender, bool approved) pure returns (bytes)',
+  'function getERC721TransferFrom(address from, address to, uint256 tokenId) pure returns (bytes)',
   // Token type detection
-  "function isERC721(address token) view returns (bool)",
-  "function isERC6909(address token) view returns (bool)",
+  'function isERC721(address token) view returns (bool)',
+  'function isERC6909(address token) view returns (bool)',
   // Allowance and operator checks
-  "function getAllowanceOf(address owner, address token, address spender) view returns (uint256 raw, uint256 allow)",
-  "function getIsOperatorOf(address owner, address token, address spender) view returns (bool)",
+  'function getAllowanceOf(address owner, address token, address spender) view returns (uint256 raw, uint256 allow)',
+  'function getIsOperatorOf(address owner, address token, address spender) view returns (bool)',
   // Router approval helpers
-  "function checkERC20RouterApproval(address owner, address token, uint256 amount, bool max) view returns (bytes payload)",
-  "function checkERC6909RouterIsOperator(address owner, address token) view returns (bytes payload)",
+  'function checkERC20RouterApproval(address owner, address token, uint256 amount, bool max) view returns (bytes payload)',
+  'function checkERC6909RouterIsOperator(address owner, address token) view returns (bytes payload)',
   // Price checking (via CTC)
-  "function checkPrice(address token) view returns (uint256 price, string priceStr)",
-  "function checkPriceInETH(address token) view returns (uint256 price, string priceStr)",
-  "function checkPriceInETHToUSDC(address token) view returns (uint256 price, string priceStr)",
+  'function checkPrice(address token) view returns (uint256 price, string priceStr)',
+  'function checkPriceInETH(address token) view returns (uint256 price, string priceStr)',
+  'function checkPriceInETHToUSDC(address token) view returns (uint256 price, string priceStr)',
   // ENS resolution
-  "function whatIsTheAddressOf(string calldata name) view returns (address owner, address receiver, bytes32 node)",
-  "function whatIsTheNameOf(address user) view returns (string ensName)",
+  'function whatIsTheAddressOf(string calldata name) view returns (address owner, address receiver, bytes32 node)',
+  'function whatIsTheNameOf(address user) view returns (string ensName)',
 ];
 
 const ERC20_ABI = [
-  "function transfer(address, uint256) returns (bool)",
-  "function approve(address, uint256) returns (bool)",
-  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  'function transfer(address, uint256) returns (bool)',
+  'function approve(address, uint256) returns (bool)',
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
 ];
 
 // ZAMM AMM ABI for reading pool reserves
 const ZAMM_AMM_ABI = [
-  "function pools(uint256 poolId) view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 kLast, uint256 supply)",
+  'function pools(uint256 poolId) view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 kLast, uint256 supply)',
 ];
 
 // Global state
@@ -1115,35 +1467,65 @@ let wallet = null;
 let provider = null;
 let zWalletContract = null;
 let zQuoterContract = null;
-let selectedGasSpeed = "normal";
+
+/**
+ * Create provider with automatic RPC fallback
+ * @param {string[]} rpcUrls - Array of RPC URLs to try
+ * @param {number} timeout - Timeout for each RPC attempt
+ * @returns {Promise<ethers.JsonRpcProvider>} Connected provider
+ */
+async function createProviderWithFallback(rpcUrls, timeout = 5000) {
+  const errors = [];
+  
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const testProvider = new ethers.JsonRpcProvider(rpcUrl);
+      
+      // Test the connection with timeout
+      await Promise.race([
+        testProvider.getBlockNumber(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), timeout)
+        )
+      ]);
+      
+      console.log(`Connected to RPC: ${rpcUrl}`);
+      return testProvider;
+    } catch (error) {
+      errors.push({ url: rpcUrl, error: error.message });
+      console.warn(`Failed to connect to ${rpcUrl}:`, error.message);
+    }
+  }
+  
+  // All RPCs failed
+  throw new Error(`Failed to connect to any RPC. Errors: ${JSON.stringify(errors)}`);
+}
+let selectedGasSpeed = 'normal';
 let currentBalances = {};
 let tokenPrices = {};
 let ethPrice = 0;
-let selectedToken = "ETH";
+let selectedToken = 'ETH';
 let savedWallets = [];
 let customTokens = {};
 let currentRpc =
-  localStorage.getItem("rpc_endpoint") || "https://eth.llamarpc.com";
+  localStorage.getItem('rpc_endpoint') || 'https://eth.llamarpc.com';
 let autoRefreshInterval = null;
 let txHistory = [];
-let ensResolveTimeout = null;
-let gasUpdateTimeout = null;
-let gasPrices = {
+// Removed unused timeout variables
+const gasPrices = {
   slow: null,
   normal: null,
   fast: null,
   custom: null,
 };
-let TOKENS = { ...DEFAULT_TOKENS };
+let TOKENS = { ...DEFAULT_TOKENS_MAINNET };
 // IOU state for signing
-let pendingIouMessage = null;
-let pendingIouAmount = null;
+// Removed unused IOU variables
 
 // Event listener management for cleanup
 // Use WeakMap for automatic garbage collection of event listeners
 const eventListenersWeak = new WeakMap();
 const activeListeners = new Set();
-const abortControllers = new Map();
 const activeTimeouts = new Set();
 const activeIntervals = new Set();
 const cleanupCallbacks = new Set();
@@ -1319,30 +1701,16 @@ function createManagedAbortController(key) {
 
 // Removed getCachedOrFetch - using contract's efficient batching instead
 
-function addManagedEventListener(element, event, handler, options = {}) {
-  if (!element) return;
-  
-  const key = `${element.id || element.className}_${event}`;
-  
-  // Remove existing listener if present
-  if (eventListeners.has(key)) {
-    const { element: el, event: ev, handler: h } = eventListeners.get(key);
-    el.removeEventListener(ev, h, options);
-  }
-  
-  // Add new listener
-  element.addEventListener(event, handler, options);
-  eventListeners.set(key, { element, event, handler, options });
-}
+// Duplicate function removed - using the WeakMap version above
 
 function cleanupEventListeners() {
-  // Remove all managed event listeners - using for...of for better performance
-  for (const { element, event, handler, options } of eventListeners.values()) {
-    if (element && element.removeEventListener) {
-      element.removeEventListener(event, handler, options);
+  // Clean up all active listeners using AbortController
+  activeListeners.forEach(listener => {
+    if (listener.controller) {
+      listener.controller.abort();
     }
-  }
-  eventListeners.clear();
+  });
+  activeListeners.clear();
 }
 
 function cleanupTimers() {
@@ -1382,7 +1750,7 @@ function cleanupAbortControllers() {
   abortControllers.forEach(controller => {
     try {
       controller.abort();
-    } catch (e) {
+    } catch (_e) {
       // Ignore errors from already aborted controllers
     }
   });
@@ -1411,7 +1779,7 @@ function performFullCleanup() {
   cleanupCallbacks.forEach(callback => {
     try {
       callback();
-    } catch (e) {
+    } catch (_e) {
       // Cleanup error - handled silently
     }
   });
@@ -1447,34 +1815,34 @@ function cleanupOnUnload() {
 const enc = new TextEncoder(),
   dec = new TextDecoder();
 async function deriveKey(pass, salt, meta) {
-  const kdf = (meta && meta.kdf) || "pbkdf2-sha256";
-  if (kdf === "pbkdf2-sha256") {
+  const kdf = (meta && meta.kdf) || 'pbkdf2-sha256';
+  if (kdf === 'pbkdf2-sha256') {
     let iter = Number((meta && meta.iter) || 600000);
     if (!Number.isFinite(iter) || iter < 10000 || iter > 5000000) iter = 600000;
     iter = Math.min(Math.max(10_000, Math.floor(iter)), 5_000_000); // clamp
     const km = await crypto.subtle.importKey(
-      "raw",
+      'raw',
       enc.encode(pass),
-      "PBKDF2",
+      'PBKDF2',
       false,
-      ["deriveKey"]
+      ['deriveKey']
     );
     return crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" },
+      { name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' },
       km,
-      { name: "AES-GCM", length: 256 },
+      { name: 'AES-GCM', length: 256 },
       false,
-      ["encrypt", "decrypt"]
+      ['encrypt', 'decrypt']
     );
   }
-  throw new Error("Unsupported KDF: " + kdf);
+  throw new Error('Unsupported KDF: ' + kdf);
 }
 
 const b64 = (u8) => btoa(String.fromCharCode(...u8));
 const unb64 = (s) =>
   new Uint8Array(
     atob(s)
-      .split("")
+      .split('')
       .map((c) => c.charCodeAt(0))
   );
 
@@ -1486,7 +1854,7 @@ async function encryptPK(pkHex, pass, opts = {}) {
   const aad = meta.aad ? enc.encode(meta.aad) : undefined;
   const ct = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv, additionalData: aad },
+      { name: 'AES-GCM', iv, additionalData: aad },
       key,
       enc.encode(pkHex)
     )
@@ -1502,7 +1870,7 @@ async function decryptPK(payload, pass, aadExpected) {
   for (const iterations of possibleIterations) {
     const meta = {
       v: payload.v ?? 0,
-      kdf: payload.kdf || "pbkdf2-sha256",
+      kdf: payload.kdf || 'pbkdf2-sha256',
       iter: iterations,
       aad: payload.aad,
     };
@@ -1511,28 +1879,28 @@ async function decryptPK(payload, pass, aadExpected) {
       const key = await deriveKey(pass, unb64(payload.salt), meta);
 
       if (aadExpected && meta.aad && meta.aad !== aadExpected) {
-        throw new Error("Keystore/address mismatch");
+        throw new Error('Keystore/address mismatch');
       }
 
       try {
-        const aad = enc.encode(aadExpected || meta.aad || "");
+        const aad = enc.encode(aadExpected || meta.aad || '');
         const pt = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv: unb64(payload.iv), additionalData: aad },
+          { name: 'AES-GCM', iv: unb64(payload.iv), additionalData: aad },
           key,
           unb64(payload.ct)
         );
         return dec.decode(pt);
-      } catch (e) {
+      } catch (_e) {
         // Legacy fallback: only try if no AAD was used originally
         if (!meta.aad && aadExpected) {
           const pt = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: unb64(payload.iv) }, // no AAD
+            { name: 'AES-GCM', iv: unb64(payload.iv) }, // no AAD
             key,
             unb64(payload.ct)
           );
           return dec.decode(pt);
         }
-        throw e;
+        throw _e;
       }
     } catch (e) {
       lastError = e;
@@ -1541,16 +1909,16 @@ async function decryptPK(payload, pass, aadExpected) {
     }
   }
   
-  throw lastError || new Error("Decryption failed");
+  throw lastError || new Error('Decryption failed');
 }
 
 async function migrateKeystoreIfNeeded() {
-  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]');
   let changed = false;
   for (const w of list) {
     const c = w.crypto;
     // Old shape had no v/kdf/iter – wrap it with defaults without touching ct/iv/salt
-    if (c && c.ct && !("v" in c)) {
+    if (c && c.ct && !('v' in c)) {
       w.crypto = { v: KEY_VERSION, ...DEFAULT_KDF, ...c };
       changed = true;
     }
@@ -1567,9 +1935,11 @@ async function init() {
   if (savedNetwork === 'BASE') {
     isBaseMode = true;
     currentNetwork = 'BASE';
+    USDC_EIP712_DOMAIN = USDC_EIP712_DOMAIN_BASE;
   } else {
     isBaseMode = false;
     currentNetwork = 'MAINNET';
+    USDC_EIP712_DOMAIN = USDC_EIP712_DOMAIN_MAINNET;
   }
   
   // Check if running as extension and handle CSP restrictions
@@ -1616,7 +1986,7 @@ async function init() {
     const last = localStorage.getItem(LS_LAST);
     // Check last wallet
     if (last) {
-      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]');
       const entry = list.find(
         (w) => w.address.toLowerCase() === last.toLowerCase()
       );
@@ -1624,7 +1994,7 @@ async function init() {
       if (entry) {
         const label =
           entry.label ||
-          entry.address.slice(0, 6) + "..." + entry.address.slice(-4);
+          entry.address.slice(0, 6) + '...' + entry.address.slice(-4);
         try {
           // Show password prompt
           const pass = await securePasswordPrompt('Unlock Wallet', `Enter password to unlock ${label}:`, false, `wallet_${entry.address}`);
@@ -1642,14 +2012,14 @@ async function init() {
                 });
                 entry.crypto = newPayload;
                 const listNow = JSON.parse(
-                  localStorage.getItem(LS_WALLETS) || "[]"
+                  localStorage.getItem(LS_WALLETS) || '[]'
                 ).map((w) =>
                   w.address.toLowerCase() === entry.address.toLowerCase()
                     ? entry
                     : w
                 );
                 localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
-              } catch (e) {
+              } catch (_e) {
                 
               }
             }
@@ -1659,14 +2029,14 @@ async function init() {
             pk = null;
             
             // Update selector to show current wallet
-            const selector = document.getElementById("walletSelector");
+            const selector = document.getElementById('walletSelector');
             if (selector) {
               selector.value = entry.address;
             }
             
             await displayWallet();
-            showToast("Wallet unlocked!");
-          } catch (e) {
+            showToast('Wallet unlocked!');
+          } catch (_e) {
             // Failed to unlock - keep LS_LAST so user can try from selector
           }
       } else {
@@ -1674,7 +2044,7 @@ async function init() {
         localStorage.removeItem(LS_LAST);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     
   }
 
@@ -2035,32 +2405,36 @@ function handleSignRequest(requestId, pendingRequest) {
 
 async function loadCustomTokens() {
   try {
-    const stored = localStorage.getItem("custom_tokens");
+    // Get appropriate default tokens based on network
+    const defaultTokens = isBaseMode ? DEFAULT_TOKENS_BASE : DEFAULT_TOKENS_MAINNET;
+    
+    const stored = localStorage.getItem('custom_tokens');
     if (stored) {
       customTokens = JSON.parse(stored);
       // Create TOKENS in specific order: defaults first, then custom
       TOKENS = {};
       // Add default tokens in order
-      for (const key of Object.keys(DEFAULT_TOKENS)) {
-        TOKENS[key] = DEFAULT_TOKENS[key];
+      for (const key of Object.keys(defaultTokens)) {
+        TOKENS[key] = defaultTokens[key];
       }
       // Add custom tokens
       for (const key of Object.keys(customTokens)) {
-        if (!DEFAULT_TOKENS[key]) {
+        if (!defaultTokens[key]) {
           TOKENS[key] = customTokens[key];
         }
       }
     } else {
       TOKENS = {};
-      for (const key of Object.keys(DEFAULT_TOKENS)) {
-        TOKENS[key] = DEFAULT_TOKENS[key];
+      for (const key of Object.keys(defaultTokens)) {
+        TOKENS[key] = defaultTokens[key];
       }
     }
-  } catch (err) {
+  } catch (_err) {
     customTokens = {};
+    const defaultTokens = isBaseMode ? DEFAULT_TOKENS_BASE : DEFAULT_TOKENS_MAINNET;
     TOKENS = {};
-    for (const key of Object.keys(DEFAULT_TOKENS)) {
-      TOKENS[key] = DEFAULT_TOKENS[key];
+    for (const key of Object.keys(defaultTokens)) {
+      TOKENS[key] = defaultTokens[key];
     }
   }
 }
@@ -2068,16 +2442,16 @@ async function loadCustomTokens() {
 function saveCustomToken(token) {
   customTokens[token.symbol] = token;
   TOKENS[token.symbol] = token;
-  localStorage.setItem("custom_tokens", JSON.stringify(customTokens));
+  localStorage.setItem('custom_tokens', JSON.stringify(customTokens));
 }
 
 function loadTheme() {
-  const theme = localStorage.getItem("theme") || "light";
-  document.documentElement.setAttribute("data-theme", theme);
+  const theme = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', theme);
 }
 
 function updateBaseNetworkToggleIcon() {
-  const baseNetworkToggle = document.getElementById("baseNetworkToggle");
+  const baseNetworkToggle = document.getElementById('baseNetworkToggle');
   if (!baseNetworkToggle) return;
   
   if (isBaseMode) {
@@ -2129,38 +2503,34 @@ function updateBaseNetworkToggleIcon() {
 }
 
 function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme");
-  const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem("theme", next);
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
 }
 
 function loadRpcSettings() {
-  const customRpc = localStorage.getItem("custom_rpc");
+  const customRpc = localStorage.getItem('custom_rpc');
 
-  document.querySelectorAll(".rpc-item").forEach((item) => {
-    item.classList.remove("active");
+  document.querySelectorAll('.rpc-item').forEach((item) => {
+    item.classList.remove('active');
     const itemRpc = item.dataset.rpc;
 
-    if (itemRpc === "custom" && currentRpc === customRpc) {
-      item.classList.add("active");
+    if (itemRpc === 'custom' && currentRpc === customRpc) {
+      item.classList.add('active');
     } else if (itemRpc === currentRpc) {
-      item.classList.add("active");
+      item.classList.add('active');
     }
   });
 
   if (customRpc) {
-    document.getElementById("customRpcUrl").value = customRpc;
+    const rpcInput = document.getElementById('customRpcUrl');
+    if (rpcInput) rpcInput.value = customRpc;
   }
 }
 
 async function initProvider() {
   try {
-    // Add timeout for RPC connections
-    const timeoutPromise = new Promise((_, reject) => 
-      setManagedTimeout(() => reject(new Error('RPC timeout')), 5000)
-    );
-    
     // Use appropriate RPC based on network mode
     let rpcUrl = currentRpc;
     if (isBaseMode) {
@@ -2169,20 +2539,18 @@ async function initProvider() {
       rpcUrl = baseRpc;
     }
     
-    provider = new ethers.JsonRpcProvider(rpcUrl);
-    await Promise.race([
-      provider.getBlockNumber(),
-      timeoutPromise
-    ]);
+    provider = await createProviderWithFallback([rpcUrl], CONSTANTS.RPC_TIMEOUT);
 
-    // Only initialize zWallet and zQuoter contracts on mainnet
+    // Initialize zWallet contract with appropriate address based on network
+    const zwalletAddress = isBaseMode ? ZWALLET_ADDRESS_BASE : ZWALLET_ADDRESS;
+    zWalletContract = new ethers.Contract(
+      zwalletAddress,
+      ZWALLET_ABI,
+      provider
+    );
+    
+    // Only initialize zQuoter contract on mainnet
     if (!isBaseMode) {
-      zWalletContract = new ethers.Contract(
-        ZWALLET_ADDRESS,
-        ZWALLET_ABI,
-        provider
-      );
-      
       // Initialize zQuoter contract once
       zQuoterContract = new ethers.Contract(
         ZQUOTER_ADDRESS,
@@ -2190,23 +2558,19 @@ async function initProvider() {
         provider
       );
     } else {
-      zWalletContract = null; // No zWallet on Base
       zQuoterContract = null; // No zQuoter on Base
     }
 
     // Connected to RPC
     loadRpcSettings();
-    showToast("Connected to network");
-  } catch (err) {
+    showToast('Connected to network');
+  } catch (_err) {
     
-    // Try fallback
-    for (const rpc of [
-      "https://eth.llamarpc.com",
-      "https://ethereum.publicnode.com",
-    ]) {
+    // Try fallback with all available RPCs
+    const network = NETWORKS[currentNetwork];
+    if (network?.rpcUrls) {
       try {
-        provider = new ethers.JsonRpcProvider(rpc);
-        await provider.getBlockNumber();
+        provider = await createProviderWithFallback(network.rpcUrls, CONSTANTS.RPC_TIMEOUT);
         zWalletContract = new ethers.Contract(
           ZWALLET_ADDRESS,
           ZWALLET_ABI,
@@ -2217,22 +2581,25 @@ async function initProvider() {
           ZQUOTER_ABI,
           provider
         );
-        currentRpc = rpc;
-        localStorage.setItem("rpc_endpoint", rpc);
+        // Update to the working RPC
+        currentRpc = provider.connection.url;
+        localStorage.setItem('rpc_endpoint', currentRpc);
         loadRpcSettings();
-        break;
-      } catch (e) {
-        continue;
+      } catch (fallbackError) {
+        console.error('All RPC fallbacks failed:', fallbackError);
+        throw error; // Re-throw original error
       }
+    } else {
+      throw error;
     }
     if (!provider) {
-      showToast("Network connection failed");
+      showToast('Network connection failed');
     }
   }
 }
 
 function loadWallets() {
-  const v2 = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  const v2 = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]');
   savedWallets = v2.map(({ address, label }) => ({ address, label }));
   updateWalletSelectorFrom(v2);
 }
@@ -2245,10 +2612,10 @@ async function saveWallet(address, privateKey) {
   });
   const entry = {
     address,
-    label: address.slice(0, 6) + "..." + address.slice(-4),
+    label: address.slice(0, 6) + '...' + address.slice(-4),
     crypto: payload,
   };
-  const stored = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+  const stored = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]');
   if (!stored.find((w) => w.address === address)) {
     stored.push(entry);
     localStorage.setItem(LS_WALLETS, JSON.stringify(stored));
@@ -2259,7 +2626,7 @@ async function saveWallet(address, privateKey) {
 }
 
 function deleteWallet(address) {
-  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]").filter(
+  const list = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]').filter(
     (w) => w.address.toLowerCase() !== address.toLowerCase()
   );
   localStorage.setItem(LS_WALLETS, JSON.stringify(list));
@@ -2273,21 +2640,21 @@ function deleteWallet(address) {
     // Clean up before removing wallet
     cleanupForWalletSwitch();
     wallet = null;
-    document.getElementById("walletSection").classList.add("hidden");
-    document.getElementById("balanceSection").classList.add("hidden");
+    document.getElementById('walletSection').classList.add('hidden');
+    document.getElementById('balanceSection').classList.add('hidden');
   }
 }
 
 function updateWalletSelector() {
-  const selector = document.getElementById("walletSelector");
-  const selectorSection = document.getElementById("walletSelectorSection");
+  const selector = document.getElementById('walletSelector');
+  const selectorSection = document.getElementById('walletSelectorSection');
 
   selector.innerHTML = '<option value="">Select wallet...</option>';
 
   if (savedWallets.length > 0) {
-    selectorSection.classList.remove("hidden");
+    selectorSection.classList.remove('hidden');
     savedWallets.forEach((w) => {
-      const option = document.createElement("option");
+      const option = document.createElement('option');
       option.value = w.address;
       option.textContent = w.label;
       if (wallet && wallet.address === w.address) {
@@ -2296,7 +2663,7 @@ function updateWalletSelector() {
       selector.appendChild(option);
     });
   } else {
-    selectorSection.classList.add("hidden");
+    selectorSection.classList.add('hidden');
   }
 }
 
@@ -2340,7 +2707,7 @@ async function estimateGasWithCache(txParams) {
     }
     
     return estimate;
-  } catch (e) {
+  } catch (_e) {
     // If estimation fails, return null and let caller use default
     return null;
   }
@@ -2392,7 +2759,7 @@ async function fetchZAMMPrice() {
     zammPriceCache.timestamp = now;
     
     return result;
-  } catch (err) {
+  } catch (_err) {
     
     // Return cached data if available, even if expired
     if (zammPriceCache.data) {
@@ -2406,8 +2773,8 @@ async function fetchZAMMPrice() {
  * Show loading skeleton for token grids
  */
 function showTokenLoadingSkeleton() {
-  const tokenGrid = document.getElementById("tokenGrid");
-  const sendTokenGrid = document.getElementById("sendTokenGrid");
+  const tokenGrid = document.getElementById('tokenGrid');
+  const sendTokenGrid = document.getElementById('sendTokenGrid');
   
   if (tokenGrid) {
     tokenGrid.innerHTML = `
@@ -2430,23 +2797,26 @@ function showTokenLoadingSkeleton() {
 // Network switching functionality
 async function toggleNetwork() {
   if (!wallet) {
-    showToast("Please connect wallet first");
+    showToast('Please connect wallet first');
     return;
   }
   
-  const baseNetworkToggle = document.getElementById("baseNetworkToggle");
-  const networkIndicator = document.getElementById("networkIndicator");
-  const etherscanLink = document.getElementById("etherscanLink");
+  const baseNetworkToggle = document.getElementById('baseNetworkToggle');
+  const networkIndicator = document.getElementById('networkIndicator');
+  const etherscanLink = document.getElementById('etherscanLink');
   
   // Toggle network state
   isBaseMode = !isBaseMode;
   currentNetwork = isBaseMode ? 'BASE' : 'MAINNET';
   
+  // Update USDC EIP-712 domain for the current network
+  USDC_EIP712_DOMAIN = isBaseMode ? USDC_EIP712_DOMAIN_BASE : USDC_EIP712_DOMAIN_MAINNET;
+  
   // Save preference
   localStorage.setItem('network_mode', currentNetwork);
   
-  // Notify background script of chain change for dApp connections
-  if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+  // Notify background script of chain change for dApp connections (only in extension mode)
+  if (isExtensionEnvironment) {
     chrome.runtime.sendMessage({
       type: 'CHAIN_CHANGED',
       chainId: isBaseMode ? '0x2105' : '0x1'
@@ -2498,6 +2868,9 @@ async function toggleNetwork() {
     showToast('Switched to Ethereum Mainnet');
   }
   
+  // Reload tokens for the new network
+  await loadCustomTokens();
+  
   // Reinitialize provider for new network
   await initProvider();
   
@@ -2505,6 +2878,9 @@ async function toggleNetwork() {
   if (wallet && wallet.privateKey) {
     wallet = new ethers.Wallet(wallet.privateKey, provider);
   }
+  
+  // Clear cache to force fresh data
+  balanceCache.data = null;
   
   // Refresh balances
   await fetchAllBalances();
@@ -2524,24 +2900,30 @@ function updateSendTabForNetwork() {
   const tokenSelector = document.getElementById('tokenSelector');
   const sendTitle = document.querySelector('#send-tab h2');
   
-  if (isBaseMode) {
-    // On Base, only show ETH
-    if (tokenSelector) {
-      tokenSelector.innerHTML = '<option value="ETH">ETH</option>';
+  if (tokenSelector) {
+    // Clear and rebuild token selector based on current network tokens
+    tokenSelector.innerHTML = '';
+    for (const [symbol] of Object.entries(TOKENS)) {
+      const option = document.createElement('option');
+      option.value = symbol;
+      option.textContent = symbol;
+      tokenSelector.appendChild(option);
+    }
+    
+    // Set selected token to ETH if available
+    if (TOKENS['ETH']) {
       tokenSelector.value = 'ETH';
       selectedToken = 'ETH';
+    } else {
+      // Select first available token
+      selectedToken = Object.keys(TOKENS)[0];
+      tokenSelector.value = selectedToken;
     }
-    if (sendTitle) {
-      sendTitle.textContent = 'Send ETH on Base';
-    }
-  } else {
-    // On mainnet, show all tokens
-    if (tokenSelector) {
-      updateTokenSelector();
-    }
-    if (sendTitle) {
-      sendTitle.textContent = 'Send';
-    }
+  }
+  
+  // Update send title based on network
+  if (sendTitle) {
+    sendTitle.textContent = isBaseMode ? 'Send on Base' : 'Send';
   }
 }
 
@@ -2569,8 +2951,8 @@ async function fetchBaseETHBalance() {
     const ethPrice = tokenPrices.ETH?.usd || 0;
     
     // Update display for both wallet and send tabs
-    const tokenGrid = document.getElementById("tokenGrid");
-    const sendTokenGrid = document.getElementById("sendTokenGrid");
+    const tokenGrid = document.getElementById('tokenGrid');
+    const sendTokenGrid = document.getElementById('sendTokenGrid');
     
     const ethRowHTML = `
       <div class="token-row" data-token="ETH" data-symbol="ETH">
@@ -2605,20 +2987,20 @@ async function fetchBaseETHBalance() {
     
     // Update portfolio total
     const portfolioTotal = parseFloat(formattedBalance) * ethPrice;
-    const portfolioEl = document.getElementById("portfolioTotal");
+    const portfolioEl = document.getElementById('portfolioTotal');
     if (portfolioEl) {
       portfolioEl.textContent = `Total: ${formatCurrency(portfolioTotal)}`;
     }
     
     // Hide add token button on Base
-    const addTokenBtn = document.getElementById("addTokenBtn");
+    const addTokenBtn = document.getElementById('addTokenBtn');
     if (addTokenBtn) {
       addTokenBtn.style.display = 'none';
     }
     
   } catch (err) {
-    console.error("Error fetching Base ETH balance:", err);
-    showError("Failed to fetch balance");
+    console.error('Error fetching Base ETH balance:', err);
+    showError('Failed to fetch balance');
   }
 }
 
@@ -2630,14 +3012,14 @@ let balanceCache = {
 };
 
 // Cache for ZAMM price data
-let zammPriceCache = {
+const zammPriceCache = {
   data: null,
   timestamp: 0,
   ttl: 30000 // 30 seconds cache
 };
 
 // Cache for gas estimations to reduce RPC calls
-let gasEstimateCache = {
+const gasEstimateCache = {
   data: new Map(), // Key: hash of params, Value: {estimate, timestamp}
   ttl: 15000 // 15 seconds cache
 };
@@ -2646,11 +3028,6 @@ async function fetchAllBalances(forceRefresh = false) {
   
   if (!wallet || !provider) {
     return;
-  }
-  
-  // For Base network, only fetch ETH balance directly
-  if (isBaseMode) {
-    return fetchBaseETHBalance();
   }
   
   if (!zWalletContract) {
@@ -2667,7 +3044,7 @@ async function fetchAllBalances(forceRefresh = false) {
   }
   
   // Show loading state only if not cached and actually visible
-  const tokenGrid = document.getElementById("tokenGrid");
+  const tokenGrid = document.getElementById('tokenGrid');
   if (!balanceCache.data && tokenGrid && tokenGrid.offsetParent !== null) {
     showTokenLoadingSkeleton();
   }
@@ -2712,7 +3089,7 @@ async function fetchAllBalances(forceRefresh = false) {
     
     // Update ENS name if found
     if (ensName) {
-      const ensNameEl = document.getElementById("ensName");
+      const ensNameEl = document.getElementById('ensName');
       if (ensNameEl) {
         ensNameEl.textContent = ensName;
       }
@@ -2723,14 +3100,14 @@ async function fetchAllBalances(forceRefresh = false) {
     tokenPrices = {};
     
     // Get ETH price from results
-    const ethIndex = tokenSymbols.indexOf("ETH");
+    const ethIndex = tokenSymbols.indexOf('ETH');
     if (ethIndex !== -1 && pricesUSDC[ethIndex]) {
       ethPrice = Number(pricesUSDC[ethIndex]) / 1e6;
     }
 
     // Start fetching ZAMM price in parallel (non-blocking)
     let zammPricePromise = null;
-    if (tokenSymbols.includes("ZAMM")) {
+    if (tokenSymbols.includes('ZAMM')) {
       zammPricePromise = fetchZAMMPrice().catch(err => {
         // ZAMM price fetch failed
         return { eth: 0, usd: 0 };
@@ -2763,8 +3140,8 @@ async function fetchAllBalances(forceRefresh = false) {
       };
 
       // Use prices directly from contract - it already handles all special cases
-      let priceInEth = pricesETH[i] ? Number(pricesETH[i]) / 1e18 : 0;
-      let priceInUsd = pricesUSDC[i] ? Number(pricesUSDC[i]) / 1e6 : 0;
+      const priceInEth = pricesETH[i] ? Number(pricesETH[i]) / 1e18 : 0;
+      const priceInUsd = pricesUSDC[i] ? Number(pricesUSDC[i]) / 1e6 : 0;
 
       tokenPrices[symbol] = {
         eth: priceInEth,
@@ -2772,7 +3149,7 @@ async function fetchAllBalances(forceRefresh = false) {
       };
 
       // Update token metadata from contract if needed
-      if (!token.name || token.name === "") {
+      if (!token.name || token.name === '') {
         token.name = names[i] || symbol;
         token.symbol = symbols[i] || symbol;
         token.decimals = dec;
@@ -2782,7 +3159,7 @@ async function fetchAllBalances(forceRefresh = false) {
     // Update ZAMM price after the loop if it was fetched
     if (zammPricePromise) {
       const zammPrice = await zammPricePromise;
-      const zammSymbol = "ZAMM";
+      const zammSymbol = 'ZAMM';
       if (tokenPrices[zammSymbol]) {
         tokenPrices[zammSymbol].eth = zammPrice.eth || tokenPrices[zammSymbol].eth;
         tokenPrices[zammSymbol].usd = zammPrice.usd || tokenPrices[zammSymbol].usd;
@@ -2800,7 +3177,7 @@ async function fetchAllBalances(forceRefresh = false) {
     };
     
     updateBalanceDisplay();
-  } catch (error) {
+  } catch (_error) {
     
     // Fallback: try to at least get ETH balance
     try {
@@ -2824,7 +3201,7 @@ async function fetchAllBalances(forceRefresh = false) {
         if (symbol !== 'ETH' && !currentBalances[symbol]) {
           currentBalances[symbol] = {
             raw: 0n,
-            formatted: "0"
+            formatted: '0'
           };
           tokenPrices[symbol] = tokenPrices[symbol] || { eth: 0, usd: 0 };
         }
@@ -2832,14 +3209,14 @@ async function fetchAllBalances(forceRefresh = false) {
       
       updateBalanceDisplay();
     } catch (fallbackError) {
-      showError(error, 'Fetch Balances');
+      showError(fallbackError, 'Fetch Balances');
     }
   }
 }
 
 function updateBalanceDisplay() {
-  const tokenGrid = document.getElementById("tokenGrid");
-  const sendTokenGrid = document.getElementById("sendTokenGrid");
+  const tokenGrid = document.getElementById('tokenGrid');
+  const sendTokenGrid = document.getElementById('sendTokenGrid');
   if (!tokenGrid || !sendTokenGrid) {
     // Token grids not ready
     return;
@@ -2871,7 +3248,7 @@ function updateBalanceDisplay() {
   // Pre-calculate all values
   const tokenData = tokenKeys.map(symbol => {
     const token = TOKENS[symbol];
-    const balance = currentBalances[symbol] || { formatted: "0" };
+    const balance = currentBalances[symbol] || { formatted: '0' };
     const price = tokenPrices[symbol] || { eth: 0, usd: 0 };
     const value = parseFloat(balance.formatted) * price.usd;
     
@@ -2883,29 +3260,29 @@ function updateBalanceDisplay() {
     totalValue += value;
     
     // Calculate ETH value
-    if (symbol === "ETH") {
+    if (symbol === 'ETH') {
       totalETH += parseFloat(balance.formatted);
     } else {
       totalETH += parseFloat(balance.formatted) * price.eth;
     }
 
     // Create row for wallet tab
-    const walletRow = document.createElement("div");
-    walletRow.className = "token-row";
+    const walletRow = document.createElement('div');
+    walletRow.className = 'token-row';
     walletRow.dataset.symbol = symbol;
 
     // Special display logic for ETH vs other tokens
-    let priceDisplay1 = "";
-    let priceDisplay2 = "";
+    let priceDisplay1 = '';
+    let priceDisplay2 = '';
 
-    if (symbol === "ETH") {
+    if (symbol === 'ETH') {
       // For ETH: show USD price per ETH and total value
       if (price.usd > 0) {
-        priceDisplay1 = formatCurrency(price.usd) + "/ETH";
+        priceDisplay1 = formatCurrency(price.usd) + '/ETH';
         priceDisplay2 = formatCurrency(value);
       } else {
-        priceDisplay1 = "Price unavailable";
-        priceDisplay2 = "$0.00";
+        priceDisplay1 = 'Price unavailable';
+        priceDisplay2 = '$0.00';
       }
     } else {
       // For other tokens: show ETH ratio and USD value
@@ -2936,7 +3313,7 @@ function updateBalanceDisplay() {
     const sendRow = walletRow.cloneNode(true);
     sendRow.dataset.tokenSymbol = symbol; // Store symbol for event delegation
     if (symbol === selectedToken) {
-      sendRow.classList.add("selected");
+      sendRow.classList.add('selected');
     }
     sendFragment.appendChild(sendRow);
   }
@@ -2958,7 +3335,7 @@ function updateBalanceDisplay() {
     }
   });
   
-  const portfolioTotal = document.getElementById("portfolioTotal");
+  const portfolioTotal = document.getElementById('portfolioTotal');
   if (portfolioTotal) {
     portfolioTotal.innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">${formatCurrency(totalValue)}</div>
     <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
@@ -2968,25 +3345,25 @@ function updateBalanceDisplay() {
 function selectToken(symbol) {
   selectedToken = symbol;
   // Optimize with for...of loop for better performance
-  const rows = document.querySelectorAll("#sendTokenGrid .token-row");
+  const rows = document.querySelectorAll('#sendTokenGrid .token-row');
   for (const row of rows) {
-    row.classList.toggle("selected", row.dataset.symbol === symbol);
+    row.classList.toggle('selected', row.dataset.symbol === symbol);
   }
-  const label = document.getElementById("selectedTokenLabel");
+  const label = document.getElementById('selectedTokenLabel');
   if (label) label.textContent = symbol;
   
   // Show/hide IOU mode for USDC
-  const iouModeSection = document.getElementById("iouModeSection");
-  const iouModeToggle = document.getElementById("iouModeToggle");
-  if (symbol === "USDC") {
-    iouModeSection?.classList.remove("hidden");
+  const iouModeSection = document.getElementById('iouModeSection');
+  const iouModeToggle = document.getElementById('iouModeToggle');
+  if (symbol === 'USDC') {
+    iouModeSection?.classList.remove('hidden');
   } else {
-    iouModeSection?.classList.add("hidden");
+    iouModeSection?.classList.add('hidden');
     // Reset IOU mode if switching away from USDC
     if (iouModeToggle && iouModeToggle.checked) {
       iouModeToggle.checked = false;
       // Trigger change event to reset UI
-      iouModeToggle.dispatchEvent(new Event("change"));
+      iouModeToggle.dispatchEvent(new window.Event('change'));
     }
   }
   
@@ -2994,7 +3371,7 @@ function selectToken(symbol) {
 }
 
 async function resolveENS(name) {
-  if (!name.endsWith(".eth") || !zWalletContract) return null;
+  if (!name.endsWith('.eth') || !zWalletContract) return null;
 
   try {
     const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
@@ -3018,10 +3395,10 @@ async function updateGasPrices() {
 
     // Fallback to reasonable defaults if not available
     if (!baseFee || baseFee === 0n) {
-      baseFee = ethers.parseUnits("20", "gwei"); // 20 gwei fallback
+      baseFee = ethers.parseUnits('20', 'gwei'); // 20 gwei fallback
     }
     if (!priorityFee || priorityFee === 0n) {
-      priorityFee = ethers.parseUnits("1.5", "gwei"); // 1.5 gwei fallback
+      priorityFee = ethers.parseUnits('1.5', 'gwei'); // 1.5 gwei fallback
     }
 
     // Optimized multipliers for better UX
@@ -3030,24 +3407,24 @@ async function updateGasPrices() {
     
     gasPrices.slow = {
       maxFeePerGas: baseFee, // Use exact base fee for slow
-      maxPriorityFeePerGas: isBase ? ethers.parseUnits("0.01", "gwei") : ethers.parseUnits("1", "gwei"),
+      maxPriorityFeePerGas: isBase ? ethers.parseUnits('0.01', 'gwei') : ethers.parseUnits('1', 'gwei'),
     };
 
     gasPrices.normal = {
       maxFeePerGas: (baseFee * 105n) / 100n, // 5% buffer for normal
-      maxPriorityFeePerGas: isBase ? ethers.parseUnits("0.05", "gwei") : priorityFee,
+      maxPriorityFeePerGas: isBase ? ethers.parseUnits('0.05', 'gwei') : priorityFee,
     };
 
     gasPrices.fast = {
       maxFeePerGas: (baseFee * 115n) / 100n, // 15% buffer for fast
-      maxPriorityFeePerGas: isBase ? ethers.parseUnits("0.1", "gwei") : (priorityFee * 150n) / 100n,
+      maxPriorityFeePerGas: isBase ? ethers.parseUnits('0.1', 'gwei') : (priorityFee * 150n) / 100n,
     };
 
     // Cap maximum gas prices to prevent overpaying (different for Base)
-    const maxGasPrice = isBase ? ethers.parseUnits("5", "gwei") : ethers.parseUnits("200", "gwei");
-    const maxPriorityPrice = isBase ? ethers.parseUnits("0.5", "gwei") : ethers.parseUnits("10", "gwei");
+    const maxGasPrice = isBase ? ethers.parseUnits('5', 'gwei') : ethers.parseUnits('200', 'gwei');
+    const maxPriorityPrice = isBase ? ethers.parseUnits('0.5', 'gwei') : ethers.parseUnits('10', 'gwei');
 
-    for (const speed of ["slow", "normal", "fast"]) {
+    for (const speed of ['slow', 'normal', 'fast']) {
       if (gasPrices[speed].maxFeePerGas > maxGasPrice) {
         gasPrices[speed].maxFeePerGas = maxGasPrice;
       }
@@ -3057,9 +3434,9 @@ async function updateGasPrices() {
     }
 
     // Update display with null checks
-    const slowPriceEl = document.getElementById("slowPrice");
-    const normalPriceEl = document.getElementById("normalPrice");
-    const fastPriceEl = document.getElementById("fastPrice");
+    const slowPriceEl = document.getElementById('slowPrice');
+    const normalPriceEl = document.getElementById('normalPrice');
+    const fastPriceEl = document.getElementById('fastPrice');
     
     if (slowPriceEl) {
       slowPriceEl.textContent = (Number(gasPrices.slow.maxFeePerGas) / 1e9).toFixed(1);
@@ -3072,35 +3449,35 @@ async function updateGasPrices() {
     }
 
     await updateEstimatedTotal();
-  } catch (err) {
+  } catch (_err) {
     
 
     // Fallback to safe defaults on error
-    const fallbackGas = ethers.parseUnits("30", "gwei");
-    const fallbackPriority = ethers.parseUnits("2", "gwei");
+    const fallbackGas = ethers.parseUnits('30', 'gwei');
+    const fallbackPriority = ethers.parseUnits('2', 'gwei');
 
     gasPrices.slow = {
-      maxFeePerGas: ethers.parseUnits("20", "gwei"),
-      maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+      maxFeePerGas: ethers.parseUnits('20', 'gwei'),
+      maxPriorityFeePerGas: ethers.parseUnits('1', 'gwei'),
     };
     gasPrices.normal = {
       maxFeePerGas: fallbackGas,
       maxPriorityFeePerGas: fallbackPriority,
     };
     gasPrices.fast = {
-      maxFeePerGas: ethers.parseUnits("50", "gwei"),
-      maxPriorityFeePerGas: ethers.parseUnits("3", "gwei"),
+      maxFeePerGas: ethers.parseUnits('50', 'gwei'),
+      maxPriorityFeePerGas: ethers.parseUnits('3', 'gwei'),
     };
   }
 }
 
 async function updateEstimatedTotal() {
-  const amount = document.getElementById("amount").value || "0";
-  const estimatedTotalEl = document.getElementById("estimatedTotal");
+  const amount = sanitizeInput(document.getElementById('amount').value) || '0';
+  const estimatedTotalEl = document.getElementById('estimatedTotal');
   if (!estimatedTotalEl) return;
   
   if (!wallet || !provider) {
-    estimatedTotalEl.textContent = "--";
+    estimatedTotalEl.textContent = '--';
     return;
   }
 
@@ -3108,7 +3485,7 @@ async function updateEstimatedTotal() {
     const token = TOKENS[selectedToken];
     // More accurate gas limits based on actual usage
     const gasLimit =
-      selectedToken === "ETH" ? 21000n : token?.isERC6909 ? 120000n : 65000n;
+      selectedToken === 'ETH' ? 21000n : token?.isERC6909 ? 120000n : 65000n;
 
     const gasPrice = gasPrices[selectedGasSpeed]?.maxFeePerGas || 20000000000n;
     const gasCostEth = ethers.formatEther(gasLimit * gasPrice);
@@ -3117,24 +3494,24 @@ async function updateEstimatedTotal() {
     const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
     const amountUsd = parseFloat(amount) * tokenPrice.usd;
 
-    estimatedTotalEl.textContent = `${amount} ${selectedToken} ($${amountUsd.toFixed(
+    estimatedTotalEl.textContent = `${amount} ${selectedToken} (${amountUsd.toFixed(
       2
-    )}) + Ξ${parseFloat(gasCostEth).toFixed(5)} gas ($${gasCostUsd.toFixed(
+    )}) + Ξ${parseFloat(gasCostEth).toFixed(5)} gas (${gasCostUsd.toFixed(
       2
     )})`;
-  } catch (err) {
+  } catch (_err) {
     
-    estimatedTotalEl.textContent = amount + " " + selectedToken;
+    estimatedTotalEl.textContent = amount + ' ' + selectedToken;
   }
 }
 
 async function calculateMaxAmount() {
-  if (!wallet) return "0";
+  if (!wallet) return '0';
 
   const balance = currentBalances[selectedToken];
-  if (!balance) return "0";
+  if (!balance) return '0';
 
-  if (selectedToken === "ETH") {
+  if (selectedToken === 'ETH') {
     const gasLimit = 21000n;
     const gasPrice = gasPrices[selectedGasSpeed]?.maxFeePerGas || 30000000000n;
     const gasCost = (gasLimit * gasPrice * 105n) / 100n; // 5% buffer for safety
@@ -3142,7 +3519,7 @@ async function calculateMaxAmount() {
     if (balance.raw > gasCost) {
       return ethers.formatEther(balance.raw - gasCost);
     }
-    return "0";
+    return '0';
   }
 
   return balance.formatted;
@@ -3151,17 +3528,17 @@ async function calculateMaxAmount() {
 async function fetchTransactionHistoryExtended() {
   if (!wallet || !provider) return;
 
-  const loadingMsg = document.getElementById("txLoadingMessage");
-  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+  const loadingMsg = document.getElementById('txLoadingMessage');
+  const loadMoreBtn = document.getElementById('loadMoreTxBtn');
 
   if (!loadingMsg) {
     
     return;
   }
 
-  loadingMsg.textContent = "Loading 24 hours of transactions...";
-  loadingMsg.classList.remove("hidden");
-  if (loadMoreBtn) loadMoreBtn.classList.add("hidden");
+  loadingMsg.textContent = 'Loading 24 hours of transactions...';
+  loadingMsg.classList.remove('hidden');
+  if (loadMoreBtn) loadMoreBtn.classList.add('hidden');
   txHistory = [];
 
   const uniqueTxs = new Set();
@@ -3197,7 +3574,7 @@ async function fetchTransactionHistoryExtended() {
                 fromBlock,
                 toBlock,
                 topics: [
-                  ethers.id("Transfer(address,address,address,uint256,uint256)"),
+                  ethers.id('Transfer(address,address,address,uint256,uint256)'),
                   ethers.zeroPadValue(wallet.address, 32), // sender (indexed)
                   null, // receiver can be anyone
                   ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
@@ -3208,7 +3585,7 @@ async function fetchTransactionHistoryExtended() {
                 fromBlock,
                 toBlock,
                 topics: [
-                  ethers.id("Transfer(address,address,address,uint256,uint256)"),
+                  ethers.id('Transfer(address,address,address,uint256,uint256)'),
                   null, // sender can be anyone
                   ethers.zeroPadValue(wallet.address, 32), // receiver (indexed)
                   ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
@@ -3219,19 +3596,19 @@ async function fetchTransactionHistoryExtended() {
               for (const log of sentLogs) {
                 // Data contains: caller (address) and amount (uint256)
                 const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-                  ["address", "uint256"],
+                  ['address', 'uint256'],
                   log.data
                 );
                 const txKey = `${log.transactionHash}-${log.logIndex}`;
                 if (!uniqueTxs.has(txKey)) {
                   uniqueTxs.add(txKey);
                   txHistory.push({
-                    type: "send",
+                    type: 'send',
                     token: symbol,
                     amount: ethers.formatUnits(decoded[1], token.decimals),
                     hash: log.transactionHash,
                     block: log.blockNumber,
-                    to: "0x" + log.topics[2].slice(26), // receiver is topic[2]
+                    to: '0x' + log.topics[2].slice(26), // receiver is topic[2]
                     logIndex: log.logIndex,
                   });
                 }
@@ -3240,19 +3617,19 @@ async function fetchTransactionHistoryExtended() {
               for (const log of receivedLogs) {
                 // Data contains: caller (address) and amount (uint256)
                 const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-                  ["address", "uint256"],
+                  ['address', 'uint256'],
                   log.data
                 );
                 const txKey = `${log.transactionHash}-${log.logIndex}`;
                 if (!uniqueTxs.has(txKey)) {
                   uniqueTxs.add(txKey);
                   txHistory.push({
-                    type: "receive",
+                    type: 'receive',
                     token: symbol,
                     amount: ethers.formatUnits(decoded[1], token.decimals),
                     hash: log.transactionHash,
                     block: log.blockNumber,
-                    from: "0x" + log.topics[1].slice(26), // sender is topic[1]
+                    from: '0x' + log.topics[1].slice(26), // sender is topic[1]
                     logIndex: log.logIndex,
                   });
                 }
@@ -3271,7 +3648,7 @@ async function fetchTransactionHistoryExtended() {
                 fromBlock,
                 toBlock,
                 topics: [
-                  ethers.id("Transfer(address,address,uint256)"),
+                  ethers.id('Transfer(address,address,uint256)'),
                   ethers.zeroPadValue(wallet.address, 32),
                 ],
               }).catch(() => []),
@@ -3280,7 +3657,7 @@ async function fetchTransactionHistoryExtended() {
                 fromBlock,
                 toBlock,
                 topics: [
-                  ethers.id("Transfer(address,address,uint256)"),
+                  ethers.id('Transfer(address,address,uint256)'),
                   null,
                   ethers.zeroPadValue(wallet.address, 32),
                 ],
@@ -3292,12 +3669,12 @@ async function fetchTransactionHistoryExtended() {
                   uniqueTxs.add(txKey);
                   const amount = ethers.formatUnits(log.data, token.decimals);
                   txHistory.push({
-                    type: "send",
+                    type: 'send',
                     token: symbol,
                     amount,
                     hash: log.transactionHash,
                     block: log.blockNumber,
-                    to: "0x" + log.topics[2].slice(26),
+                    to: '0x' + log.topics[2].slice(26),
                     logIndex: log.logIndex,
                   });
                 }
@@ -3308,12 +3685,12 @@ async function fetchTransactionHistoryExtended() {
                   uniqueTxs.add(txKey);
                   const amount = ethers.formatUnits(log.data, token.decimals);
                   txHistory.push({
-                    type: "receive",
+                    type: 'receive',
                     token: symbol,
                     amount,
                     hash: log.transactionHash,
                     block: log.blockNumber,
-                    from: "0x" + log.topics[1].slice(26),
+                    from: '0x' + log.topics[1].slice(26),
                     logIndex: log.logIndex,
                   });
                 }
@@ -3333,29 +3710,29 @@ async function fetchTransactionHistoryExtended() {
     });
 
     displayTransactions();
-  } catch (err) {
+  } catch (_err) {
     
-    if (loadingMsg) loadingMsg.textContent = "Error loading extended history";
-    if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
+    if (loadingMsg) loadingMsg.textContent = 'Error loading extended history';
+    if (loadMoreBtn) loadMoreBtn.classList.remove('hidden');
   }
 }
 
 async function fetchTransactionHistory() {
   if (!wallet || !provider) {
-    const loadingMsg = document.getElementById("txLoadingMessage");
+    const loadingMsg = document.getElementById('txLoadingMessage');
     if (loadingMsg) {
-      loadingMsg.textContent = "Please unlock wallet first";
+      loadingMsg.textContent = 'Please unlock wallet first';
     }
     return;
   }
 
-  const txList = document.getElementById("txList");
-  const loadingMsg = document.getElementById("txLoadingMessage");
+  const txList = document.getElementById('txList');
+  const loadingMsg = document.getElementById('txLoadingMessage');
   
   // Update loading message based on network
   const networkName = isBaseMode ? 'Base' : 'Ethereum';
   loadingMsg.textContent = `Loading recent ${networkName} transactions...`;
-  txList.classList.add("hidden");
+  txList.classList.add('hidden');
   txHistory = [];
 
   // Use a Set to track unique transactions
@@ -3389,7 +3766,7 @@ async function fetchTransactionHistory() {
                 fromBlock,
                 toBlock: currentBlock,
                 topics: [
-                  ethers.id("Transfer(address,address,address,uint256,uint256)"),
+                  ethers.id('Transfer(address,address,address,uint256,uint256)'),
                   ethers.zeroPadValue(wallet.address, 32), // sender (indexed)
                   null, // receiver can be anyone
                   ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
@@ -3400,7 +3777,7 @@ async function fetchTransactionHistory() {
               fromBlock,
               toBlock: currentBlock,
               topics: [
-                ethers.id("Transfer(address,address,address,uint256,uint256)"),
+                ethers.id('Transfer(address,address,address,uint256,uint256)'),
                 null, // sender can be anyone
                 ethers.zeroPadValue(wallet.address, 32), // receiver (indexed)
                 ethers.zeroPadValue(tokenIdHex, 32), // id (indexed)
@@ -3411,19 +3788,19 @@ async function fetchTransactionHistory() {
             for (const log of sentLogs) {
               // Data contains: caller (address) and amount (uint256)
               const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-                ["address", "uint256"],
+                ['address', 'uint256'],
                 log.data
               );
               const txKey = `${log.transactionHash}-${log.logIndex}`;
               if (!uniqueTxs.has(txKey)) {
                 uniqueTxs.add(txKey);
                 txHistory.push({
-                  type: "send",
+                  type: 'send',
                   token: symbol,
                   amount: ethers.formatUnits(decoded[1], token.decimals),
                   hash: log.transactionHash,
                   block: log.blockNumber,
-                  to: "0x" + log.topics[2].slice(26), // receiver is topic[2]
+                  to: '0x' + log.topics[2].slice(26), // receiver is topic[2]
                   logIndex: log.logIndex,
                 });
               }
@@ -3432,19 +3809,19 @@ async function fetchTransactionHistory() {
             for (const log of receivedLogs) {
               // Data contains: caller (address) and amount (uint256)
               const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-                ["address", "uint256"],
+                ['address', 'uint256'],
                 log.data
               );
               const txKey = `${log.transactionHash}-${log.logIndex}`;
               if (!uniqueTxs.has(txKey)) {
                 uniqueTxs.add(txKey);
                 txHistory.push({
-                  type: "receive",
+                  type: 'receive',
                   token: symbol,
                   amount: ethers.formatUnits(decoded[1], token.decimals),
                   hash: log.transactionHash,
                   block: log.blockNumber,
-                  from: "0x" + log.topics[1].slice(26), // sender is topic[1]
+                  from: '0x' + log.topics[1].slice(26), // sender is topic[1]
                   logIndex: log.logIndex,
                 });
               }
@@ -3453,7 +3830,7 @@ async function fetchTransactionHistory() {
             // Ignore errors for individual token fetches
           })
         );
-        } catch (err) {
+        } catch (_err) {
           // Skip failed token processing
         }
       } else {
@@ -3465,7 +3842,7 @@ async function fetchTransactionHistory() {
               fromBlock,
               toBlock: currentBlock,
               topics: [
-                ethers.id("Transfer(address,address,uint256)"),
+                ethers.id('Transfer(address,address,uint256)'),
                 ethers.zeroPadValue(wallet.address, 32),
               ],
             }),
@@ -3474,7 +3851,7 @@ async function fetchTransactionHistory() {
               fromBlock,
               toBlock: currentBlock,
               topics: [
-                ethers.id("Transfer(address,address,uint256)"),
+                ethers.id('Transfer(address,address,uint256)'),
                 null,
                 ethers.zeroPadValue(wallet.address, 32),
               ],
@@ -3487,12 +3864,12 @@ async function fetchTransactionHistory() {
                 uniqueTxs.add(txKey);
                 const amount = ethers.formatUnits(log.data, token.decimals);
                 txHistory.push({
-                  type: "send",
+                  type: 'send',
                   token: symbol,
                   amount,
                   hash: log.transactionHash,
                   block: log.blockNumber,
-                  to: "0x" + log.topics[2].slice(26),
+                  to: '0x' + log.topics[2].slice(26),
                   logIndex: log.logIndex,
                 });
               }
@@ -3504,12 +3881,12 @@ async function fetchTransactionHistory() {
                 uniqueTxs.add(txKey);
                 const amount = ethers.formatUnits(log.data, token.decimals);
                 txHistory.push({
-                  type: "receive",
+                  type: 'receive',
                   token: symbol,
                   amount,
                   hash: log.transactionHash,
                   block: log.blockNumber,
-                  from: "0x" + log.topics[1].slice(26),
+                  from: '0x' + log.topics[1].slice(26),
                   logIndex: log.logIndex,
                 });
               }
@@ -3533,16 +3910,16 @@ async function fetchTransactionHistory() {
     // Display transactions
     displayTransactions();
   } catch (err) {
-    loadingMsg.textContent = err.message?.includes("limit") 
+    loadingMsg.textContent = err.message?.includes('limit') 
       ? "Too many transactions. Try 'Load Transactions' for recent only" 
-      : "Error loading transactions. Check RPC connection.";
+      : 'Error loading transactions. Check RPC connection.';
   }
 }
 
 function displayTransactions() {
-  const txList = document.getElementById("txList");
-  const loadingMsg = document.getElementById("txLoadingMessage");
-  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+  const txList = document.getElementById('txList');
+  const loadingMsg = document.getElementById('txLoadingMessage');
+  const loadMoreBtn = document.getElementById('loadMoreTxBtn');
 
   if (!txList || !loadingMsg) {
     
@@ -3550,23 +3927,23 @@ function displayTransactions() {
   }
 
   if (txHistory.length === 0) {
-    loadingMsg.textContent = "No transactions found in the last 3 hours";
-    txList.classList.add("hidden");
-    if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
+    loadingMsg.textContent = 'No transactions found in the last 3 hours';
+    txList.classList.add('hidden');
+    if (loadMoreBtn) loadMoreBtn.classList.remove('hidden');
     return;
   }
 
-  loadingMsg.classList.add("hidden");
-  txList.classList.remove("hidden");
-  if (loadMoreBtn) loadMoreBtn.classList.remove("hidden");
-  txList.innerHTML = "";
+  loadingMsg.classList.add('hidden');
+  txList.classList.remove('hidden');
+  if (loadMoreBtn) loadMoreBtn.classList.remove('hidden');
+  txList.innerHTML = '';
 
   // Display max 100 most recent
   const displayTxs = txHistory.slice(0, 100);
 
   for (const tx of displayTxs) {
-    const item = document.createElement("div");
-    item.className = "tx-item";
+    const item = document.createElement('div');
+    item.className = 'tx-item';
 
     item.innerHTML = `
                     <span class="tx-type ${tx.type}">${tx.type}</span>
@@ -3574,14 +3951,14 @@ function displayTransactions() {
                         <a class="tx-hash" data-hash="${tx.hash}" href="#" title="View on Etherscan">${tx.hash.slice(0, 10)}... ↗</a>
                         <div style="font-size: 10px; color: var(--text-secondary);">
                             ${
-                              tx.type === "send"
-                                ? "To: " + tx.to?.slice(0, 8) + "..."
-                                : "From: " + tx.from?.slice(0, 8) + "..."
+                              tx.type === 'send'
+                                ? 'To: ' + tx.to?.slice(0, 8) + '...'
+                                : 'From: ' + tx.from?.slice(0, 8) + '...'
                             }
                         </div>
                     </div>
                     <div class="tx-amount">
-                        ${tx.type === "send" ? "-" : "+"}${parseFloat(
+                        ${tx.type === 'send' ? '-' : '+'}${parseFloat(
       tx.amount
     ).toFixed(4)} ${tx.token}
                     </div>
@@ -3608,8 +3985,8 @@ function displayTransactions() {
         } else {
           window.open(
             explorerUrl,
-            "_blank",
-            "noopener,noreferrer"
+            '_blank',
+            'noopener,noreferrer'
           );
         }
       });
@@ -3624,31 +4001,31 @@ function esc(s) {
     /[&<>"']/g,
     (c) =>
       ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
       }[c])
   );
 }
 
-window.addEventListener("beforeunload", () => {
+window.addEventListener('beforeunload', () => {
   // Clean up all event listeners and timers
   cleanupEventListeners();
   wallet = null;
 });
 function lockWallet() {
   wallet = null;
-  showToast("Locked");
+  showToast('Locked');
 }
 
 async function showEtherscanLink(txHash) {
-  const status = document.getElementById("txStatus");
+  const status = document.getElementById('txStatus');
   
   // Create container for link
-  const linksContainer = document.createElement("div");
-  linksContainer.style.cssText = "margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap;";
+  const linksContainer = document.createElement('div');
+  linksContainer.style.cssText = 'margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap;';
   
   // Determine the correct block explorer based on network
   let explorerUrl;
@@ -3658,7 +4035,7 @@ async function showEtherscanLink(txHash) {
     if (isBaseMode) {
       // Use Base explorer
       explorerUrl = `https://basescan.org/tx/${txHash}`;
-      explorerName = "BaseScan";
+      explorerName = 'BaseScan';
     } else if (provider) {
       const network = await provider.getNetwork();
       const chainId = Number(network.chainId);
@@ -3666,33 +4043,33 @@ async function showEtherscanLink(txHash) {
       switch(chainId) {
         case 8453:
           explorerUrl = `https://basescan.org/tx/${txHash}`;
-          explorerName = "Basescan";
+          explorerName = 'Basescan';
           break;
         case 1:
         default:
           explorerUrl = `https://etherscan.io/tx/${txHash}`;
-          explorerName = "Etherscan";
+          explorerName = 'Etherscan';
           break;
       }
     } else {
       // Default to Etherscan if no provider
       explorerUrl = `https://etherscan.io/tx/${txHash}`;
-      explorerName = "Etherscan";
+      explorerName = 'Etherscan';
     }
-  } catch (err) {
+  } catch (_err) {
     // Default to Etherscan on error
     explorerUrl = `https://etherscan.io/tx/${txHash}`;
-    explorerName = "Etherscan";
+    explorerName = 'Etherscan';
   }
   
   // Block explorer link
-  const explorerLink = document.createElement("a");
+  const explorerLink = document.createElement('a');
   explorerLink.href = explorerUrl;
-  explorerLink.className = "explorer-link";
+  explorerLink.className = 'explorer-link';
   explorerLink.textContent = `${explorerName} →`;
-  explorerLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  explorerLink.target = "_blank";
-  explorerLink.rel = "noopener noreferrer";
+  explorerLink.style.cssText = 'color: var(--accent); text-decoration: underline; font-size: 12px;';
+  explorerLink.target = '_blank';
+  explorerLink.rel = 'noopener noreferrer';
   
   // Override click for extension compatibility
   explorerLink.addEventListener('click', (e) => {
@@ -3709,13 +4086,13 @@ async function showEtherscanLink(txHash) {
 }
 
 function showToast(message, duration = 3000, type = 'success') {
-  const toast = document.getElementById("toast");
+  const toast = document.getElementById('toast');
   if (!toast) return;
   
   toast.textContent = message;
-  toast.classList.remove("error", "warning", "success");
-  toast.classList.add("show", type);
-  setManagedTimeout(() => toast.classList.remove("show"), duration);
+  toast.classList.remove('error', 'warning', 'success');
+  toast.classList.add('show', type);
+  setManagedTimeout(() => toast.classList.remove('show'), duration);
 }
 
 // Function to show user-friendly error messages
@@ -3769,9 +4146,9 @@ function showError(error, context = '') {
 
 // Show QR code modal
 function showQRModal(address) {
-  const modal = document.getElementById("qrModal");
-  const qrImage = document.getElementById("qrCodeImage");
-  const qrAddress = document.getElementById("qrAddress");
+  const modal = document.getElementById('qrModal');
+  const qrImage = document.getElementById('qrCodeImage');
+  const qrAddress = document.getElementById('qrAddress');
   
   if (!modal || !qrImage || !qrAddress) return;
   
@@ -3791,8 +4168,8 @@ function showQRModal(address) {
       
       const qrDataUrl = window.generateQRCode(cleanAddress, 256);
       qrImage.src = qrDataUrl;
-    } catch (e) {
-      showToast("QR code generation failed");
+    } catch (_e) {
+      showToast('QR code generation failed');
     }
   } else {
     // Fallback to visual-id if qr-lite not loaded
@@ -3806,17 +4183,17 @@ function showQRModal(address) {
   qrAddress.textContent = address;
   
   // Setup modal buttons
-  const closeBtn = document.getElementById("qrModalClose");
-  const downloadBtn = document.getElementById("downloadQR");
-  const copyBtn = document.getElementById("copyQRAddress");
+  const closeBtn = document.getElementById('qrModalClose');
+  const downloadBtn = document.getElementById('downloadQR');
+  const copyBtn = document.getElementById('copyQRAddress');
   
   if (closeBtn) {
-    closeBtn.onclick = () => modal.classList.add("hidden");
+    closeBtn.onclick = () => modal.classList.add('hidden');
   }
   
   if (downloadBtn) {
     downloadBtn.onclick = () => {
-      const link = document.createElement("a");
+      const link = document.createElement('a');
       link.download = `zWallet-${address.slice(0, 8)}.png`;
       link.href = qrImage.src;
       link.click();
@@ -3824,16 +4201,16 @@ function showQRModal(address) {
   }
   
   if (copyBtn) {
-    copyBtn.onclick = () => copyToClipboard(address, "address");
+    copyBtn.onclick = () => copyToClipboard(address, 'address');
   }
   
   // Show modal
-  modal.classList.remove("hidden");
+  modal.classList.remove('hidden');
   
   // Close on outside click
   modal.onclick = (e) => {
     if (e.target === modal) {
-      modal.classList.add("hidden");
+      modal.classList.add('hidden');
     }
   };
 }
@@ -3898,15 +4275,15 @@ async function copyToClipboard(text, type) {
     // Try modern Clipboard API first
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
-      showToast(type === "address" ? "Address copied!" : "Private key copied!");
+      showToast(type === 'address' ? 'Address copied!' : 'Private key copied!');
     } else {
       // Fallback for non-secure contexts or older browsers
       // Create a temporary textarea element
-      const textarea = document.createElement("textarea");
+      const textarea = document.createElement('textarea');
       textarea.value = text;
-      textarea.style.position = "fixed";
-      textarea.style.left = "-999999px";
-      textarea.style.top = "-999999px";
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-999999px';
+      textarea.style.top = '-999999px';
       document.body.appendChild(textarea);
       textarea.focus();
       textarea.select();
@@ -3924,19 +4301,19 @@ async function copyToClipboard(text, type) {
         const data = [new ClipboardItem({ 'text/plain': blob })];
         await navigator.clipboard.write(data);
         document.body.removeChild(textarea);
-        showToast(type === "address" ? "Address copied!" : "Private key copied!");
+        showToast(type === 'address' ? 'Address copied!' : 'Private key copied!');
       } catch (selectionErr) {
         // Last resort - deprecated but still works in some browsers
         document.body.removeChild(textarea);
-        throw new Error("Copy not supported");
+        throw new Error('Copy not supported');
       }
     }
-  } catch (err) {
+  } catch (_err) {
     // Final fallback - show the text for manual copying
-    showToast("Copy failed - please copy manually");
+    showToast('Copy failed - please copy manually');
     
     // For private keys, we could show a modal with the text selected
-    if (type === "privateKey") {
+    if (type === 'privateKey') {
       // Create a modal to show the private key for manual copying
       const modal = document.createElement('div');
       modal.style.cssText = `
@@ -3981,10 +4358,10 @@ async function exportEncryptedKey() {
     };
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { 
-      type: "application/json" 
+      type: 'application/json' 
     });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
     a.download = `zWallet-encrypted-${wallet.address.slice(2, 8)}.json`;
     document.body.appendChild(a);
@@ -3992,16 +4369,16 @@ async function exportEncryptedKey() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    showToast("Encrypted key exported!");
-  } catch (err) {
+    showToast('Encrypted key exported!');
+  } catch (_err) {
     
-    showToast("Export failed");
+    showToast('Export failed');
   }
 }
 
 async function displayWallet() {
-  document.getElementById("walletSection").classList.remove("hidden");
-  document.getElementById("balanceSection").classList.remove("hidden");
+  document.getElementById('walletSection').classList.remove('hidden');
+  document.getElementById('balanceSection').classList.remove('hidden');
 
   const address = wallet.address;
   
@@ -4012,26 +4389,28 @@ async function displayWallet() {
   chrome.runtime.sendMessage({
     type: 'ACCOUNT_CHANGED',
     account: address
-  }).catch(() => {});
+  }).catch((error) => {
+    console.error('ENS resolution error:', error);
+  });
   
-  document.getElementById("address").textContent =
-    address.slice(0, 6) + "..." + address.slice(-4);
-  document.getElementById("address").title = address;
+  document.getElementById('address').textContent =
+    address.slice(0, 6) + '...' + address.slice(-4);
+  document.getElementById('address').title = address;
   
   // Display EIP-7702 delegation status
-  const delegationStatusEl = document.getElementById("delegationStatus");
+  const delegationStatusEl = document.getElementById('delegationStatus');
   if (delegationStatusEl && typeof EIP7702 !== 'undefined') {
     try {
       const statusHTML = await EIP7702.getDelegationStatusHTML(address, provider);
       delegationStatusEl.innerHTML = statusHTML;
     } catch (err) {
-      console.log("Could not check delegation status:", err);
+      console.error('Could not check delegation status:', err);
       delegationStatusEl.innerHTML = '';
     }
   }
   
   // Set explorer link based on network
-  const etherscanLink = document.getElementById("etherscanLink");
+  const etherscanLink = document.getElementById('etherscanLink');
   if (etherscanLink) {
     if (isBaseMode) {
       etherscanLink.href = `https://basescan.org/address/${address}`;
@@ -4043,8 +4422,8 @@ async function displayWallet() {
   }
   
   // Apply network UI state
-  const baseNetworkToggle = document.getElementById("baseNetworkToggle");
-  const networkIndicator = document.getElementById("networkIndicator");
+  const baseNetworkToggle = document.getElementById('baseNetworkToggle');
+  const networkIndicator = document.getElementById('networkIndicator');
   
   // Update the header network button icon
   updateBaseNetworkToggleIcon();
@@ -4076,14 +4455,14 @@ async function displayWallet() {
   
   // Generate and display blockie avatar
   if (window.zWalletVisual && window.zWalletVisual.createBlockie) {
-    const blockieAvatar = document.getElementById("blockieAvatar");
+    const blockieAvatar = document.getElementById('blockieAvatar');
     if (blockieAvatar) {
       blockieAvatar.src = window.zWalletVisual.createBlockie(address, 128);
     }
   }
   
   // Setup QR button
-  const qrBtn = document.getElementById("qrBtn");
+  const qrBtn = document.getElementById('qrBtn');
   if (qrBtn) {
     qrBtn.onclick = () => showQRModal(address);
   }
@@ -4115,7 +4494,7 @@ async function displayWallet() {
     await Promise.all(fetchPromises);
   }
 
-  if (document.getElementById("autoRefresh").checked) {
+  if (document.getElementById('autoRefresh').checked) {
     clearManagedInterval(autoRefreshInterval);
     autoRefreshInterval = setManagedInterval(() => {
       fetchAllBalances(true); // Force refresh on auto-refresh
@@ -4130,7 +4509,7 @@ async function addCustomToken(tokenAddress, tokenId = null) {
   try {
     // Validate address
     if (!ethers.isAddress(tokenAddress)) {
-      throw new Error("Invalid address");
+      throw new Error('Invalid address');
     }
 
     // First check token type using batchView
@@ -4155,20 +4534,20 @@ async function addCustomToken(tokenAddress, tokenId = null) {
         decimals = 18;
       } else {
         // For ERC20, metadata is required
-        throw new Error("Could not fetch token metadata");
+        throw new Error('Could not fetch token metadata');
       }
     }
     
     // For non-ERC6909, symbol is required
-    if (!tokenId && tokenKind !== 69 && (!symbol || symbol === "")) {
-      throw new Error("Could not fetch token metadata");
+    if (!tokenId && tokenKind !== 69 && (!symbol || symbol === '')) {
+      throw new Error('Could not fetch token metadata');
     }
 
     let token;
 
     if (tokenKind === 69 || tokenId) { // ERC6909
       if (!tokenId) {
-        throw new Error("This is an ERC6909 contract - please provide a token ID");
+        throw new Error('This is an ERC6909 contract - please provide a token ID');
       }
       
       // Create unique symbol for this ID
@@ -4183,7 +4562,7 @@ async function addCustomToken(tokenAddress, tokenId = null) {
         id: tokenId,
       };
     } else if (tokenKind === 72) { // ERC721
-      throw new Error("ERC721 (NFT) tokens are not supported in the wallet interface");
+      throw new Error('ERC721 (NFT) tokens are not supported in the wallet interface');
     } else { // ERC20
       token = {
         address: tokenAddress,
@@ -4195,7 +4574,7 @@ async function addCustomToken(tokenAddress, tokenId = null) {
 
     // Check if already exists
     if (TOKENS[token.symbol]) {
-      throw new Error("Token already exists");
+      throw new Error('Token already exists');
     }
 
     return token;
@@ -4290,20 +4669,15 @@ async function simulateTransaction(txParams) {
 }
 
 async function sendTransaction() {
-  const toInput = sanitizeInput(document.getElementById("toAddress").value);
-  const amountInput = sanitizeInput(document.getElementById("amount").value);
-  const status = document.getElementById("txStatus");
+  const toInput = sanitizeInput(document.getElementById('toAddress').value);
+  const amountInput = sanitizeInput(document.getElementById('amount').value);
+  const status = document.getElementById('txStatus');
 
   if (!toInput || !amountInput || !wallet) {
     status.innerHTML = '<div class="status error">Fill all fields</div>';
     return;
   }
   
-  // On Base network, only allow ETH sends
-  if (isBaseMode && selectedToken !== 'ETH') {
-    status.innerHTML = '<div class="status error">Only ETH transfers supported on Base</div>';
-    return;
-  }
 
   // Check transaction rate limiting
   const now = Date.now();
@@ -4327,7 +4701,7 @@ async function sendTransaction() {
   let toAddress = toInput;
   let addressValidation;
   
-  if (toInput.endsWith(".eth")) {
+  if (toInput.endsWith('.eth')) {
     // Validate ENS name first
     const ensValidation = InputValidator.validateENS(toInput);
     if (!ensValidation.valid) {
@@ -4378,14 +4752,14 @@ async function sendTransaction() {
   const ethPrice = tokenPrices.ETH?.usd || 0;
   // More accurate gas limits
   let gasLimit =
-    selectedToken === "ETH" ? 21000n : token.isERC6909 ? 120000n : 65000n;
+    selectedToken === 'ETH' ? 21000n : token.isERC6909 ? 120000n : 65000n;
   const gasPrice = gasSettings.maxFeePerGas || 20000000000n;
   let gasCost = gasLimit * gasPrice;
   let gasCostEth = ethers.formatEther(gasCost);
   let gasCostUsd = parseFloat(gasCostEth) * ethPrice;
 
   const tokenPrice = tokenPrices[selectedToken] || { eth: 0, usd: 0 };
-  let amountUsd = parseFloat(amount) * tokenPrice.usd;
+  const amountUsd = parseFloat(amount) * tokenPrice.usd;
   let totalUsd = amountUsd + gasCostUsd;
 
   // Balance already checked in validation above
@@ -4406,14 +4780,14 @@ async function sendTransaction() {
   // Prepare transaction parameters for simulation
   status.innerHTML = '<div class="status">🔍 Simulating transaction...</div>';
   
-  let txParams = {
+  const txParams = {
     from: wallet.address,
     to: toAddress,
     gasLimit: gasLimit
   };
 
   // Build transaction based on token type
-  if (selectedToken === "ETH") {
+  if (selectedToken === 'ETH') {
     txParams.value = ethers.parseEther(amount);
   } else if (token.isERC6909) {
     const amountWei = ethers.parseUnits(amount, token.decimals || 18);
@@ -4470,20 +4844,20 @@ async function sendTransaction() {
   status.innerHTML = '<div class="status success">✅ Ready to send</div>';
 
   // Populate confirmation modal
-  document.getElementById("confirmToken").textContent = selectedToken;
+  document.getElementById('confirmToken').textContent = selectedToken;
   document.getElementById(
-    "confirmAmount"
+    'confirmAmount'
   ).textContent = `${amount} ${selectedToken}`;
-  document.getElementById("confirmTo").textContent = toInput.endsWith(".eth")
+  document.getElementById('confirmTo').textContent = toInput.endsWith('.eth')
     ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
     : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
   document.getElementById(
-    "confirmValueUSD"
-  ).textContent = `$${amountUsd.toFixed(2)}`;
-  document.getElementById("confirmGas").textContent = `Ξ${parseFloat(
+    'confirmValueUSD'
+  ).textContent = `${amountUsd.toFixed(2)}`;
+  document.getElementById('confirmGas').textContent = `Ξ${parseFloat(
     gasCostEth
-  ).toFixed(5)} ($${gasCostUsd.toFixed(2)})`;
-  document.getElementById("confirmTotal").textContent = `$${totalUsd.toFixed(
+  ).toFixed(5)} (${gasCostUsd.toFixed(2)})`;
+  document.getElementById('confirmTotal').textContent = `${totalUsd.toFixed(
     2
   )}`;
 
@@ -4564,18 +4938,18 @@ async function sendTransaction() {
   }
 
   // Show modal
-  const modal = document.getElementById("txConfirmModal");
-  modal.classList.remove("hidden");
+  const modal = document.getElementById('txConfirmModal');
+  modal.classList.remove('hidden');
 
   // Use the secure confirmation helper
-  const confirmBtn = document.getElementById("confirmSend");
-  const cancelBtn = document.getElementById("cancelSend");
-  const closeBtn = document.getElementById("modalClose");
+  const confirmBtn = document.getElementById('confirmSend');
+  const cancelBtn = document.getElementById('cancelSend');
+  const closeBtn = document.getElementById('modalClose');
   
   const userConfirmed = await createSecureConfirmation(confirmBtn, cancelBtn, closeBtn);
   
   // Hide modal after decision
-  modal.classList.add("hidden");
+  modal.classList.add('hidden');
 
   if (!userConfirmed) {
     status.innerHTML = '<div class="status">Transaction cancelled</div>';
@@ -4584,7 +4958,7 @@ async function sendTransaction() {
 
   try {
     status.innerHTML = '<div class="status">Preparing transaction...</div>';
-    document.getElementById("sendBtn").disabled = true;
+    document.getElementById('sendBtn').disabled = true;
     
     // Update rate limiting tracking
     lastTransactionTime = Date.now();
@@ -4595,7 +4969,7 @@ async function sendTransaction() {
       const nonce = await getNextNonce(wallet.address);
     
     let tx;
-    if (selectedToken === "ETH") {
+    if (selectedToken === 'ETH') {
       // Send ETH directly - estimate gas dynamically with cache
       let gasLimit = 21000n;
       const estimated = await estimateGasWithCache({
@@ -4680,7 +5054,7 @@ async function sendTransaction() {
       0,
       10
     )}...</div>`;
-    showToast("Transaction sent! Waiting for confirmation...");
+    showToast('Transaction sent! Waiting for confirmation...');
 
     const receipt = await tx.wait();
     
@@ -4692,8 +5066,8 @@ async function sendTransaction() {
       showEtherscanLink(tx.hash);
       
       // Special message for USDC IOUs
-      if (selectedToken === "USDC") {
-        showToast("USDC IOU sent! Recipient can check IOU on IOUSDC.eth");
+      if (selectedToken === 'USDC') {
+        showToast('USDC IOU sent! Recipient can check IOU on IOUSDC.eth');
         // Add clickable link in status
         status.innerHTML += `
           <div style="margin-top: 8px; font-size: 12px;">
@@ -4703,12 +5077,12 @@ async function sendTransaction() {
             </a>
           </div>`;
       } else {
-        showToast("Transaction confirmed!");
+        showToast('Transaction confirmed!');
       }
       
       await fetchAllBalances();
-      document.getElementById("toAddress").value = "";
-      document.getElementById("amount").value = "";
+      document.getElementById('toAddress').value = '';
+      document.getElementById('amount').value = '';
     } else {
       status.innerHTML = '<div class="status error">Transaction Failed</div>';
       showEtherscanLink(tx.hash);
@@ -4719,31 +5093,31 @@ async function sendTransaction() {
     }
   } catch (err) {
     // Log error securely without exposing sensitive info
-    let errorMsg = "Transaction failed";
+    let errorMsg = 'Transaction failed';
 
-    if (err.message.includes("insufficient funds")) {
-      errorMsg = "Insufficient funds for gas";
-    } else if (err.message.includes("user rejected")) {
-      errorMsg = "Transaction rejected";
-    } else if (err.message.includes("nonce")) {
-      errorMsg = "Nonce error - try again";
+    if (err.message.includes('insufficient funds')) {
+      errorMsg = 'Insufficient funds for gas';
+    } else if (err.message.includes('user rejected')) {
+      errorMsg = 'Transaction rejected';
+    } else if (err.message.includes('nonce')) {
+      errorMsg = 'Nonce error - try again';
       // Reset nonce tracking on nonce errors
       resetNonce(wallet.address);
-    } else if (err.code === "UNKNOWN_ERROR" || err.code === -32603) {
-      errorMsg = "Network error - check balance and try again";
+    } else if (err.code === 'UNKNOWN_ERROR' || err.code === -32603) {
+      errorMsg = 'Network error - check balance and try again';
     }
 
     status.innerHTML = `<div class="status error">${errorMsg}</div>`;
   } finally {
-    document.getElementById("sendBtn").disabled = false;
+    document.getElementById('sendBtn').disabled = false;
   }
 }
 
 // IOU Functions for USDC EIP-3009
 async function createIOUSlip() {
-  const toInput = sanitizeInput(document.getElementById("toAddress").value);
-  const amountInput = sanitizeInput(document.getElementById("amount").value);
-  const status = document.getElementById("txStatus");
+  const toInput = sanitizeInput(document.getElementById('toAddress').value);
+  const amountInput = sanitizeInput(document.getElementById('amount').value);
+  const status = document.getElementById('txStatus');
 
   if (!toInput || !amountInput || !wallet) {
     status.innerHTML = '<div class="status error">Fill all fields</div>';
@@ -4764,7 +5138,7 @@ async function createIOUSlip() {
     let toAddress = toInput;
     let addressValidation;
     
-    if (toInput.endsWith(".eth")) {
+    if (toInput.endsWith('.eth')) {
       // Validate ENS name
       const ensValidation = InputValidator.validateENS(toInput);
       if (!ensValidation.valid) {
@@ -4800,12 +5174,13 @@ async function createIOUSlip() {
     const nonce = ethers.hexlify(ethers.randomBytes(32));
 
     // Update modal with preview
-    document.getElementById("iouFrom").textContent = `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`;
-    document.getElementById("iouTo").textContent = toInput.endsWith(".eth") 
+    document.getElementById('iouFrom').textContent = `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`;
+    document.getElementById('iouTo').textContent = toInput.endsWith('.eth') 
       ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
       : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
-    document.getElementById("iouAmount").textContent = `${amount} USDC`;
-    document.getElementById("iouExpiry").textContent = new Date(validBefore * 1000).toLocaleString();
+    document.getElementById('iouAmount').textContent = `${amount} USDC`;
+    document.getElementById('iouNetwork').textContent = isBaseMode ? '🔵 Base' : '⟠ Ethereum';
+    document.getElementById('iouExpiry').textContent = new Date(validBefore * 1000).toLocaleString();
 
     // Prepare EIP-712 message
     const message = {
@@ -4823,7 +5198,7 @@ async function createIOUSlip() {
 
     // Show preview in modal
     const iouData = {
-      type: "transfer",
+      type: 'transfer',
       from: wallet.address,
       to: toAddress,
       value: value.toString(),
@@ -4832,15 +5207,16 @@ async function createIOUSlip() {
       validBefore: validBefore,
       nonce: nonce,
       created: new Date().toISOString(),
-      chainId: 1
+      chainId: isBaseMode ? 8453 : 1,
+      network: isBaseMode ? 'Base' : 'Ethereum'
     };
 
-    document.getElementById("iouDataDisplay").value = JSON.stringify(iouData, null, 2);
+    document.getElementById('iouDataDisplay').value = JSON.stringify(iouData, null, 2);
 
     // Show modal
-    document.getElementById("iouPreviewModal").classList.remove("hidden");
+    document.getElementById('iouPreviewModal').classList.remove('hidden');
 
-  } catch (err) {
+  } catch (_err) {
     
     status.innerHTML = '<div class="status error">Failed to create IOU</div>';
   }
@@ -4849,10 +5225,10 @@ async function createIOUSlip() {
 async function signAndDownloadIOU() {
   try {
     if (!pendingIouMessage || !wallet) {
-      throw new Error("No IOU message to sign");
+      throw new Error('No IOU message to sign');
     }
 
-    const status = document.getElementById("txStatus");
+    const status = document.getElementById('txStatus');
     status.innerHTML = '<div class="status">Signing IOU...</div>';
 
     // Sign EIP-712 message
@@ -4867,7 +5243,7 @@ async function signAndDownloadIOU() {
 
     // Create complete IOU slip
     const iouSlip = {
-      type: "transfer",
+      type: 'transfer',
       from: pendingIouMessage.from,
       to: pendingIouMessage.to,
       value: pendingIouMessage.value,
@@ -4880,34 +5256,40 @@ async function signAndDownloadIOU() {
       amount: pendingIouAmount,
       signature: signature,
       created: new Date().toISOString(),
-      chainId: 1
+      chainId: isBaseMode ? 8453 : 1,
+      network: isBaseMode ? 'Base' : 'Ethereum',
+      verifyingContract: isBaseMode ? USDC_EIP712_DOMAIN_BASE.verifyingContract : USDC_EIP712_DOMAIN_MAINNET.verifyingContract,
+      domainSeparator: isBaseMode ? BASE_USDC_DOMAIN_SEPARATOR : undefined
     };
 
     // Download as JSON file
-    const blob = new Blob([JSON.stringify(iouSlip, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(iouSlip, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
-    a.download = `usdc-iou-${Date.now()}.json`;
+    const networkPrefix = isBaseMode ? 'base' : 'mainnet';
+    a.download = `usdc-iou-${networkPrefix}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
 
     // Update display
-    document.getElementById("iouDataDisplay").value = JSON.stringify(iouSlip, null, 2);
+    document.getElementById('iouDataDisplay').value = JSON.stringify(iouSlip, null, 2);
     
+    const networkName = isBaseMode ? 'Base' : 'Ethereum';
     status.innerHTML = `
       <div class="status success">IOU signed and downloaded!</div>
       <div style="margin-top: 8px; font-size: 12px;">
-        📄 Recipient can redeem this IOU at 
+        📄 ${networkName} USDC IOU created successfully<br>
+        Recipient can redeem this IOU at 
         <a href="https://iousdc.eth.limo/" target="_blank" style="color: var(--accent); text-decoration: underline;">
           IOUSDC.eth
         </a>
       </div>`;
-    showToast("IOU created! Recipient can check on IOUSDC.eth");
+    showToast(`${networkName} USDC IOU created! Recipient can check on IOUSDC.eth`);
 
     // Clear form
-    document.getElementById("toAddress").value = "";
-    document.getElementById("amount").value = "";
+    document.getElementById('toAddress').value = '';
+    document.getElementById('amount').value = '';
 
     // Clean up
     pendingIouMessage = null;
@@ -4915,13 +5297,13 @@ async function signAndDownloadIOU() {
 
   } catch (err) {
     
-    let errorMsg = "Failed to sign IOU";
+    let errorMsg = 'Failed to sign IOU';
     
-    if (err.message.includes("user rejected") || err.message.includes("denied")) {
-      errorMsg = "Signature rejected";
+    if (err.message.includes('user rejected') || err.message.includes('denied')) {
+      errorMsg = 'Signature rejected';
     }
     
-    document.getElementById("txStatus").innerHTML = `<div class="status error">${errorMsg}</div>`;
+    document.getElementById('txStatus').innerHTML = `<div class="status error">${errorMsg}</div>`;
   }
 }
 
@@ -4930,45 +5312,36 @@ function handleTabClick(tab) {
   // Handle tab click
   
   // Remove active from all tabs and contents
-  document.querySelectorAll(".tab").forEach((t) => {
-    t.classList.remove("active");
+  document.querySelectorAll('.tab').forEach((t) => {
+    t.classList.remove('active');
   });
-  document.querySelectorAll(".tab-content").forEach((c) => {
-    c.classList.remove("active");
+  document.querySelectorAll('.tab-content').forEach((c) => {
+    c.classList.remove('active');
   });
 
   // Add active to clicked tab
-  tab.classList.add("active");
+  tab.classList.add('active');
   
   // Find and activate tab content
-  const tabContentId = tab.dataset.tab + "-tab";
+  const tabContentId = tab.dataset.tab + '-tab';
   const tabContent = document.getElementById(tabContentId);
   // Find tab content
   
   if (tabContent) {
-    tabContent.classList.add("active");
+    tabContent.classList.add('active');
     // Activate tab
     
     // Debug: Check what's actually visible in the tab
     const visibleElements = tabContent.querySelectorAll('*:not(.hidden)');
     // Tab activated
     
-    // Check computed styles
-    const computedStyle = window.getComputedStyle(tabContent);
-    // Tab content ready
-    
-    // Check if sections are visible
-    const sections = tabContent.querySelectorAll('.section');
-    sections.forEach((section, i) => {
-      const sectionStyle = window.getComputedStyle(section);
-      // Section visible
-    });
+    // Tab content ready - styles and sections verified
   } else {
     // Tab content missing
   }
   
   // Load transactions when tab is opened
-  if (tab.dataset.tab === "txs" && wallet && txHistory.length === 0) {
+  if (tab.dataset.tab === 'txs' && wallet && txHistory.length === 0) {
     fetchTransactionHistory();
   }
 }
@@ -4977,30 +5350,30 @@ function setupEventListeners() {
   // Setup event listeners
   
   // Theme toggle
-  const themeToggle = document.getElementById("themeToggle");
+  const themeToggle = document.getElementById('themeToggle');
   if (themeToggle) {
-    themeToggle.addEventListener("click", toggleTheme);
+    themeToggle.addEventListener('click', toggleTheme);
   } else {
     // Theme toggle not found
   }
   
   // Base network toggle in header
-  const baseNetworkToggle = document.getElementById("baseNetworkToggle");
+  const baseNetworkToggle = document.getElementById('baseNetworkToggle');
   if (baseNetworkToggle) {
-    baseNetworkToggle.addEventListener("click", async () => {
+    baseNetworkToggle.addEventListener('click', async () => {
       await toggleNetwork();
     });
   }
 
   // Tabs - simplified with just one event listener
-  const allTabs = document.querySelectorAll(".tab");
+  const allTabs = document.querySelectorAll('.tab');
   // Setup tabs
   
-  allTabs.forEach((tab, index) => {
+  allTabs.forEach((tab) => {
     // Configure tab
     
     // Use only addEventListener, not both onclick and addEventListener
-    tab.addEventListener("click", (e) => {
+    tab.addEventListener('click', (e) => {
       // Tab selected
       e.preventDefault();
       e.stopPropagation();
@@ -5009,30 +5382,30 @@ function setupEventListeners() {
   });
 
   // Transaction history button
-  const loadTxBtn = document.getElementById("loadTxBtn");
+  const loadTxBtn = document.getElementById('loadTxBtn');
   if (loadTxBtn) {
-    loadTxBtn.addEventListener("click", () => {
+    loadTxBtn.addEventListener('click', () => {
       fetchTransactionHistory();
     });
   }
 
   // Load more transactions button  
-  const loadMoreBtn = document.getElementById("loadMoreTxBtn");
+  const loadMoreBtn = document.getElementById('loadMoreTxBtn');
   if (loadMoreBtn) {
-    loadMoreBtn.addEventListener("click", async () => {
+    loadMoreBtn.addEventListener('click', async () => {
       try {
         await fetchTransactionHistoryExtended();
-      } catch (err) {
+      } catch (_err) {
         
-        showToast("Failed to load transactions");
+        showToast('Failed to load transactions');
       }
     });
   }
 
   // Wallet management
   document
-    .getElementById("walletSelector")
-    .addEventListener("change", async (e) => {
+    .getElementById('walletSelector')
+    .addEventListener('change', async (e) => {
       const addr = e.target.value;
       if (!addr) return;
       
@@ -5045,12 +5418,12 @@ function setupEventListeners() {
       // Clean up resources from previous wallet before switching
       cleanupForWalletSwitch();
       
-      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+      const list = JSON.parse(localStorage.getItem(LS_WALLETS) || '[]');
       const entry = list.find((w) => w.address.toLowerCase() === addr.toLowerCase());
       
       if (!entry) {
         showError('Wallet not found');
-        e.target.value = "";
+        e.target.value = '';
         return;
       }
       
@@ -5071,52 +5444,57 @@ function setupEventListeners() {
             });
             entry.crypto = newPayload;
             const listNow = JSON.parse(
-              localStorage.getItem(LS_WALLETS) || "[]"
+              localStorage.getItem(LS_WALLETS) || '[]'
             ).map((w) =>
               w.address.toLowerCase() === entry.address.toLowerCase()
                 ? entry
                 : w
             );
             localStorage.setItem(LS_WALLETS, JSON.stringify(listNow));
-          } catch (e) {
+          } catch (_e) {
             // Keystore rewrap failed - will use existing
           }
         }
 
+        // Ensure provider is initialized
+        if (!provider) {
+          await initProvider();
+        }
+        
         wallet = new ethers.Wallet(pk, provider);
         // Clear private key from memory after wallet creation
         pk = null;
         await displayWallet();
 
         localStorage.setItem(LS_LAST, addr);
-        showToast("Switched to " + (entry.label || `${addr.slice(0,6)}...${addr.slice(-4)}`));
-      } catch (err) {
+        showToast('Switched to ' + (entry.label || `${addr.slice(0,6)}...${addr.slice(-4)}`));
+      } catch (_err) {
         showError('Wrong password');
         // Reset selector to previous value if available
         if (wallet) {
           e.target.value = wallet.address;
         } else {
-          e.target.value = "";
+          e.target.value = '';
         }
       }
     });
 
-  const deleteWalletBtn = document.getElementById("deleteWalletBtn");
+  const deleteWalletBtn = document.getElementById('deleteWalletBtn');
   if (deleteWalletBtn) {
-    deleteWalletBtn.addEventListener("click", async () => {
-      const selector = document.getElementById("walletSelector");
+    deleteWalletBtn.addEventListener('click', async () => {
+      const selector = document.getElementById('walletSelector');
       const address = selector.value;
 
       if (address && await securePasswordPrompt('Delete Wallet', 'Confirm wallet deletion:')) {
         deleteWallet(address);
-        showToast("Wallet deleted");
+        showToast('Wallet deleted');
       }
     });
   }
 
-  const generateBtn = document.getElementById("generateBtn");
+  const generateBtn = document.getElementById('generateBtn');
   if (generateBtn) {
-    generateBtn.addEventListener("click", async () => {
+    generateBtn.addEventListener('click', async () => {
       try {
         wallet = ethers.Wallet.createRandom().connect(provider);
         const saved = await saveWallet(wallet.address, wallet.privateKey);
@@ -5124,12 +5502,12 @@ function setupEventListeners() {
         // Check if saveWallet was cancelled
         if (saved === false) {
           wallet = null; // Clear the wallet instance
-          showToast("Generation cancelled - please create a password to secure your wallet", 3000, 'info');
+          showToast('Generation cancelled - please create a password to secure your wallet', 3000, 'info');
           return;
         }
         
         await displayWallet();
-        showToast("Wallet generated!");
+        showToast('Wallet generated!');
       } catch (err) {
         
         showError(err, 'Wallet generation');
@@ -5137,20 +5515,20 @@ function setupEventListeners() {
     });
   }
 
-  const importBtn = document.getElementById("importBtn");
+  const importBtn = document.getElementById('importBtn');
   if (importBtn) {
-    importBtn.addEventListener("click", () => {
-      document.getElementById("importSection").classList.toggle("hidden");
-      document.getElementById("privateKeyInput").focus();
+    importBtn.addEventListener('click', () => {
+      document.getElementById('importSection').classList.toggle('hidden');
+      document.getElementById('privateKeyInput').focus();
     });
   }
 
   document
-    .getElementById("confirmImportBtn")
-    .addEventListener("click", async () => {
-      const keyInput = sanitizeInput(document.getElementById("privateKeyInput").value);
+    .getElementById('confirmImportBtn')
+    .addEventListener('click', async () => {
+      const keyInput = sanitizeInput(document.getElementById('privateKeyInput').value);
       if (!keyInput) {
-        showToast("Please enter a private key", 3000, 'error');
+        showToast('Please enter a private key', 3000, 'error');
         return;
       }
 
@@ -5167,7 +5545,7 @@ function setupEventListeners() {
         
         // Double-check the wallet was created successfully
         if (!wallet.address) {
-          throw new Error("Failed to create wallet");
+          throw new Error('Failed to create wallet');
         }
         
         // Check if this address already exists
@@ -5175,7 +5553,7 @@ function setupEventListeners() {
           w.address.toLowerCase() === wallet.address.toLowerCase()
         );
         if (existing) {
-          showError(new Error("This wallet is already imported"), 'Private key import');
+          showError(new Error('This wallet is already imported'), 'Private key import');
           return;
         }
         
@@ -5185,43 +5563,43 @@ function setupEventListeners() {
         if (saved === false) {
           // User cancelled password creation
           wallet = null; // Clear the wallet instance
-          showToast("Import cancelled - please create a password to secure your wallet", 3000, 'info');
+          showToast('Import cancelled - please create a password to secure your wallet', 3000, 'info');
           return;
         }
         
         await displayWallet();
         
         // Clear sensitive data immediately
-        document.getElementById("privateKeyInput").value = "";
-        document.getElementById("importSection").classList.add("hidden");
+        document.getElementById('privateKeyInput').value = '';
+        document.getElementById('importSection').classList.add('hidden');
         
-        showToast("Wallet imported successfully!");
+        showToast('Wallet imported successfully!');
       } catch (err) {
         // Clear sensitive data on error too
-        document.getElementById("privateKeyInput").value = "";
+        document.getElementById('privateKeyInput').value = '';
         showError(err, 'Private key import');
       }
     });
 
-  const cancelImportBtn = document.getElementById("cancelImportBtn");
+  const cancelImportBtn = document.getElementById('cancelImportBtn');
   if (cancelImportBtn) {
-    cancelImportBtn.addEventListener("click", () => {
-      document.getElementById("importSection").classList.add("hidden");
-      document.getElementById("privateKeyInput").value = "";
+    cancelImportBtn.addEventListener('click', () => {
+      document.getElementById('importSection').classList.add('hidden');
+      document.getElementById('privateKeyInput').value = '';
     });
   }
 
   // Copy buttons
-  document.querySelectorAll(".copy-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
+  document.querySelectorAll('.copy-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
       if (!wallet) return;
       const type = btn.dataset.copy;
-      if (type === "privateKey") {
+      if (type === 'privateKey') {
         const confirmReveal = await securePasswordPrompt('Security Check', 'Enter password to reveal private key:');
         if (!confirmReveal) return;
       }
       await copyToClipboard(
-        type === "address" ? wallet.address : wallet.privateKey,
+        type === 'address' ? wallet.address : wallet.privateKey,
         type
       );
     });
@@ -5229,44 +5607,44 @@ function setupEventListeners() {
 
   // Download key button removed - moved to Settings tab
 
-  const refreshBtn = document.getElementById("refreshBtn");
+  const refreshBtn = document.getElementById('refreshBtn');
   if (refreshBtn) {
-    refreshBtn.addEventListener("click", async () => {
+    refreshBtn.addEventListener('click', async () => {
       try {
         await fetchAllBalances();
-        showToast("Refreshed!");
-      } catch (err) {
+        showToast('Refreshed!');
+      } catch (_err) {
         
-        showToast("Failed to refresh");
+        showToast('Failed to refresh');
       }
     });
   }
 
   // Add token functionality
-  const addTokenBtn = document.getElementById("addTokenBtn");
+  const addTokenBtn = document.getElementById('addTokenBtn');
   if (addTokenBtn) {
-    addTokenBtn.addEventListener("click", () => {
-      document.getElementById("addTokenSection").classList.toggle("hidden");
-      document.getElementById("newTokenAddress").focus();
+    addTokenBtn.addEventListener('click', () => {
+      document.getElementById('addTokenSection').classList.toggle('hidden');
+      document.getElementById('newTokenAddress').focus();
     });
   }
 
   // Live detection of token type
-  document.getElementById("newTokenAddress")?.addEventListener("input", async (e) => {
+  document.getElementById('newTokenAddress')?.addEventListener('input', async (e) => {
     const addressInput = sanitizeInput(e.target.value);
-    const indicator = document.getElementById("tokenTypeIndicator");
+    const indicator = document.getElementById('tokenTypeIndicator');
     
     if (!addressInput) {
-      indicator.classList.add("hidden");
+      indicator.classList.add('hidden');
       return;
     }
     
     // Validate address format
     const addressValidation = InputValidator.validateAddress(addressInput);
     if (!addressValidation.valid) {
-      indicator.textContent = "✗ " + addressValidation.error;
-      indicator.style.color = "var(--error)";
-      indicator.classList.remove("hidden");
+      indicator.textContent = '✗ ' + addressValidation.error;
+      indicator.style.color = 'var(--error)';
+      indicator.classList.remove('hidden');
       return;
     }
     
@@ -5278,40 +5656,40 @@ function setupEventListeners() {
       );
       
       if (!contractValidation.valid) {
-        indicator.textContent = "✗ " + contractValidation.error;
-        indicator.style.color = "var(--error)";
-        indicator.classList.remove("hidden");
+        indicator.textContent = '✗ ' + contractValidation.error;
+        indicator.style.color = 'var(--error)';
+        indicator.classList.remove('hidden');
         return;
       }
       
       // Check token type
       const isERC6909 = await zWalletContract.isERC6909(addressValidation.address);
       if (isERC6909) {
-        indicator.textContent = "✓ ERC6909 detected - Token ID required";
-        indicator.style.color = "var(--success)";
-        document.getElementById("newTokenId").placeholder = "Token ID (required for ERC6909)";
+        indicator.textContent = '✓ ERC6909 detected - Token ID required';
+        indicator.style.color = 'var(--success)';
+        document.getElementById('newTokenId').placeholder = 'Token ID (required for ERC6909)';
       } else {
-        indicator.textContent = "✓ ERC20 token detected";
-        indicator.style.color = "var(--text-secondary)";
-        document.getElementById("newTokenId").placeholder = "Token ID (for ERC6909, optional)";
+        indicator.textContent = '✓ ERC20 token detected';
+        indicator.style.color = 'var(--text-secondary)';
+        document.getElementById('newTokenId').placeholder = 'Token ID (for ERC6909, optional)';
       }
-      indicator.classList.remove("hidden");
-    } catch (err) {
-      indicator.textContent = "✗ Failed to verify token contract";
-      indicator.style.color = "var(--error)";
-      indicator.classList.remove("hidden");
+      indicator.classList.remove('hidden');
+    } catch (_err) {
+      indicator.textContent = '✗ Failed to verify token contract';
+      indicator.style.color = 'var(--error)';
+      indicator.classList.remove('hidden');
     }
   });
 
   document
-    .getElementById("confirmAddToken")
-    .addEventListener("click", async () => {
-      const addressInput = sanitizeInput(document.getElementById("newTokenAddress").value);
-      const tokenId = sanitizeInput(document.getElementById("newTokenId").value);
-      const symbolOverride = sanitizeInput(document.getElementById("newTokenSymbol").value);
+    .getElementById('confirmAddToken')
+    .addEventListener('click', async () => {
+      const addressInput = sanitizeInput(document.getElementById('newTokenAddress').value);
+      const tokenId = sanitizeInput(document.getElementById('newTokenId').value);
+      const symbolOverride = sanitizeInput(document.getElementById('newTokenSymbol').value);
 
       if (!addressInput) {
-        showToast("Please enter a token address", 3000, 'error');
+        showToast('Please enter a token address', 3000, 'error');
         return;
       }
       
@@ -5355,11 +5733,11 @@ function setupEventListeners() {
         saveCustomToken(token);
 
         // Hide the form
-        document.getElementById("addTokenSection").classList.add("hidden");
-        document.getElementById("newTokenAddress").value = "";
-        document.getElementById("newTokenId").value = "";
-        document.getElementById("newTokenSymbol").value = "";
-        document.getElementById("tokenTypeIndicator").classList.add("hidden");
+        document.getElementById('addTokenSection').classList.add('hidden');
+        document.getElementById('newTokenAddress').value = '';
+        document.getElementById('newTokenId').value = '';
+        document.getElementById('newTokenSymbol').value = '';
+        document.getElementById('tokenTypeIndicator').classList.add('hidden');
 
         // Invalidate cache and refresh balances to include new token
         balanceCache.data = null;
@@ -5378,94 +5756,94 @@ function setupEventListeners() {
     });
 
   // Send functionality
-  const maxBtn = document.getElementById("maxBtn");
+  const maxBtn = document.getElementById('maxBtn');
   if (maxBtn) {
-    maxBtn.addEventListener("click", async () => {
+    maxBtn.addEventListener('click', async () => {
       try {
         const max = await calculateMaxAmount();
-        document.getElementById("amount").value = parseFloat(max).toFixed(6);
+        document.getElementById('amount').value = parseFloat(max).toFixed(6);
         await updateEstimatedTotal();
-      } catch (err) {
+      } catch (_err) {
         
-        showToast("Failed to calculate max");
+        showToast('Failed to calculate max');
       }
     });
   }
 
   // Debounced ENS resolution handler
   const handleAddressInput = debounce(async (value) => {
-    const resolved = document.getElementById("resolvedAddress");
+    const resolved = document.getElementById('resolvedAddress');
     if (!resolved) return;
     
-    if (value.endsWith(".eth")) {
-      resolved.textContent = "Resolving...";
+    if (value.endsWith('.eth')) {
+      resolved.textContent = 'Resolving...';
       
       try {
         const address = await resolveENS(value);
         // Check if input hasn't changed
-        if (document.getElementById("toAddress")?.value.trim() === value) {
+        if (document.getElementById('toAddress')?.value.trim() === value) {
           if (address) {
             resolved.textContent = `→ ${formatAddress(address)}`;
-            resolved.style.color = "var(--success)";
+            resolved.style.color = 'var(--success)';
           } else {
-            resolved.textContent = "Not found";
-            resolved.style.color = "var(--error)";
+            resolved.textContent = 'Not found';
+            resolved.style.color = 'var(--error)';
           }
         }
-      } catch (err) {
-        resolved.textContent = "Error resolving";
-        resolved.style.color = "var(--error)";
+      } catch (_err) {
+        resolved.textContent = 'Error resolving';
+        resolved.style.color = 'var(--error)';
       }
     } else {
-      resolved.textContent = "";
+      resolved.textContent = '';
     }
     
     updateEstimatedTotal();
   }, CONSTANTS.ENS_RESOLVE_DELAY);
   
-  const toAddress = document.getElementById("toAddress");
+  const toAddress = document.getElementById('toAddress');
   if (toAddress) {
-    toAddress.addEventListener("input", (e) => {
+    toAddress.addEventListener('input', (e) => {
       handleAddressInput(e.target.value.trim());
     });
   }
 
   // Debounced amount input handler
   const handleAmountInput = debounce(updateEstimatedTotal, 300);
-  const amountInput = document.getElementById("amount");
+  const amountInput = document.getElementById('amount');
   if (amountInput) {
-    amountInput.addEventListener("input", handleAmountInput);
+    amountInput.addEventListener('input', handleAmountInput);
   }
 
   // Gas options
-  document.querySelectorAll(".gas-option").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
+  document.querySelectorAll('.gas-option').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
       e.preventDefault();
       document
-        .querySelectorAll(".gas-option")
-        .forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+        .querySelectorAll('.gas-option')
+        .forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
       selectedGasSpeed = btn.dataset.speed;
 
-      const custom = document.getElementById("customGasSection");
-      custom.classList.toggle("hidden", selectedGasSpeed !== "custom");
+      const custom = document.getElementById('customGasSection');
+      custom.classList.toggle('hidden', selectedGasSpeed !== 'custom');
 
       updateEstimatedTotal();
     });
   });
 
-  const customGasPrice = document.getElementById("customGasPrice");
+  const customGasPrice = document.getElementById('customGasPrice');
   if (customGasPrice) {
-    customGasPrice.addEventListener("input", async () => {
-      if (selectedGasSpeed === "custom") {
-        const max = document.getElementById("customGasPrice").value;
+    customGasPrice.addEventListener('input', async () => {
+      if (selectedGasSpeed === 'custom') {
+        const max = document.getElementById('customGasPrice').value;
         const priority =
-          document.getElementById("customPriorityFee").value || "1";
+          document.getElementById('customPriorityFee').value || '1';
 
         if (max) {
           gasPrices.custom = {
-            maxFeePerGas: ethers.parseUnits(max, "gwei"),
-            maxPriorityFeePerGas: ethers.parseUnits(priority, "gwei"),
+            maxFeePerGas: ethers.parseUnits(max, 'gwei'),
+            maxPriorityFeePerGas: ethers.parseUnits(priority, 'gwei'),
           };
           await updateEstimatedTotal();
         }
@@ -5473,37 +5851,37 @@ function setupEventListeners() {
     });
   }
 
-  const sendBtn = document.getElementById("sendBtn");
-  if (sendBtn) sendBtn.addEventListener("click", sendTransaction);
+  const sendBtn = document.getElementById('sendBtn');
+  if (sendBtn) sendBtn.addEventListener('click', sendTransaction);
   
   // IOU Mode functionality
-  document.getElementById("createIouBtn")?.addEventListener("click", createIOUSlip);
+  document.getElementById('createIouBtn')?.addEventListener('click', createIOUSlip);
   
-  document.getElementById("iouModeToggle")?.addEventListener("change", (e) => {
+  document.getElementById('iouModeToggle')?.addEventListener('change', (e) => {
     const isIouMode = e.target.checked;
-    const gasFeeSection = document.getElementById("gasFeeSection");
-    const sendBtn = document.getElementById("sendBtn");
-    const createIouBtn = document.getElementById("createIouBtn");
-    const iouModeInfo = document.getElementById("iouModeInfo");
+    const gasFeeSection = document.getElementById('gasFeeSection');
+    const sendBtn = document.getElementById('sendBtn');
+    const createIouBtn = document.getElementById('createIouBtn');
+    const iouModeInfo = document.getElementById('iouModeInfo');
     
     if (isIouMode) {
       // Switch to IOU mode
-      gasFeeSection.style.display = "none";
-      sendBtn.classList.add("hidden");
-      createIouBtn.classList.remove("hidden");
-      iouModeInfo.style.display = "block";
+      gasFeeSection.style.display = 'none';
+      sendBtn.classList.add('hidden');
+      createIouBtn.classList.remove('hidden');
+      iouModeInfo.style.display = 'block';
       
       // Update gas display to show "Free!"
-      const estimatedTotalEl = document.getElementById("estimatedTotal");
+      const estimatedTotalEl = document.getElementById('estimatedTotal');
       if (estimatedTotalEl) {
         estimatedTotalEl.innerHTML = '<span style="color: var(--success);">🪽 Free! (Gasless)</span>';
       }
     } else {
       // Switch back to normal mode
-      gasFeeSection.style.display = "block";
-      sendBtn.classList.remove("hidden");
-      createIouBtn.classList.add("hidden");
-      iouModeInfo.style.display = "none";
+      gasFeeSection.style.display = 'block';
+      sendBtn.classList.remove('hidden');
+      createIouBtn.classList.add('hidden');
+      iouModeInfo.style.display = 'none';
       
       // Restore normal gas display
       updateEstimatedTotal();
@@ -5511,56 +5889,56 @@ function setupEventListeners() {
   });
   
   // IOU Modal event listeners
-  document.getElementById("iouModalClose")?.addEventListener("click", () => {
-    document.getElementById("iouPreviewModal").classList.add("hidden");
+  document.getElementById('iouModalClose')?.addEventListener('click', () => {
+    document.getElementById('iouPreviewModal').classList.add('hidden');
     // Clean up pending data
     pendingIouMessage = null;
     pendingIouAmount = null;
   });
   
-  document.getElementById("confirmIouBtn")?.addEventListener("click", async () => {
-    document.getElementById("iouPreviewModal").classList.add("hidden");
+  document.getElementById('confirmIouBtn')?.addEventListener('click', async () => {
+    document.getElementById('iouPreviewModal').classList.add('hidden');
     await signAndDownloadIOU();
   });
   
-  document.getElementById("cancelIouBtn")?.addEventListener("click", () => {
-    document.getElementById("iouPreviewModal").classList.add("hidden");
+  document.getElementById('cancelIouBtn')?.addEventListener('click', () => {
+    document.getElementById('iouPreviewModal').classList.add('hidden');
     // Clean up pending data
     pendingIouMessage = null;
     pendingIouAmount = null;
   });
   
-  document.getElementById("toggleIouData")?.addEventListener("click", (e) => {
-    const section = document.getElementById("iouDataSection");
-    if (section.classList.contains("hidden")) {
-      section.classList.remove("hidden");
-      e.target.textContent = "Hide";
+  document.getElementById('toggleIouData')?.addEventListener('click', (e) => {
+    const section = document.getElementById('iouDataSection');
+    if (section.classList.contains('hidden')) {
+      section.classList.remove('hidden');
+      e.target.textContent = 'Hide';
     } else {
-      section.classList.add("hidden");
-      e.target.textContent = "Show";
+      section.classList.add('hidden');
+      e.target.textContent = 'Show';
     }
   });
   
-  document.getElementById("copyIouData")?.addEventListener("click", async () => {
-    const data = document.getElementById("iouDataDisplay").value;
+  document.getElementById('copyIouData')?.addEventListener('click', async () => {
+    const data = document.getElementById('iouDataDisplay').value;
     
     try {
       // Try modern Clipboard API first
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(data);
-        showToast("IOU data copied! 📋");
+        showToast('IOU data copied! 📋');
       } else {
         // Fallback for non-secure contexts or older browsers
-        const textarea = document.getElementById("iouDataDisplay");
+        const textarea = document.getElementById('iouDataDisplay');
         textarea.focus();
         textarea.select();
         
         // Create a temporary textarea for copying
-        const tempTextarea = document.createElement("textarea");
+        const tempTextarea = document.createElement('textarea');
         tempTextarea.value = data;
-        tempTextarea.style.position = "fixed";
-        tempTextarea.style.left = "-999999px";
-        tempTextarea.style.top = "-999999px";
+        tempTextarea.style.position = 'fixed';
+        tempTextarea.style.left = '-999999px';
+        tempTextarea.style.top = '-999999px';
         document.body.appendChild(tempTextarea);
         tempTextarea.focus();
         tempTextarea.select();
@@ -5577,41 +5955,41 @@ function setupEventListeners() {
           const blob = new Blob([data], { type: 'text/plain' });
           const clipboardItem = new ClipboardItem({ 'text/plain': blob });
           await navigator.clipboard.write([clipboardItem]);
-          showToast("IOU data copied! 📋");
+          showToast('IOU data copied! 📋');
         } catch (copyErr) {
           // If modern methods fail, show manual copy instruction
-          showToast("Please copy manually (Ctrl+C / Cmd+C)", 3000, 'warning');
+          showToast('Please copy manually (Ctrl+C / Cmd+C)', 3000, 'warning');
         } finally {
           document.body.removeChild(tempTextarea);
         }
       }
-    } catch (err) {
-      showToast("Please select and copy the IOU data manually");
+    } catch (_err) {
+      showToast('Please select and copy the IOU data manually');
     }
   });
   
-  document.getElementById("downloadIou")?.addEventListener("click", () => {
-    const data = document.getElementById("iouDataDisplay").value;
-    const blob = new Blob([data], { type: "application/json" });
+  document.getElementById('downloadIou')?.addEventListener('click', () => {
+    const data = document.getElementById('iouDataDisplay').value;
+    const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
     a.download = `usdc-iou-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("IOU downloaded! 💾");
+    showToast('IOU downloaded! 💾');
   });
 
   // Settings - Ethereum RPC
-  document.querySelectorAll(".rpc-item:not(.base-rpc)").forEach((item) => {
-    item.addEventListener("click", async () => {
+  document.querySelectorAll('.rpc-item:not(.base-rpc)').forEach((item) => {
+    item.addEventListener('click', async () => {
       const rpc = item.dataset.rpc;
 
-      if (rpc === "custom") {
-        document.getElementById("customRpcSection").classList.toggle("hidden");
+      if (rpc === 'custom') {
+        document.getElementById('customRpcSection').classList.toggle('hidden');
       } else {
         currentRpc = rpc;
-        localStorage.setItem("rpc_endpoint", rpc);
+        localStorage.setItem('rpc_endpoint', rpc);
         
         // Only reinit if on mainnet
         if (!isBaseMode) {
@@ -5627,12 +6005,12 @@ function setupEventListeners() {
   });
   
   // Settings - Base RPC
-  document.querySelectorAll(".base-rpc").forEach((item) => {
-    item.addEventListener("click", async () => {
+  document.querySelectorAll('.base-rpc').forEach((item) => {
+    item.addEventListener('click', async () => {
       const baseRpc = item.dataset.baseRpc;
       
       if (baseRpc) {
-        localStorage.setItem("base_rpc", baseRpc);
+        localStorage.setItem('base_rpc', baseRpc);
         
         // Only reinit if on Base
         if (isBaseMode) {
@@ -5644,18 +6022,18 @@ function setupEventListeners() {
           }
         }
         
-        showToast("Base RPC updated");
+        showToast('Base RPC updated');
       }
     });
   });
 
   document
-    .getElementById("saveCustomRpc")
-    .addEventListener("click", async () => {
-      const urlInput = sanitizeInput(document.getElementById("customRpcUrl").value);
+    .getElementById('saveCustomRpc')
+    .addEventListener('click', async () => {
+      const urlInput = sanitizeInput(document.getElementById('customRpcUrl').value);
       
       if (!urlInput) {
-        showToast("Please enter an RPC URL", 3000, 'error');
+        showToast('Please enter an RPC URL', 3000, 'error');
         return;
       }
 
@@ -5687,9 +6065,9 @@ function setupEventListeners() {
         }
 
         // Save and switch to the new RPC
-        localStorage.setItem("custom_rpc", urlValidation.url);
+        localStorage.setItem('custom_rpc', urlValidation.url);
         currentRpc = urlValidation.url;
-        localStorage.setItem("rpc_endpoint", urlValidation.url);
+        localStorage.setItem('rpc_endpoint', urlValidation.url);
         provider = testProvider;
         
         // Reinitialize contracts
@@ -5710,7 +6088,7 @@ function setupEventListeners() {
         }
 
         showToast(`Connected to RPC (Block #${blockNumber})`);
-        document.getElementById("customRpcSection").classList.add("hidden");
+        document.getElementById('customRpcSection').classList.add('hidden');
         loadRpcSettings();
       } catch (err) {
         if (err.message.includes('timeout')) {
@@ -5723,9 +6101,9 @@ function setupEventListeners() {
       }
     });
 
-  const autoRefreshToggle = document.getElementById("autoRefresh");
+  const autoRefreshToggle = document.getElementById('autoRefresh');
   if (autoRefreshToggle) {
-    autoRefreshToggle.addEventListener("change", (e) => {
+    autoRefreshToggle.addEventListener('change', (e) => {
       if (e.target.checked) {
         if (wallet) {
           autoRefreshInterval = setManagedInterval(() => {
@@ -5737,13 +6115,13 @@ function setupEventListeners() {
         clearManagedInterval(autoRefreshInterval);
         autoRefreshInterval = null;
       }
-      localStorage.setItem("auto_refresh", e.target.checked);
+      localStorage.setItem('auto_refresh', e.target.checked);
     });
   }
 
   // Default wallet toggle handler
-  const defaultWalletToggle = document.getElementById("defaultWallet");
-  const defaultWalletInfo = document.getElementById("defaultWalletInfo");
+  const defaultWalletToggle = document.getElementById('defaultWallet');
+  const defaultWalletInfo = document.getElementById('defaultWalletInfo');
   
   if (defaultWalletToggle) {
     // Load saved setting from chrome.storage
@@ -5754,7 +6132,7 @@ function setupEventListeners() {
       }
     });
     
-    defaultWalletToggle.addEventListener("change", (e) => {
+    defaultWalletToggle.addEventListener('change', (e) => {
       const isDefault = e.target.checked;
       
       // Save setting to chrome.storage for cross-context access
@@ -5784,7 +6162,7 @@ function setupEventListeners() {
   }
 
   // Private Key Management in Settings
-  document.getElementById("revealKeyBtn")?.addEventListener("click", async () => {
+  document.getElementById('revealKeyBtn')?.addEventListener('click', async () => {
     if (!wallet) {
       showError('Please unlock your wallet first', 'Export');
       return;
@@ -5793,32 +6171,41 @@ function setupEventListeners() {
     const confirmReveal = await securePasswordPrompt('Security Check', 'Enter password to reveal private key:');
     if (!confirmReveal) return;
     
-    const keySection = document.getElementById("privateKeySection");
-    const keyDisplay = document.getElementById("privateKeyDisplay");
+    const keySection = document.getElementById('privateKeySection');
+    const keyDisplay = document.getElementById('privateKeyDisplay');
     
     if (keySection && keyDisplay) {
       keyDisplay.textContent = wallet.privateKey;
-      keySection.classList.remove("hidden");
+      keySection.classList.remove('hidden');
       
-      // Auto-hide after 60 seconds
-      setTimeout(() => {
-        keyDisplay.textContent = "••••••••••••••••••••••••••••••••";
-        keySection.classList.add("hidden");
+      // Auto-hide after 60 seconds (with cleanup)
+      const hideTimer = setTimeout(() => {
+        keyDisplay.textContent = '••••••••••••••••••••••••••••••••';
+        keySection.classList.add('hidden');
       }, 60000);
+      
+      // Store timer for cleanup if needed
+      keySection.dataset.hideTimer = hideTimer;
     }
   });
   
-  document.getElementById("hideKeyBtn")?.addEventListener("click", () => {
-    const keySection = document.getElementById("privateKeySection");
-    const keyDisplay = document.getElementById("privateKeyDisplay");
+  document.getElementById('hideKeyBtn')?.addEventListener('click', () => {
+    const keySection = document.getElementById('privateKeySection');
+    const keyDisplay = document.getElementById('privateKeyDisplay');
     
     if (keySection && keyDisplay) {
-      keyDisplay.textContent = "••••••••••••••••••••••••••••••••";
-      keySection.classList.add("hidden");
+      // Clear any pending auto-hide timer
+      if (keySection.dataset.hideTimer) {
+        clearTimeout(parseInt(keySection.dataset.hideTimer));
+        delete keySection.dataset.hideTimer;
+      }
+      
+      keyDisplay.textContent = '••••••••••••••••••••••••••••••••';
+      keySection.classList.add('hidden');
     }
   });
   
-  document.getElementById("exportKeyBtn")?.addEventListener("click", async () => {
+  document.getElementById('exportKeyBtn')?.addEventListener('click', async () => {
     if (!wallet) {
       showError('Please unlock your wallet first', 'Export');
       return;
@@ -5832,34 +6219,34 @@ function setupEventListeners() {
     }
   });
 
-  const exportWalletsBtn = document.getElementById("exportWallets");
+  const exportWalletsBtn = document.getElementById('exportWallets');
   if (exportWalletsBtn) {
-    exportWalletsBtn.addEventListener("click", () => {
+    exportWalletsBtn.addEventListener('click', () => {
       try {
-      const data = localStorage.getItem(LS_WALLETS) || "[]";
-      const blob = new Blob([data], { type: "application/json" });
+      const data = localStorage.getItem(LS_WALLETS) || '[]';
+      const blob = new Blob([data], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
+      const a = document.createElement('a');
       a.href = url;
       a.download = `zWallet-backup-${new Date().toISOString().split('T')[0]}.encrypted.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast("Encrypted wallets exported!");
-    } catch (err) {
+      showToast('Encrypted wallets exported!');
+    } catch (_err) {
       
-      showToast("Export failed");
+      showToast('Export failed');
       }
     });
   }
 
-  const clearDataBtn = document.getElementById("clearData");
+  const clearDataBtn = document.getElementById('clearData');
   if (clearDataBtn) {
-    clearDataBtn.addEventListener("click", () => {
+    clearDataBtn.addEventListener('click', () => {
     if (
       confirm(
-        "Delete all data, wallets, and custom tokens? This cannot be undone!"
+        'Delete all data, wallets, and custom tokens? This cannot be undone!'
       )
     ) {
       localStorage.clear();
@@ -5869,8 +6256,8 @@ function setupEventListeners() {
   }
 
   // Load auto-refresh setting
-  const autoRefresh = localStorage.getItem("auto_refresh") === "true";
-  const autoRefreshCheckbox = document.getElementById("autoRefresh");
+  const autoRefresh = localStorage.getItem('auto_refresh') === 'true';
+  const autoRefreshCheckbox = document.getElementById('autoRefresh');
   if (autoRefreshCheckbox) autoRefreshCheckbox.checked = autoRefresh;
   
   // Setup swap event listeners
@@ -5878,11 +6265,11 @@ function setupEventListeners() {
 }
 
 // ============= SWAP FUNCTIONALITY =============
-const ZROUTER_ADDRESS = "0x0000000000404FECAf36E6184245475eE1254835";
+const ZROUTER_ADDRESS = '0x0000000000404FECAf36E6184245475eE1254835';
 const ZROUTER_ABI = [
   // swapVZ for ERC6909 tokens (ZAMM and others)
-  "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)",
-  "function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
+  'function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)',
+  'function swapV2(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)'
 ];
 
 // ZQUOTER_ABI already moved to top of file
@@ -5895,7 +6282,7 @@ function calculatePoolId(id0, id1, token0, token1, swapFee) {
   // Pool key is keccak256(id0, id1, token0, token1, swapFee)
   const abiCoder = new ethers.AbiCoder();
   const encoded = abiCoder.encode(
-    ["uint256", "uint256", "address", "address", "uint256"],
+    ['uint256', 'uint256', 'address', 'address', 'uint256'],
     [id0, id1, token0, token1, swapFee]
   );
   return ethers.keccak256(encoded);
@@ -5914,8 +6301,8 @@ async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
     
     // ERC6909 tokens can only swap with ETH (ETH is always token0 with id0)
     // This includes custom ERC6909 tokens added by users
-    const isETHIn = tokenIn === "ETH";
-    const isETHOut = tokenOut === "ETH";
+    const isETHIn = tokenIn === 'ETH';
+    const isETHOut = tokenOut === 'ETH';
     
     if (!isETHIn && !isETHOut) {
       return null; // Not an ETH pair - ERC6909 requires ETH on one side
@@ -5998,28 +6385,28 @@ async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
       reserve1,
       zeroForOne
     };
-  } catch (err) {
+  } catch (_err) {
     
     return null;
   }
 }
 
 // Swap state
-let swapFromToken = "ETH";
-let swapToToken = "USDC";
+let swapFromToken = 'ETH';
+let swapToToken = 'USDC';
 let swapSlippage = 0.5; // 0.5% default
-let swapMode = "exactIn"; // exactIn or exactOut
+let swapMode = 'exactIn'; // exactIn or exactOut
 let bestSwapRoute = null;
-let tokenSelectorTarget = null; // 'from' or 'to'
+const tokenSelectorTarget = null; // 'from' or 'to'
 let swapSimulationTimeout = null; // Debounce timer
 let isSimulating = false; // Prevent concurrent simulations
 let simulationLock = Promise.resolve(); // Atomic lock for race condition prevention
 
 // AMM sources enum from zQuoter contract
 const AMM_SOURCES = {
-  0: "UNI_V2",
-  1: "SUSHI",
-  2: "ZAMM"
+  0: 'UNI_V2',
+  1: 'SUSHI',
+  2: 'ZAMM'
 };
 
 // Standard Uniswap V3 fee tiers
@@ -6088,7 +6475,7 @@ async function setupSwapEventListeners() {
             updateSwapTokenDisplay('to');
           }
           
-          if (document.getElementById("swapFromAmount").value) {
+          if (document.getElementById('swapFromAmount').value) {
             simulateSwap();
           }
         });
@@ -6140,7 +6527,7 @@ async function setupSwapEventListeners() {
           updateSwapTokenDisplay('to');
           updateSwapBalances();
           toDropdown.classList.add('hidden');
-          if (document.getElementById("swapFromAmount").value) {
+          if (document.getElementById('swapFromAmount').value) {
             simulateSwap();
           }
         });
@@ -6185,14 +6572,14 @@ async function setupSwapEventListeners() {
   });
   
   // Swap direction button
-  document.getElementById("swapDirectionBtn")?.addEventListener("click", () => {
+  document.getElementById('swapDirectionBtn')?.addEventListener('click', () => {
     // Check if swap is valid before allowing
     const fromToken = TOKENS[swapFromToken];
     const toToken = TOKENS[swapToToken];
     
     // Don't allow swapping if it would create an invalid pair
     if (fromToken?.isERC6909 && toToken?.isERC6909) {
-      showToast("Cannot swap between two ERC6909 tokens");
+      showToast('Cannot swap between two ERC6909 tokens');
       return;
     }
     
@@ -6202,10 +6589,10 @@ async function setupSwapEventListeners() {
     swapToToken = temp;
     
     // Swap amounts
-    const fromAmount = document.getElementById("swapFromAmount").value;
-    const toAmount = document.getElementById("swapToAmount").value;
-    document.getElementById("swapFromAmount").value = toAmount;
-    document.getElementById("swapToAmount").value = fromAmount;
+    const fromAmount = document.getElementById('swapFromAmount').value;
+    const toAmount = document.getElementById('swapToAmount').value;
+    document.getElementById('swapFromAmount').value = toAmount;
+    document.getElementById('swapToAmount').value = fromAmount;
     
     // Update displays
     updateSwapTokenDisplay('from');
@@ -6228,7 +6615,7 @@ async function setupSwapEventListeners() {
   
   // Optimized swap from amount handler
   const handleSwapFromInput = (e) => {
-    swapMode = "exactIn";
+    swapMode = 'exactIn';
     
     // Sanitize input - only allow numbers and decimal point
     let value = e.target.value.replace(/[^0-9.]/g, '');
@@ -6245,10 +6632,10 @@ async function setupSwapEventListeners() {
     const inputAmount = parseFloat(e.target.value);
     if (inputAmount && inputAmount > 0) {
       const token = TOKENS[swapFromToken];
-      const balanceObj = currentBalances[swapFromToken === "ETH" ? "ETH" : swapFromToken];
-      const maxBalance = parseFloat(balanceObj?.formatted || "0");
+      const balanceObj = currentBalances[swapFromToken === 'ETH' ? 'ETH' : swapFromToken];
+      const maxBalance = parseFloat(balanceObj?.formatted || '0');
       
-      if (swapFromToken === "ETH") {
+      if (swapFromToken === 'ETH') {
         // For ETH, check against actual balance minus gas buffer
         const balanceETH = maxBalance;
         let gasBuffer;
@@ -6262,7 +6649,7 @@ async function setupSwapEventListeners() {
         const effectiveBalance = Math.max(0, maxBalance - gasBuffer);
         
         if (inputAmount > effectiveBalance) {
-          e.target.value = effectiveBalance > 0 ? effectiveBalance.toFixed(6) : "0";
+          e.target.value = effectiveBalance > 0 ? effectiveBalance.toFixed(6) : '0';
           showToast(`Max available: ${effectiveBalance.toFixed(6)} ETH (${gasBuffer} ETH gas reserved)`);
         }
       } else {
@@ -6270,7 +6657,7 @@ async function setupSwapEventListeners() {
         if (inputAmount > maxBalance) {
           const decimals = token?.decimals || 18;
           const precision = decimals <= 6 ? 6 : (decimals <= 8 ? 8 : 6);
-          e.target.value = maxBalance > 0 ? maxBalance.toFixed(precision) : "0";
+          e.target.value = maxBalance > 0 ? maxBalance.toFixed(precision) : '0';
           showToast(`Max available: ${maxBalance.toFixed(precision)} ${swapFromToken}`);
         }
       }
@@ -6286,11 +6673,11 @@ async function setupSwapEventListeners() {
     }
   };
   
-  document.getElementById("swapFromAmount")?.addEventListener("input", handleSwapFromInput);
+  document.getElementById('swapFromAmount')?.addEventListener('input', handleSwapFromInput);
   
   // Optimized swap to amount handler
   const handleSwapToInput = (e) => {
-    swapMode = "exactOut";
+    swapMode = 'exactOut';
     
     // Sanitize input - only allow numbers and decimal point
     let value = e.target.value.replace(/[^0-9.]/g, '');
@@ -6313,12 +6700,12 @@ async function setupSwapEventListeners() {
     }
   };
   
-  document.getElementById("swapToAmount")?.addEventListener("input", handleSwapToInput);
+  document.getElementById('swapToAmount')?.addEventListener('input', handleSwapToInput);
   
   // Max button
-  document.getElementById("swapMaxBtn")?.addEventListener("click", async () => {
+  document.getElementById('swapMaxBtn')?.addEventListener('click', async () => {
     if (!wallet || !provider) {
-      showToast("Connect wallet first");
+      showToast('Connect wallet first');
       return;
     }
     
@@ -6326,12 +6713,12 @@ async function setupSwapEventListeners() {
       let maxAmount;
       const token = TOKENS[swapFromToken];
       
-      if (!token || swapFromToken === "ETH") {
+      if (!token || swapFromToken === 'ETH') {
         // For ETH, we need to account for gas fees more accurately
-        const balanceObj = currentBalances["ETH"];
+        const balanceObj = currentBalances['ETH'];
         if (!balanceObj || !balanceObj.formatted) {
           
-          showToast("No ETH balance");
+          showToast('No ETH balance');
           return;
         }
         
@@ -6341,7 +6728,7 @@ async function setupSwapEventListeners() {
         let gasBuffer;
         try {
           const feeData = await provider.getFeeData();
-          const gasPrice = feeData.maxFeePerGas || feeData.gasPrice || ethers.parseUnits("30", "gwei");
+          const gasPrice = feeData.maxFeePerGas || feeData.gasPrice || ethers.parseUnits('30', 'gwei');
           
           // Estimate gas for a swap transaction (typically 150k-250k gas)
           const estimatedGasLimit = 250000n; // Conservative estimate
@@ -6367,7 +6754,7 @@ async function setupSwapEventListeners() {
           }
           
           
-        } catch (err) {
+        } catch (_err) {
           
           // Fallback to conservative buffer if gas estimation fails
           if (balanceETH < 0.01) {
@@ -6415,57 +6802,57 @@ async function setupSwapEventListeners() {
         }
         
         // Also check if user has ETH for gas
-        const ethBalance = currentBalances["ETH"];
+        const ethBalance = currentBalances['ETH'];
         if (!ethBalance || parseFloat(ethBalance.formatted) < 0.001) {
-          showToast("Warning: Low ETH for gas");
+          showToast('Warning: Low ETH for gas');
         }
       }
       
       // Set the value in the input field
       if (maxAmount > 0) {
-        const displayDecimals = swapFromToken === "ETH" ? 6 : 
+        const displayDecimals = swapFromToken === 'ETH' ? 6 : 
                                (token?.decimals === 6 ? 6 : 
                                 token?.decimals === 8 ? 8 : 6);
-        document.getElementById("swapFromAmount").value = maxAmount.toFixed(displayDecimals);
+        document.getElementById('swapFromAmount').value = maxAmount.toFixed(displayDecimals);
         
         // Update USD display
         updateSwapUSDValues();
         
         // Trigger simulation
-        swapMode = "exactIn";
+        swapMode = 'exactIn';
         
         // Small delay to ensure UI updates
         setTimeout(() => {
           simulateSwap();
         }, 100);
       } else {
-        document.getElementById("swapFromAmount").value = "0";
+        document.getElementById('swapFromAmount').value = '0';
         updateSwapUSDValues();
       }
-    } catch (err) {
+    } catch (_err) {
       
-      showToast("Failed to calculate max");
+      showToast('Failed to calculate max');
     }
   });
   
   // Slippage options
-  document.querySelectorAll(".slippage-option").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
+  document.querySelectorAll('.slippage-option').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
       e.preventDefault();
-      document.querySelectorAll(".slippage-option").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+      document.querySelectorAll('.slippage-option').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
       
       const slippage = btn.dataset.slippage;
-      if (slippage === "custom") {
-        document.getElementById("customSlippageSection")?.classList.remove("hidden");
+      if (slippage === 'custom') {
+        document.getElementById('customSlippageSection')?.classList.remove('hidden');
         // Focus on custom input
-        document.getElementById("customSlippage")?.focus();
+        document.getElementById('customSlippage')?.focus();
       } else {
-        document.getElementById("customSlippageSection")?.classList.add("hidden");
+        document.getElementById('customSlippageSection')?.classList.add('hidden');
         swapSlippage = parseFloat(slippage);
         
         // Re-simulate if amounts are present
-        if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
+        if (document.getElementById('swapFromAmount').value || document.getElementById('swapToAmount').value) {
           simulateSwap();
         }
       }
@@ -6473,26 +6860,26 @@ async function setupSwapEventListeners() {
   });
   
   // Custom slippage input
-  document.getElementById("customSlippage")?.addEventListener("input", (e) => {
+  document.getElementById('customSlippage')?.addEventListener('input', (e) => {
     const value = parseFloat(e.target.value);
     if (!isNaN(value) && value >= 0 && value <= 50) {
       swapSlippage = value;
-      if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
+      if (document.getElementById('swapFromAmount').value || document.getElementById('swapToAmount').value) {
         simulateSwap();
       }
     }
   });
   
   // Swap button
-  document.getElementById("swapBtn")?.addEventListener("click", executeSwap);
+  document.getElementById('swapBtn')?.addEventListener('click', executeSwap);
   
   // Swap confirmation modal
-  document.getElementById("swapModalClose")?.addEventListener("click", () => {
-    document.getElementById("swapConfirmModal")?.classList.add("hidden");
+  document.getElementById('swapModalClose')?.addEventListener('click', () => {
+    document.getElementById('swapConfirmModal')?.classList.add('hidden');
   });
   
-  document.getElementById("cancelSwapBtn")?.addEventListener("click", () => {
-    document.getElementById("swapConfirmModal")?.classList.add("hidden");
+  document.getElementById('cancelSwapBtn')?.addEventListener('click', () => {
+    document.getElementById('swapConfirmModal')?.classList.add('hidden');
   });
   
   // Initialize token dropdowns and display
@@ -6507,40 +6894,40 @@ async function setupSwapEventListeners() {
 // Update swap token display
 function updateSwapTokenDisplay(which = 'both') {
   if (which === 'from' || which === 'both') {
-    const fromIcon = document.getElementById("swapFromTokenIcon");
-    const fromDisplay = document.getElementById("swapFromTokenDisplay");
+    const fromIcon = document.getElementById('swapFromTokenIcon');
+    const fromDisplay = document.getElementById('swapFromTokenDisplay');
     if (fromIcon) fromIcon.innerHTML = TOKEN_LOGOS[swapFromToken] || generateCoinSVG(swapFromToken);
     if (fromDisplay) fromDisplay.textContent = swapFromToken;
   }
   
   if (which === 'to' || which === 'both') {
-    const toIcon = document.getElementById("swapToTokenIcon");
-    const toDisplay = document.getElementById("swapToTokenDisplay");
+    const toIcon = document.getElementById('swapToTokenIcon');
+    const toDisplay = document.getElementById('swapToTokenDisplay');
     if (toIcon) toIcon.innerHTML = TOKEN_LOGOS[swapToToken] || generateCoinSVG(swapToToken);
     if (toDisplay) toDisplay.textContent = swapToToken;
   }
 }
 
 async function updateSwapBalances() {
-  const fromBalance = document.getElementById("swapFromBalance");
-  const toBalance = document.getElementById("swapToBalance");
+  const fromBalance = document.getElementById('swapFromBalance');
+  const toBalance = document.getElementById('swapToBalance');
   
   if (fromBalance) {
     const balanceObj = currentBalances[swapFromToken];
-    const balance = balanceObj ? balanceObj.formatted : "0";
+    const balance = balanceObj ? balanceObj.formatted : '0';
     const numBalance = parseFloat(balance) || 0;
-    fromBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    fromBalance.textContent = numBalance === 0 ? '0.000000' : Math.min(numBalance, 1e10).toFixed(6);
   }
   
   if (toBalance) {
     const balanceObj = currentBalances[swapToToken];
-    const balance = balanceObj ? balanceObj.formatted : "0";
+    const balance = balanceObj ? balanceObj.formatted : '0';
     const numBalance = parseFloat(balance) || 0;
-    toBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    toBalance.textContent = numBalance === 0 ? '0.000000' : Math.min(numBalance, 1e10).toFixed(6);
   }
   
   // Check approval status for non-ETH tokens
-  if (swapFromToken !== "ETH" && zWalletContract && wallet) {
+  if (swapFromToken !== 'ETH' && zWalletContract && wallet) {
     const token = TOKENS[swapFromToken];
     if (token && token.address) {
       try {
@@ -6549,12 +6936,12 @@ async function updateSwapBalances() {
           : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, ethers.MaxUint256, true);
         
         // Add visual indicator if approval is needed
-        const indicator = document.getElementById("swapFromApprovalIndicator");
+        const indicator = document.getElementById('swapFromApprovalIndicator');
         if (indicator) {
-          indicator.style.display = (approvalNeeded && approvalNeeded !== "0x") ? "inline" : "none";
-          indicator.title = "Approval required for first swap";
+          indicator.style.display = (approvalNeeded && approvalNeeded !== '0x') ? 'inline' : 'none';
+          indicator.title = 'Approval required for first swap';
         }
-      } catch (err) {
+      } catch (_err) {
         
       }
     }
@@ -6562,42 +6949,42 @@ async function updateSwapBalances() {
 }
 
 function clearSwapQuote() {
-  document.getElementById("swapRoute").textContent = "--";
-  document.getElementById("swapMinimum").textContent = "--";
-  document.getElementById("swapGasFee").textContent = "--";
-  document.getElementById("swapBtn").textContent = "Enter Amount to Swap";
-  document.getElementById("swapBtn").disabled = true;
+  document.getElementById('swapRoute').textContent = '--';
+  document.getElementById('swapMinimum').textContent = '--';
+  document.getElementById('swapGasFee').textContent = '--';
+  document.getElementById('swapBtn').textContent = 'Enter Amount to Swap';
+  document.getElementById('swapBtn').disabled = true;
   bestSwapRoute = null;
 }
 
 // Helper to update USD values
 function updateSwapUSDValues() {
-  const fromAmount = document.getElementById("swapFromAmount").value;
-  const toAmount = document.getElementById("swapToAmount").value;
+  const fromAmount = document.getElementById('swapFromAmount').value;
+  const toAmount = document.getElementById('swapToAmount').value;
   
-  const fromUSD = document.getElementById("swapFromUSD");
-  const toUSD = document.getElementById("swapToUSD");
+  const fromUSD = document.getElementById('swapFromUSD');
+  const toUSD = document.getElementById('swapToUSD');
   
   if (fromUSD && fromAmount) {
     const price = tokenPrices[swapFromToken]?.usd || 0;
     const usdValue = parseFloat(fromAmount) * price;
-    fromUSD.textContent = `$${usdValue.toFixed(2)}`;
+    fromUSD.textContent = `${usdValue.toFixed(2)}`;
   } else if (fromUSD) {
-    fromUSD.textContent = "$0.00";
+    fromUSD.textContent = '$0.00';
   }
   
   if (toUSD && toAmount) {
     const price = tokenPrices[swapToToken]?.usd || 0;
     const usdValue = parseFloat(toAmount) * price;
-    toUSD.textContent = `$${usdValue.toFixed(2)}`;
+    toUSD.textContent = `${usdValue.toFixed(2)}`;
   } else if (toUSD) {
-    toUSD.textContent = "$0.00";
+    toUSD.textContent = '$0.00';
   }
 }
 
 async function simulateSwap() {
   if (!wallet || !provider) {
-    showToast("Please connect wallet first");
+    showToast('Please connect wallet first');
     return;
   }
   
@@ -6618,20 +7005,20 @@ async function simulateSwap() {
     const toToken = TOKENS[swapToToken];
     
     // Get amount  
-    const amountIn = document.getElementById("swapFromAmount").value;
+    const amountIn = document.getElementById('swapFromAmount').value;
     if (!amountIn || parseFloat(amountIn) <= 0) {
       clearSwapQuote();
       return;
     }
     
     // Update UI to show loading
-    document.getElementById("swapRoute").textContent = "Finding best route...";
-    document.getElementById("swapBtn").textContent = "Getting quote...";
-    document.getElementById("swapBtn").disabled = true;
+    document.getElementById('swapRoute').textContent = 'Finding best route...';
+    document.getElementById('swapBtn').textContent = 'Getting quote...';
+    document.getElementById('swapBtn').disabled = true;
     
     // Prepare token addresses (use 0x0 for ETH)
-    const tokenInAddress = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
-    const tokenOutAddress = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+    const tokenInAddress = swapFromToken === 'ETH' ? ethers.ZeroAddress : fromToken.address;
+    const tokenOutAddress = swapToToken === 'ETH' ? ethers.ZeroAddress : toToken.address;
     
     // Convert amount to wei with validation
     const maxDecimals = fromToken?.decimals || 18;
@@ -6644,20 +7031,19 @@ async function simulateSwap() {
     const swapAmount = ethers.parseUnits(truncated, maxDecimals);
     
     // Check if this is a CULT swap (only ETH pairs allowed)
-    const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
+    const isCultSwap = swapFromToken === 'CULT' || swapToToken === 'CULT';
     if (isCultSwap) {
       // CULT only trades with ETH
-      if (swapFromToken !== "ETH" && swapToToken !== "ETH") {
-        document.getElementById("swapRoute").textContent = "CULT only trades with ETH";
-        document.getElementById("swapBtn").textContent = "Invalid pair";
-        document.getElementById("swapBtn").disabled = true;
+      if (swapFromToken !== 'ETH' && swapToToken !== 'ETH') {
+        document.getElementById('swapRoute').textContent = 'CULT only trades with ETH';
+        document.getElementById('swapBtn').textContent = 'Invalid pair';
+        document.getElementById('swapBtn').disabled = true;
         clearSwapQuote();
         return;
       }
       
       // Calculate CULT swap output using actual pool reserves from ZAMM_1
       // CULT uses the special feeOrHook value to identify its pool
-      const cultFeeOrHook = BigInt("57896044618658097711785492504343953926636021160616296542400437774503196477768");
       const cultFee = 40; // 0.4% in basis points
       
       // Use ZAMM_1 contract for CULT pools
@@ -6669,7 +7055,7 @@ async function simulateSwap() {
       
       // Build pool key for CULT - ETH is always token0 (sorts first)
       // CULT trades against ETH, so we need to determine which is which
-      const isETHIn = swapFromToken === "ETH";
+      const isETHIn = swapFromToken === 'ETH';
       // Pool key components not needed with hardcoded pool ID
       // const token0 = ethers.ZeroAddress; // ETH is always token0
       // const token1 = TOKENS["CULT"].address; // CULT address is fixed
@@ -6677,7 +7063,7 @@ async function simulateSwap() {
       // const id1 = 0n; // CULT has id 0 (not ERC6909)
       
       // Hardcoded CULT pool ID for now
-      const poolId = BigInt("96057217671165627097175198549959274650003499289597433381056646234071826883364");
+      const poolId = BigInt('96057217671165627097175198549959274650003499289597433381056646234071826883364');
       
       // Get the actual pool reserves
       let reserve0, reserve1;
@@ -6688,33 +7074,33 @@ async function simulateSwap() {
         
         if (!reserve0 || !reserve1 || reserve0 === 0n || reserve1 === 0n) {
           // Pool doesn't exist or has no liquidity
-          document.getElementById("swapRoute").textContent = "CULT Pool (No liquidity)";
-          document.getElementById("swapBtn").textContent = "No liquidity";
-          document.getElementById("swapBtn").disabled = true;
+          document.getElementById('swapRoute').textContent = 'CULT Pool (No liquidity)';
+          document.getElementById('swapBtn').textContent = 'No liquidity';
+          document.getElementById('swapBtn').disabled = true;
           clearSwapQuote();
           return;
         }
-      } catch (err) {
+      } catch (_err) {
         // Error fetching pool, fallback to simple calculation
         const feeAmount = swapAmount * BigInt(cultFee) / 10000n;
         const outputAmount = swapAmount - feeAmount;
         const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
         
-        document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
-        document.getElementById("swapRoute").textContent = "CULT Pool (0.4% fee)";
-        document.getElementById("swapBtn").textContent = "Swap";
-        document.getElementById("swapBtn").disabled = false;
+        document.getElementById('swapToAmount').value = parseFloat(outputFormatted).toFixed(6);
+        document.getElementById('swapRoute').textContent = 'CULT Pool (0.4% fee)';
+        document.getElementById('swapBtn').textContent = 'Swap';
+        document.getElementById('swapBtn').disabled = false;
         
         bestSwapRoute = {
           isERC6909: true,
-          tokenIn: swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address,
-          tokenOut: swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address,
+          tokenIn: swapFromToken === 'ETH' ? ethers.ZeroAddress : fromToken.address,
+          tokenOut: swapToToken === 'ETH' ? ethers.ZeroAddress : toToken.address,
           idIn: 0,
           idOut: 0,
           amountIn: swapAmount,
           amountOut: outputAmount,
           slippage: swapSlippage,
-          sourceName: "CULT Pool",
+          sourceName: 'CULT Pool',
           swapFee: cultFee,
           isCult: true,
           poolId: poolId
@@ -6744,10 +7130,10 @@ async function simulateSwap() {
       const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
       
       // Update UI with CULT quote
-      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
-      document.getElementById("swapRoute").textContent = `CULT Pool (0.4% fee)`;
-      document.getElementById("swapBtn").textContent = "Swap";
-      document.getElementById("swapBtn").disabled = false;
+      document.getElementById('swapToAmount').value = parseFloat(outputFormatted).toFixed(6);
+      document.getElementById('swapRoute').textContent = 'CULT Pool (0.4% fee)';
+      document.getElementById('swapBtn').textContent = 'Swap';
+      document.getElementById('swapBtn').disabled = false;
       
       // Display pool reserves for transparency
       const ethReserve = zeroForOne ? reserve0 : reserve1;
@@ -6759,20 +7145,20 @@ async function simulateSwap() {
       
       // Update route text with more info if significant price impact
       if (priceImpactPercent > 1) {
-        document.getElementById("swapRoute").textContent = `CULT Pool (0.4% fee, ${priceImpactPercent.toFixed(2)}% impact)`;
+        document.getElementById('swapRoute').textContent = `CULT Pool (0.4% fee, ${priceImpactPercent.toFixed(2)}% impact)`;
       }
       
       // Store the route for execution - mark as ERC6909 to use swapVZ
       bestSwapRoute = {
         isERC6909: true, // Use swapVZ path
-        tokenIn: swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address,
-        tokenOut: swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address,
+        tokenIn: swapFromToken === 'ETH' ? ethers.ZeroAddress : fromToken.address,
+        tokenOut: swapToToken === 'ETH' ? ethers.ZeroAddress : toToken.address,
         idIn: 0,
         idOut: 0,
         amountIn: swapAmount,
         amountOut: outputAmount,
         slippage: swapSlippage,
-        sourceName: "CULT Pool",
+        sourceName: 'CULT Pool',
         swapFee: cultFee,
         isCult: true, // Special flag for CULT
         poolId: poolId,
@@ -6796,10 +7182,10 @@ async function simulateSwap() {
       const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
       
       // Update UI with ERC6909 quote
-      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
-      document.getElementById("swapRoute").textContent = `ZAMM AMM (${erc6909Result.swapFee / 100}% fee)`;
-      document.getElementById("swapBtn").textContent = "Swap";
-      document.getElementById("swapBtn").disabled = false;
+      document.getElementById('swapToAmount').value = parseFloat(outputFormatted).toFixed(6);
+      document.getElementById('swapRoute').textContent = `ZAMM AMM (${erc6909Result.swapFee / 100}% fee)`;
+      document.getElementById('swapBtn').textContent = 'Swap';
+      document.getElementById('swapBtn').disabled = false;
       
       // Store the route for execution
       bestSwapRoute = {
@@ -6811,7 +7197,7 @@ async function simulateSwap() {
         amountIn: swapAmount,
         amountOut: outputAmount,
         slippage: swapSlippage,
-        sourceName: "ZAMM AMM",
+        sourceName: 'ZAMM AMM',
         poolId: erc6909Result.poolId,
         zammAddress: erc6909Result.zammAddress,
         swapFee: erc6909Result.swapFee,
@@ -6842,18 +7228,18 @@ async function simulateSwap() {
     } catch (quoterError) {
       
       // If quoter fails, show a more specific error
-      document.getElementById("swapRoute").textContent = "Quoter unavailable";
-      document.getElementById("swapBtn").textContent = "Network error";
-      document.getElementById("swapBtn").disabled = true;
+      document.getElementById('swapRoute').textContent = 'Quoter unavailable';
+      document.getElementById('swapBtn').textContent = 'Network error';
+      document.getElementById('swapBtn').disabled = true;
       return;
     }
     
     // Check if we got a valid quote
     if (!bestQuote || bestQuote.amountOut === 0n) {
-      document.getElementById("swapRoute").textContent = "No route found";
-      document.getElementById("swapBtn").textContent = "No liquidity";
-      document.getElementById("swapBtn").disabled = true;
-      document.getElementById("swapToAmount").value = "";
+      document.getElementById('swapRoute').textContent = 'No route found';
+      document.getElementById('swapBtn').textContent = 'No liquidity';
+      document.getElementById('swapBtn').disabled = true;
+      document.getElementById('swapToAmount').value = '';
       updateSwapUSDValues();
       return;
     }
@@ -6861,13 +7247,13 @@ async function simulateSwap() {
     // Format the output amount
     const outputAmount = ethers.formatUnits(bestQuote.amountOut, toToken?.decimals || 18);
     
-    document.getElementById("swapToAmount").value = parseFloat(outputAmount).toFixed(6);
+    document.getElementById('swapToAmount').value = parseFloat(outputAmount).toFixed(6);
     
     // Update USD values
     updateSwapUSDValues();
     
     // Determine the source name
-    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM"];
+    const sourceNames = ['Uniswap V2', 'Sushiswap', 'zAMM'];
     const sourceName = sourceNames[bestQuote.source] || `AMM ${bestQuote.source}`;
     
     
@@ -6880,12 +7266,12 @@ async function simulateSwap() {
     const gasLimit = 150000n; // Realistic gas for swap
     const gasFee = gasPrice.gasPrice * gasLimit;
     const gasFeeETH = ethers.formatEther(gasFee);
-    const gasFeeUSD = parseFloat(gasFeeETH) * (tokenPrices["ETH"]?.usd || 0);
+    const gasFeeUSD = parseFloat(gasFeeETH) * (tokenPrices['ETH']?.usd || 0);
     
     // Update UI with quote details
-    document.getElementById("swapRoute").textContent = sourceName;
-    document.getElementById("swapMinimum").textContent = `${minOutput.toFixed(6)} ${swapToToken}`;
-    document.getElementById("swapGasFee").textContent = `$${gasFeeUSD.toFixed(2)}`;
+    document.getElementById('swapRoute').textContent = sourceName;
+    document.getElementById('swapMinimum').textContent = `${minOutput.toFixed(6)} ${swapToToken}`;
+    document.getElementById('swapGasFee').textContent = `${gasFeeUSD.toFixed(2)}`;
     
     // Store the best quote for execution
     bestSwapRoute = {
@@ -6899,14 +7285,14 @@ async function simulateSwap() {
     };
     
     // Enable swap button
-    document.getElementById("swapBtn").textContent = "Swap";
-    document.getElementById("swapBtn").disabled = false;
+    document.getElementById('swapBtn').textContent = 'Swap';
+    document.getElementById('swapBtn').disabled = false;
     
-  } catch (err) {
+  } catch (_err) {
     
-    document.getElementById("swapRoute").textContent = "Error";
-    document.getElementById("swapBtn").textContent = "Try again";
-    document.getElementById("swapBtn").disabled = false;
+    document.getElementById('swapRoute').textContent = 'Error';
+    document.getElementById('swapBtn').textContent = 'Try again';
+    document.getElementById('swapBtn').disabled = false;
   } finally {
     isSimulating = false;
     lockResolve(); // Release the lock for next simulation
@@ -6915,32 +7301,32 @@ async function simulateSwap() {
 
 async function executeSwap() {
   if (!wallet) {
-    showToast("Please connect wallet first");
+    showToast('Please connect wallet first');
     return;
   }
   
   // Check transaction rate limiting for swaps
   const now = Date.now();
   if (now - lastTransactionTime < CONSTANTS.MIN_TX_INTERVAL) {
-    showToast("Please wait before executing another transaction");
+    showToast('Please wait before executing another transaction');
     return;
   }
   
   // Check pending transaction limit
   if (pendingTransactionCount >= MAX_PENDING_TRANSACTIONS) {
-    showToast("Too many pending transactions. Please wait.");
+    showToast('Too many pending transactions. Please wait.');
     return;
   }
   
   if (!bestSwapRoute) {
-    showToast("Please enter amount to get quote first");
+    showToast('Please enter amount to get quote first');
     return;
   }
   
   // Special handling for CULT token - must use ETH pair
-  const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
-  if (isCultSwap && swapFromToken !== "ETH" && swapToToken !== "ETH") {
-    showToast("CULT can only be swapped with ETH");
+  const isCultSwap = swapFromToken === 'CULT' || swapToToken === 'CULT';
+  if (isCultSwap && swapFromToken !== 'ETH' && swapToToken !== 'ETH') {
+    showToast('CULT can only be swapped with ETH');
     return;
   }
   
@@ -6956,7 +7342,7 @@ async function executeSwap() {
   
   try {
     // Check if we should use EIP-7702 batching
-    const needsApproval = swapFromToken !== "ETH";
+    const needsApproval = swapFromToken !== 'ETH';
     const shouldBatch = needsApproval && await EIP7702.shouldUseBatching(
       wallet.address,
       provider,
@@ -6970,7 +7356,7 @@ async function executeSwap() {
     }
     
     // Regular flow: Check if approval is needed for non-ETH tokens
-    if (swapFromToken !== "ETH") {
+    if (swapFromToken !== 'ETH') {
       const fromToken = TOKENS[swapFromToken];
       const approved = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
       if (!approved) return;
@@ -6980,7 +7366,7 @@ async function executeSwap() {
     const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour deadline
     
     // Check if this is a CULT swap (treat like ERC6909)
-    const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
+    const isCultSwap = swapFromToken === 'CULT' || swapToToken === 'CULT';
     
     if (bestSwapRoute.isERC6909 || isCultSwap) {
       // Handle ERC6909 and CULT swaps using swapVZ
@@ -6999,25 +7385,24 @@ async function executeSwap() {
       const zRouter = new ethers.Contract(ZROUTER_ADDRESS, ZROUTER_ABI, wallet);
       
       // Build swapVZ calldata - need actual token addresses
-      const tokenInAddr = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
-      const tokenOutAddr = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+      const tokenInAddr = swapFromToken === 'ETH' ? ethers.ZeroAddress : fromToken.address;
+      const tokenOutAddr = swapToToken === 'ETH' ? ethers.ZeroAddress : toToken.address;
       
       // For CULT, use special feeOrHook value and 0 for ids; for ERC6909 use normal ids
-      const cultFeeOrHook = BigInt("57896044618658097711785492504343953926636021160616296542400437774503196477768");
       let idIn, idOut, feeOrHook;
       if (isCultSwap) {
         // CULT uses special feeOrHook value (0.4% fee) and 0 for ids
         idIn = 0n;
         idOut = 0n;
-        feeOrHook = cultFeeOrHook;
+        feeOrHook = CULT_FEE_OR_HOOK;
       } else {
         // ERC6909 tokens use their ids and swapFee
-        idIn = swapFromToken === "ETH" ? 0n : BigInt(fromToken.id || 0);
-        idOut = swapToToken === "ETH" ? 0n : BigInt(toToken.id || 0);
+        idIn = swapFromToken === 'ETH' ? 0n : BigInt(fromToken.id || 0);
+        idOut = swapToToken === 'ETH' ? 0n : BigInt(toToken.id || 0);
         feeOrHook = bestSwapRoute.swapFee || 100n; // Default 100 bps = 1%
       }
       
-      const swapVZCall = zRouter.interface.encodeFunctionData("swapVZ", [
+      const swapVZCall = zRouter.interface.encodeFunctionData('swapVZ', [
         wallet.address, // to
         false, // exactOut = false
         feeOrHook, // feeOrHook (special value for CULT, fee for others)
@@ -7031,12 +7416,12 @@ async function executeSwap() {
       ]);
       
       callData = swapVZCall;
-      msgValue = swapFromToken === "ETH" ? bestSwapRoute.amountIn : 0n;
+      msgValue = swapFromToken === 'ETH' ? bestSwapRoute.amountIn : 0n;
       
     } else {
       // Use zQuoter for regular token swaps
       if (!zQuoterContract) {
-        throw new Error("zQuoter contract not initialized");
+        throw new Error('zQuoter contract not initialized');
       }
       
       const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
@@ -7052,9 +7437,9 @@ async function executeSwap() {
           slippageBps,
           deadline
         );
-      } catch (err) {
+      } catch (_err) {
         
-        showToast("Failed to prepare swap");
+        showToast('Failed to prepare swap');
         return;
       }
       
@@ -7064,7 +7449,7 @@ async function executeSwap() {
     }
     
     // Simulate the swap transaction before showing confirmation
-    const statusEl = document.getElementById("swapStatus");
+    const statusEl = document.getElementById('swapStatus');
     statusEl.innerHTML = '<div class="status">🔍 Simulating swap...</div>';
     
     const swapSimulation = await simulateTransaction({
@@ -7083,7 +7468,7 @@ async function executeSwap() {
     statusEl.innerHTML = '<div class="status success">✅ Ready to swap</div>';
     
     // Show confirmation modal
-    const modal = document.getElementById("swapConfirmModal");
+    const modal = document.getElementById('swapConfirmModal');
     const fromToken = TOKENS[swapFromToken];
     const toToken = TOKENS[swapToToken];
     
@@ -7091,33 +7476,33 @@ async function executeSwap() {
     const inputFormatted = ethers.formatUnits(bestSwapRoute.amountIn, fromToken?.decimals || 18);
     const outputFormatted = ethers.formatUnits(bestSwapRoute.amountOut, toToken?.decimals || 18);
     
-    document.getElementById("confirmSwapFrom").textContent = `${parseFloat(inputFormatted).toFixed(6)} ${swapFromToken}`;
-    document.getElementById("confirmSwapTo").textContent = `${parseFloat(outputFormatted).toFixed(6)} ${swapToToken}`;
-    document.getElementById("confirmSwapRoute").textContent = bestSwapRoute.sourceName || "Best Route";
-    document.getElementById("confirmSwapSlippage").textContent = `${swapSlippage}%`;
+    document.getElementById('confirmSwapFrom').textContent = `${parseFloat(inputFormatted).toFixed(6)} ${swapFromToken}`;
+    document.getElementById('confirmSwapTo').textContent = `${parseFloat(outputFormatted).toFixed(6)} ${swapToToken}`;
+    document.getElementById('confirmSwapRoute').textContent = bestSwapRoute.sourceName || 'Best Route';
+    document.getElementById('confirmSwapSlippage').textContent = `${swapSlippage}%`;
     
     // Use the already calculated minOutput
     const minOutputBigInt = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
     const minFormatted = ethers.formatUnits(minOutputBigInt, toToken?.decimals || 18);
-    document.getElementById("confirmSwapMinimum").textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
+    document.getElementById('confirmSwapMinimum').textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
     
-    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits("30", "gwei");
+    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits('30', 'gwei');
     const gasLimit = 150000n; // Realistic estimate
     const gasCost = gasLimit * gasPrice;
     const gasCostEth = ethers.formatEther(gasCost);
-    document.getElementById("confirmSwapGas").textContent = `${parseFloat(gasCostEth).toFixed(5)} ETH`;
+    document.getElementById('confirmSwapGas').textContent = `${parseFloat(gasCostEth).toFixed(5)} ETH`;
     
-    const totalCostEth = swapFromToken === "ETH" 
+    const totalCostEth = swapFromToken === 'ETH' 
       ? parseFloat(inputFormatted) + parseFloat(gasCostEth)
       : parseFloat(gasCostEth);
-    document.getElementById("confirmSwapTotal").textContent = `${totalCostEth.toFixed(6)} ETH`;
+    document.getElementById('confirmSwapTotal').textContent = `${totalCostEth.toFixed(6)} ETH`;
     
     // Setup calldata display
-    const calldataDisplay = document.getElementById("swapCalldataDisplay");
+    const calldataDisplay = document.getElementById('swapCalldataDisplay');
     if (calldataDisplay) calldataDisplay.value = callData;
     
     // Setup Swiss Knife decoder link with correct format
-    const swissKnifeLink = document.getElementById("swapSwissKnifeLink");
+    const swissKnifeLink = document.getElementById('swapSwissKnifeLink');
     if (swissKnifeLink) {
       if (callData && callData !== '0x' && callData.length > 2) {
         // Use the correct decoder URL format
@@ -7142,37 +7527,37 @@ async function executeSwap() {
       }
     }
     
-    const toggleBtn = document.getElementById("toggleSwapCalldata");
-    const calldataSection = document.getElementById("swapCalldataSection");
+    const toggleBtn = document.getElementById('toggleSwapCalldata');
+    const calldataSection = document.getElementById('swapCalldataSection');
     
     // Auto-show calldata section if there's a simulation link
     if (calldataSection && callData && callData !== '0x' && callData.length > 2) {
-      calldataSection.classList.remove("hidden");
-      if (toggleBtn) toggleBtn.textContent = "Hide";
+      calldataSection.classList.remove('hidden');
+      if (toggleBtn) toggleBtn.textContent = 'Hide';
     }
     
     if (toggleBtn) {
       toggleBtn.onclick = () => {
-        if (calldataSection.classList.contains("hidden")) {
-          calldataSection.classList.remove("hidden");
-          toggleBtn.textContent = "Hide";
+        if (calldataSection.classList.contains('hidden')) {
+          calldataSection.classList.remove('hidden');
+          toggleBtn.textContent = 'Hide';
         } else {
-          calldataSection.classList.add("hidden");
-          toggleBtn.textContent = "Show";
+          calldataSection.classList.add('hidden');
+          toggleBtn.textContent = 'Show';
         }
       };
     }
     
-    modal.classList.remove("hidden");
+    modal.classList.remove('hidden');
     
     // Use the secure confirmation helper
-    const confirmBtn = document.getElementById("confirmSwapBtn");
-    const cancelBtn = document.getElementById("cancelSwapBtn");
+    const confirmBtn = document.getElementById('confirmSwapBtn');
+    const cancelBtn = document.getElementById('cancelSwapBtn');
     
     const userConfirmed = await createSecureConfirmation(confirmBtn, cancelBtn, null);
     
     // Hide modal after decision
-    modal.classList.add("hidden");
+    modal.classList.add('hidden');
     
     if (!userConfirmed) {
       statusEl.innerHTML = '<div class="status">Swap cancelled</div>';
@@ -7185,7 +7570,7 @@ async function executeSwap() {
     
     try {
       // Execute the swap
-      document.getElementById("swapStatus").innerHTML = '<div style="color: var(--warning)">Sending transaction...</div>';
+      document.getElementById('swapStatus').innerHTML = '<div style="color: var(--warning)">Sending transaction...</div>';
       
       // Get current nonce for replay protection
       const nonce = await wallet.getNonce();
@@ -7197,7 +7582,7 @@ async function executeSwap() {
       nonce: nonce
     });
     
-    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--info)">Transaction sent: ${tx.hash.slice(0, 10)}...</div>`;
+    document.getElementById('swapStatus').innerHTML = `<div style="color: var(--info)">Transaction sent: ${tx.hash.slice(0, 10)}...</div>`;
     
     // Wait for confirmation
     const receipt = await tx.wait();
@@ -7210,9 +7595,9 @@ async function executeSwap() {
       const explorerUrl = isBaseMode 
         ? `https://basescan.org/tx/${tx.hash}`
         : `https://etherscan.io/tx/${tx.hash}`;
-      const explorerName = isBaseMode ? "Basescan" : "Etherscan";
+      const explorerName = isBaseMode ? 'Basescan' : 'Etherscan';
       
-      const swapStatus = document.getElementById("swapStatus");
+      const swapStatus = document.getElementById('swapStatus');
       swapStatus.innerHTML = `
         <div style="color: var(--success); font-weight: bold; margin-bottom: 8px;">✓ Swap successful!</div>
         <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
@@ -7220,15 +7605,15 @@ async function executeSwap() {
         </a>
       `;
       
-      showToast("Swap successful!");
+      showToast('Swap successful!');
       
       // Clear inputs and refresh balances
-      document.getElementById("swapFromAmount").value = "";
-      document.getElementById("swapToAmount").value = "";
+      document.getElementById('swapFromAmount').value = '';
+      document.getElementById('swapToAmount').value = '';
       clearSwapQuote();
       await fetchAllBalances();
     } else {
-      throw new Error("Transaction failed");
+      throw new Error('Transaction failed');
     }
     } finally {
       // Always decrement pending transaction count
@@ -7238,16 +7623,16 @@ async function executeSwap() {
   } catch (err) {
     
     // Parse common error messages for better UX
-    let errorMessage = err.message || "Unknown error";
-    if (errorMessage.includes("insufficient funds")) {
-      errorMessage = "Insufficient balance for gas fees";
-    } else if (errorMessage.includes("slippage")) {
-      errorMessage = "Price changed too much - try increasing slippage";
-    } else if (errorMessage.includes("user rejected") || errorMessage.includes("denied")) {
-      errorMessage = "Transaction cancelled";
+    let errorMessage = err.message || 'Unknown error';
+    if (errorMessage.includes('insufficient funds')) {
+      errorMessage = 'Insufficient balance for gas fees';
+    } else if (errorMessage.includes('slippage')) {
+      errorMessage = 'Price changed too much - try increasing slippage';
+    } else if (errorMessage.includes('user rejected') || errorMessage.includes('denied')) {
+      errorMessage = 'Transaction cancelled';
     }
     
-    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ ${errorMessage}</div>`;
+    document.getElementById('swapStatus').innerHTML = `<div style="color: var(--error)">✗ ${errorMessage}</div>`;
     showToast(`Swap failed: ${errorMessage}`);
   }
 }
@@ -7255,7 +7640,7 @@ async function executeSwap() {
 async function executeBatchedSwap() {
   try {
     const fromToken = TOKENS[swapFromToken];
-    const statusEl = document.getElementById("swapStatus");
+    const statusEl = document.getElementById('swapStatus');
     
     // Show batching indicator
     statusEl.innerHTML = '<div class="status">Preparing batched transaction (approve + swap)...<span class="batch-indicator">⚡ 7702 Batch</span></div>';
@@ -7271,7 +7656,7 @@ async function executeBatchedSwap() {
       ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, fromToken.address)
       : await zWalletContract.checkERC20RouterApproval(wallet.address, fromToken.address, bestSwapRoute.amountIn, true);
     
-    if (!approvalPayload || approvalPayload === "0x") {
+    if (!approvalPayload || approvalPayload === '0x') {
       // Already approved, fall back to regular swap
       await executeRegularSwap();
       return;
@@ -7281,7 +7666,7 @@ async function executeBatchedSwap() {
     let swapCallData, msgValue;
     const deadline = Math.floor(Date.now() / 1000) + 3600;
     
-    if (swapFromToken === "ETH") {
+    if (swapFromToken === 'ETH') {
       msgValue = bestSwapRoute.amountIn;
       swapCallData = await zWalletContract.swapETHToToken(
         bestSwapRoute.amountIn,
@@ -7291,7 +7676,7 @@ async function executeBatchedSwap() {
         deadline,
         bestSwapRoute.fee
       );
-    } else if (swapToToken === "ETH") {
+    } else if (swapToToken === 'ETH') {
       msgValue = 0n;
       swapCallData = await zWalletContract.swapTokenToETH(
         bestSwapRoute.amountIn,
@@ -7331,8 +7716,8 @@ async function executeBatchedSwap() {
         swapTarget: ZROUTER_ADDRESS,
         swapValue: msgValue.toString(),
         gasSettings: gasPrices.normal || {
-          maxFeePerGas: ethers.parseUnits("30", "gwei"),
-          maxPriorityFeePerGas: ethers.parseUnits("2", "gwei")
+          maxFeePerGas: ethers.parseUnits('30', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei')
         },
         simulate: true // Enable simulation
       });
@@ -7349,7 +7734,7 @@ async function executeBatchedSwap() {
     }
     
     // Show confirmation modal with batch indicator
-    const modal = document.getElementById("swapConfirmModal");
+    const modal = document.getElementById('swapConfirmModal');
     
     // Prepare Swiss Knife decoder link for batched calldata
     const fullCalldata = batchedTx.data;
@@ -7392,13 +7777,13 @@ async function executeBatchedSwap() {
         </div>
       </div>
     `;
-    modal.classList.remove("hidden");
+    modal.classList.remove('hidden');
     
-    const confirmBtn = document.getElementById("confirmBatchSwapBtn");
-    const cancelBtn = document.getElementById("cancelBatchSwapBtn");
+    const confirmBtn = document.getElementById('confirmBatchSwapBtn');
+    const cancelBtn = document.getElementById('cancelBatchSwapBtn');
     
     const userConfirmed = await createSecureConfirmation(confirmBtn, cancelBtn, null);
-    modal.classList.add("hidden");
+    modal.classList.add('hidden');
     
     if (!userConfirmed) {
       statusEl.innerHTML = '<div class="status">Swap cancelled</div>';
@@ -7424,24 +7809,24 @@ async function executeBatchedSwap() {
           ✓ Batched swap successful! <span class="batch-indicator">⚡ 7702</span>
         </div>
         <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
-          View on ${isBaseMode ? "Basescan" : "Etherscan"} →
+          View on ${isBaseMode ? 'Basescan' : 'Etherscan'} →
         </a>
       `;
       
-      showToast("Batched swap successful!");
+      showToast('Batched swap successful!');
       
       // Clear inputs and refresh
-      document.getElementById("swapFromAmount").value = "";
-      document.getElementById("swapToAmount").value = "";
+      document.getElementById('swapFromAmount').value = '';
+      document.getElementById('swapToAmount').value = '';
       clearSwapQuote();
       await fetchAllBalances();
     } else {
-      throw new Error("Transaction failed");
+      throw new Error('Transaction failed');
     }
     
   } catch (err) {
-    console.error("Batched swap error:", err);
-    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ Batched swap failed: ${err.message}</div>`;
+    console.error('Batched swap error:', err);
+    document.getElementById('swapStatus').innerHTML = `<div style="color: var(--error)">✗ Batched swap failed: ${err.message}</div>`;
     showToast(`Batched swap failed: ${err.message}`);
   }
 }
@@ -7453,9 +7838,9 @@ async function executeRegularSwap() {
   let callData, msgValue;
   const deadline = Math.floor(Date.now() / 1000) + 3600;
   
-  const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
+  const isCultSwap = swapFromToken === 'CULT' || swapToToken === 'CULT';
   
-  if (swapFromToken === "ETH") {
+  if (swapFromToken === 'ETH') {
     msgValue = bestSwapRoute.amountIn;
     if (isCultSwap) {
       callData = await zWalletContract.swapETHToCULT(
@@ -7474,7 +7859,7 @@ async function executeRegularSwap() {
         bestSwapRoute.fee
       );
     }
-  } else if (swapToToken === "ETH") {
+  } else if (swapToToken === 'ETH') {
     msgValue = 0n;
     if (isCultSwap) {
       callData = await zWalletContract.swapCULTToETH(
@@ -7509,6 +7894,47 @@ async function executeRegularSwap() {
   await showSwapConfirmationModal(callData, msgValue);
 }
 
+// Show swap confirmation modal
+async function showSwapConfirmationModal(callData, msgValue) {
+  // Show the swap confirmation modal
+  const modal = document.getElementById('swapConfirmModal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    
+    // Wait for user confirmation
+    return new Promise((resolve, reject) => {
+      const confirmBtn = document.getElementById('confirmSwapBtn');
+      const cancelBtn = modal.querySelector('.cancel-btn');
+      
+      const handleConfirm = async () => {
+        try {
+          modal.classList.add('hidden');
+          const tx = await zWalletContract.swap(callData, { value: msgValue });
+          const receipt = await tx.wait();
+          resolve(receipt);
+        } catch (error) {
+          reject(error);
+        }
+        cleanup();
+      };
+      
+      const handleCancel = () => {
+        modal.classList.add('hidden');
+        reject(new Error('User cancelled swap'));
+        cleanup();
+      };
+      
+      const cleanup = () => {
+        confirmBtn?.removeEventListener('click', handleConfirm);
+        cancelBtn?.removeEventListener('click', handleCancel);
+      };
+      
+      confirmBtn?.addEventListener('click', handleConfirm);
+      cancelBtn?.addEventListener('click', handleCancel);
+    });
+  }
+}
+
 async function checkAndRequestApproval(token, amount) {
   if (!token || !token.address || !zWalletContract) return true;
   
@@ -7519,7 +7945,7 @@ async function checkAndRequestApproval(token, amount) {
       : await zWalletContract.checkERC20RouterApproval(wallet.address, token.address, amount, true);
     
     // If no payload or empty, already approved
-    if (!approvalPayload || approvalPayload === "0x") {
+    if (!approvalPayload || approvalPayload === '0x') {
       return true;
     }
     
@@ -7528,7 +7954,7 @@ async function checkAndRequestApproval(token, amount) {
     if (!approvalConfirmed) return false;
     
     // Update status
-    const statusEl = document.getElementById("swapStatus");
+    const statusEl = document.getElementById('swapStatus');
     if (statusEl) {
       statusEl.innerHTML = `<div class="status">Approving ${token.symbol}...</div>`;
     }
@@ -7546,8 +7972,8 @@ async function checkAndRequestApproval(token, amount) {
     
     // Use current gas prices
     const gasSettings = gasPrices.normal || {
-      maxFeePerGas: ethers.parseUnits("30", "gwei"),
-      maxPriorityFeePerGas: ethers.parseUnits("2", "gwei")
+      maxFeePerGas: ethers.parseUnits('30', 'gwei'),
+      maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei')
     };
     
     const approveTx = await wallet.sendTransaction({
@@ -7575,8 +8001,8 @@ async function checkAndRequestApproval(token, amount) {
     }
     return true;
     
-  } catch (err) {
-    const statusEl = document.getElementById("swapStatus");
+  } catch (_err) {
+    const statusEl = document.getElementById('swapStatus');
     if (statusEl) {
       statusEl.innerHTML = '<div class="status error">Approval failed</div>';
     }
@@ -7712,6 +8138,9 @@ function initMobileOptimizations() {
   const isMobile = isMobileDevice || (isSmallScreen && 'ontouchstart' in window);
   
   if (isMobile && !window.matchMedia('(pointer: fine)').matches) {
+    // Add mobile class for CSS targeting
+    document.body.classList.add('mobile-device');
+    
     // Prevent pull-to-refresh on mobile
     let startY = 0;
     document.addEventListener('touchstart', (e) => {
@@ -7728,20 +8157,30 @@ function initMobileOptimizations() {
       }
     }, { passive: false });
     
-    // Better touch feedback
+    // Better touch feedback with requestAnimationFrame for smoother animations
+    let touchTarget = null;
     document.addEventListener('touchstart', (e) => {
       const target = e.target.closest('button, .tab, .token-row, .token-option');
-      if (target) {
-        target.style.transform = 'scale(0.98)';
-        target.style.opacity = '0.9';
+      if (target && !target.disabled) {
+        touchTarget = target;
+        requestAnimationFrame(() => {
+          if (touchTarget) {
+            touchTarget.style.transform = 'scale(0.97)';
+            touchTarget.style.opacity = '0.85';
+          }
+        });
       }
     }, { passive: true });
     
-    document.addEventListener('touchend', (e) => {
-      const target = e.target.closest('button, .tab, .token-row, .token-option');
-      if (target) {
-        target.style.transform = '';
-        target.style.opacity = '';
+    document.addEventListener('touchend', () => {
+      if (touchTarget) {
+        requestAnimationFrame(() => {
+          if (touchTarget) {
+            touchTarget.style.transform = '';
+            touchTarget.style.opacity = '';
+            touchTarget = null;
+          }
+        });
       }
     }, { passive: true });
     
@@ -7762,6 +8201,28 @@ function initMobileOptimizations() {
         window.scrollTo(0, scrollPosition);
       });
     });
+    
+    // Handle orientation changes efficiently
+    let orientationTimeout;
+    window.addEventListener('orientationchange', () => {
+      clearTimeout(orientationTimeout);
+      document.body.style.visibility = 'hidden';
+      orientationTimeout = setTimeout(() => {
+        document.body.style.visibility = '';
+        window.scrollTo(0, 0);
+      }, 300);
+    });
+    
+    // Optimize viewport on resize with debouncing
+    let resizeTimeout;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        // Recalculate viewport units for mobile browsers
+        const vh = window.innerHeight * 0.01;
+        document.documentElement.style.setProperty('--vh', `${vh}px`);
+      }, 150);
+    }, { passive: true });
   }
 }
 
@@ -7787,24 +8248,24 @@ if (document.readyState === 'loading') {
 }
 
 // Bridge Tab Functions
-const BASE_BRIDGE_CONTRACT = "0x49048044D57e1C92A77f79988d21Fa8fAF74E97e";
+const BASE_BRIDGE_CONTRACT = '0x49048044D57e1C92A77f79988d21Fa8fAF74E97e';
 let pendingBridgeTx = null;
 
 function setupBridgeEventListeners() {
   // Bridge amount input
-  const bridgeAmountInput = document.getElementById("bridgeAmount");
+  const bridgeAmountInput = document.getElementById('bridgeAmount');
   if (bridgeAmountInput) {
-    bridgeAmountInput.addEventListener("input", debounce(() => {
+    bridgeAmountInput.addEventListener('input', debounce(() => {
       updateBridgeEstimates();
     }, 300));
   }
   
   // Bridge Max button
-  const bridgeMaxBtn = document.getElementById("bridgeMaxBtn");
+  const bridgeMaxBtn = document.getElementById('bridgeMaxBtn');
   if (bridgeMaxBtn) {
-    bridgeMaxBtn.addEventListener("click", async () => {
+    bridgeMaxBtn.addEventListener('click', async () => {
       if (!wallet || !provider) {
-        showToast("Please connect wallet first");
+        showToast('Please connect wallet first');
         return;
       }
       
@@ -7824,35 +8285,35 @@ function setupBridgeEventListeners() {
           bridgeAmountInput.value = formattedAmount;
           updateBridgeEstimates();
         } else {
-          showToast("Insufficient balance for gas");
+          showToast('Insufficient balance for gas');
         }
       } catch (err) {
-        console.error("Error calculating max bridge amount:", err);
-        showToast("Error calculating max amount");
+        console.error('Error calculating max bridge amount:', err);
+        showToast('Error calculating max amount');
       }
     });
   }
   
   // Bridge button
-  const bridgeBtn = document.getElementById("bridgeBtn");
+  const bridgeBtn = document.getElementById('bridgeBtn');
   if (bridgeBtn) {
-    bridgeBtn.addEventListener("click", prepareBridge);
+    bridgeBtn.addEventListener('click', prepareBridge);
   }
   
   // Bridge confirmation modal
-  document.getElementById("bridgeModalClose")?.addEventListener("click", () => {
-    document.getElementById("bridgeConfirmModal")?.classList.add("hidden");
+  document.getElementById('bridgeModalClose')?.addEventListener('click', () => {
+    document.getElementById('bridgeConfirmModal')?.classList.add('hidden');
   });
   
-  document.getElementById("cancelBridgeBtn")?.addEventListener("click", () => {
-    document.getElementById("bridgeConfirmModal")?.classList.add("hidden");
+  document.getElementById('cancelBridgeBtn')?.addEventListener('click', () => {
+    document.getElementById('bridgeConfirmModal')?.classList.add('hidden');
     pendingBridgeTx = null;
   });
   
-  document.getElementById("confirmBridgeBtn")?.addEventListener("click", executeBridge);
+  document.getElementById('confirmBridgeBtn')?.addEventListener('click', executeBridge);
   
   // Update balance when switching to bridge tab
-  document.querySelector('.tab[data-tab="bridge"]')?.addEventListener("click", () => {
+  document.querySelector('.tab[data-tab="bridge"]')?.addEventListener('click', () => {
     updateBridgeBalance();
   });
 }
@@ -7863,24 +8324,24 @@ async function updateBridgeBalance() {
   try {
     const balance = await provider.getBalance(wallet.address);
     const formatted = parseFloat(ethers.formatEther(balance)).toFixed(4);
-    const balanceEl = document.getElementById("bridgeBalance");
+    const balanceEl = document.getElementById('bridgeBalance');
     if (balanceEl) {
       balanceEl.textContent = formatted;
     }
   } catch (err) {
-    console.error("Error updating bridge balance:", err);
+    console.error('Error updating bridge balance:', err);
   }
 }
 
 async function updateBridgeEstimates() {
-  const amountInput = document.getElementById("bridgeAmount");
+  const amountInput = document.getElementById('bridgeAmount');
   const amount = amountInput?.value;
   
   if (!amount || parseFloat(amount) <= 0) {
-    document.getElementById("bridgeUSD").textContent = "$0.00";
-    document.getElementById("bridgeGasFee").textContent = "--";
-    document.getElementById("bridgeBtn").textContent = "Bridge ETH to Base";
-    document.getElementById("bridgeBtn").disabled = true;
+    document.getElementById('bridgeUSD').textContent = '$0.00';
+    document.getElementById('bridgeGasFee').textContent = '--';
+    document.getElementById('bridgeBtn').textContent = 'Bridge ETH to Base';
+    document.getElementById('bridgeBtn').disabled = true;
     return;
   }
   
@@ -7888,7 +8349,7 @@ async function updateBridgeEstimates() {
     // Update USD value
     const ethPrice = tokenPrices.ETH?.usd || 0;
     const usdValue = parseFloat(amount) * ethPrice;
-    document.getElementById("bridgeUSD").textContent = formatCurrency(usdValue);
+    document.getElementById('bridgeUSD').textContent = formatCurrency(usdValue);
     
     // Estimate gas
     if (provider) {
@@ -7898,30 +8359,30 @@ async function updateBridgeEstimates() {
       const gasCostEth = parseFloat(ethers.formatEther(gasCost));
       const gasCostUsd = gasCostEth * ethPrice;
       
-      document.getElementById("bridgeGasFee").textContent = 
-        `${gasCostEth.toFixed(6)} ETH ($${gasCostUsd.toFixed(2)})`;
+      document.getElementById('bridgeGasFee').textContent = 
+        `${gasCostEth.toFixed(6)} ETH (${gasCostUsd.toFixed(2)})`;
     }
     
     // Enable button
-    document.getElementById("bridgeBtn").textContent = "Bridge ETH to Base";
-    document.getElementById("bridgeBtn").disabled = false;
+    document.getElementById('bridgeBtn').textContent = 'Bridge ETH to Base';
+    document.getElementById('bridgeBtn').disabled = false;
     
   } catch (err) {
-    console.error("Error updating bridge estimates:", err);
+    console.error('Error updating bridge estimates:', err);
   }
 }
 
 async function prepareBridge() {
-  const amountInput = document.getElementById("bridgeAmount");
+  const amountInput = document.getElementById('bridgeAmount');
   const amount = amountInput?.value;
   
   if (!wallet || !provider) {
-    showToast("Please connect wallet first", "error");
+    showToast('Please connect wallet first', 'error');
     return;
   }
   
   if (!amount || parseFloat(amount) <= 0) {
-    showToast("Please enter a valid amount", "error");
+    showToast('Please enter a valid amount', 'error');
     return;
   }
   
@@ -7939,12 +8400,12 @@ async function prepareBridge() {
     const totalCost = amountWei + gasCost;
     
     if (totalCost > balance) {
-      showToast("Insufficient balance for bridge + gas", "error");
+      showToast('Insufficient balance for bridge + gas', 'error');
       return;
     }
     
     // Simulate the bridge transaction first
-    showToast("Simulating bridge transaction...");
+    showToast('Simulating bridge transaction...');
     
     try {
       const simulation = await simulateTransaction({
@@ -7955,11 +8416,11 @@ async function prepareBridge() {
       });
       
       if (!simulation.success) {
-        showToast(`Bridge would fail: ${simulation.error}`, "error");
+        showToast(`Bridge would fail: ${simulation.error}`, 'error');
         return;
       }
     } catch (simError) {
-      console.error("Bridge simulation error:", simError);
+      console.error('Bridge simulation error:', simError);
       // Continue anyway if simulation fails
     }
     
@@ -7981,38 +8442,38 @@ async function prepareBridge() {
     const totalEth = parseFloat(amount) + gasCostEth;
     const totalUsd = totalEth * ethPrice;
     
-    document.getElementById("confirmBridgeAmount").textContent = `${amount} ETH`;
-    document.getElementById("confirmBridgeUSD").textContent = formatCurrency(usdValue);
-    document.getElementById("confirmBridgeGas").textContent = 
-      `${gasCostEth.toFixed(6)} ETH ($${gasCostUsd.toFixed(2)})`;
-    document.getElementById("confirmBridgeTotal").textContent = 
-      `${totalEth.toFixed(6)} ETH ($${totalUsd.toFixed(2)})`;
+    document.getElementById('confirmBridgeAmount').textContent = `${amount} ETH`;
+    document.getElementById('confirmBridgeUSD').textContent = formatCurrency(usdValue);
+    document.getElementById('confirmBridgeGas').textContent = 
+      `${gasCostEth.toFixed(6)} ETH (${gasCostUsd.toFixed(2)})`;
+    document.getElementById('confirmBridgeTotal').textContent = 
+      `${totalEth.toFixed(6)} ETH (${totalUsd.toFixed(2)})`;
     
     // Show modal
-    document.getElementById("bridgeConfirmModal").classList.remove("hidden");
+    document.getElementById('bridgeConfirmModal').classList.remove('hidden');
     
   } catch (err) {
-    console.error("Error preparing bridge:", err);
-    showToast("Error preparing bridge transaction", "error");
+    console.error('Error preparing bridge:', err);
+    showToast('Error preparing bridge transaction', 'error');
   }
 }
 
 async function executeBridge() {
   if (!wallet || !provider || !pendingBridgeTx) {
-    showToast("Invalid bridge state", "error");
+    showToast('Invalid bridge state', 'error');
     return;
   }
   
-  const statusEl = document.getElementById("bridgeStatus");
-  const btnEl = document.getElementById("confirmBridgeBtn");
+  const statusEl = document.getElementById('bridgeStatus');
+  const btnEl = document.getElementById('confirmBridgeBtn');
   
   try {
     // Update UI
     btnEl.disabled = true;
-    btnEl.textContent = "Bridging...";
+    btnEl.textContent = 'Bridging...';
     
     // Close modal
-    document.getElementById("bridgeConfirmModal").classList.add("hidden");
+    document.getElementById('bridgeConfirmModal').classList.add('hidden');
     
     // Update status
     if (statusEl) {
@@ -8087,32 +8548,32 @@ async function executeBridge() {
       `;
     }
     
-    showToast("Bridge successful! ETH will appear on Base soon", "success");
+    showToast('Bridge successful! ETH will appear on Base soon', 'success');
     
     // Clear input and refresh balance
-    document.getElementById("bridgeAmount").value = "";
+    document.getElementById('bridgeAmount').value = '';
     updateBridgeEstimates();
     updateBridgeBalance();
     fetchAllBalances();
     
   } catch (err) {
-    console.error("Bridge error:", err);
+    console.error('Bridge error:', err);
     
     if (statusEl) {
       statusEl.innerHTML = `
         <div class="status error" style="padding: 12px; border-radius: 8px;">
           <div style="font-weight: bold; margin-bottom: 4px;">❌ Bridge Failed</div>
-          <div style="font-size: 12px;">${err.message || "Transaction failed"}</div>
+          <div style="font-size: 12px;">${err.message || 'Transaction failed'}</div>
         </div>
       `;
     }
     
-    showToast("Bridge failed: " + (err.message || "Unknown error"), "error");
+    showToast('Bridge failed: ' + (err.message || 'Unknown error'), 'error');
     
   } finally {
     // Reset button
     btnEl.disabled = false;
-    btnEl.textContent = "Confirm Bridge";
+    btnEl.textContent = 'Confirm Bridge';
     pendingBridgeTx = null;
   }
 }
@@ -8121,11 +8582,11 @@ async function executeBridge() {
 async function update7702Status() {
   if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
   
-  const statusEl = document.getElementById("eip7702Status");
-  const enableBtn = document.getElementById("enable7702Btn");
-  const revokeBtn = document.getElementById("revoke7702Btn");
-  const infoEl = document.getElementById("eip7702Info");
-  const delegatedAddressEl = document.getElementById("delegatedToAddress");
+  const statusEl = document.getElementById('eip7702Status');
+  const enableBtn = document.getElementById('enable7702Btn');
+  const revokeBtn = document.getElementById('revoke7702Btn');
+  const infoEl = document.getElementById('eip7702Info');
+  const delegatedAddressEl = document.getElementById('delegatedToAddress');
   
   if (!statusEl || !enableBtn || !revokeBtn) return;
   
@@ -8136,9 +8597,9 @@ async function update7702Status() {
       // Show current delegation status
       if (delegation.isOurExecutor) {
         statusEl.innerHTML = '<div class="delegation-status active"><span class="status-icon">🔗</span><span>7702 Batching Active</span></div>';
-        enableBtn.classList.add("hidden");
-        revokeBtn.classList.remove("hidden");
-        infoEl.classList.remove("hidden");
+        enableBtn.classList.add('hidden');
+        revokeBtn.classList.remove('hidden');
+        infoEl.classList.remove('hidden');
         if (delegatedAddressEl) {
           delegatedAddressEl.textContent = delegation.delegatedTo;
         }
@@ -8153,35 +8614,35 @@ async function update7702Status() {
             Updating will replace this delegation. Multiple delegations can cause unexpected behavior.
           </div>
         `;
-        enableBtn.textContent = "Update Delegation";
-        enableBtn.classList.remove("hidden");
-        revokeBtn.classList.remove("hidden");
-        infoEl.classList.add("hidden");
+        enableBtn.textContent = 'Update Delegation';
+        enableBtn.classList.remove('hidden');
+        revokeBtn.classList.remove('hidden');
+        infoEl.classList.add('hidden');
       }
     } else {
       statusEl.innerHTML = '<div class="delegation-status inactive"><span class="status-icon">⭕</span><span>Standard EOA Mode</span></div>';
-      enableBtn.textContent = "Enable 7702 Batching";
-      enableBtn.classList.remove("hidden");
-      revokeBtn.classList.add("hidden");
-      infoEl.classList.add("hidden");
+      enableBtn.textContent = 'Enable 7702 Batching';
+      enableBtn.classList.remove('hidden');
+      revokeBtn.classList.add('hidden');
+      infoEl.classList.add('hidden');
     }
     
     // Check if network supports 7702
     const isSupported = await EIP7702.isSupported(provider);
     if (!isSupported) {
-      const networkName = isBaseMode ? "this network" : "this network";
+      const networkName = isBaseMode ? 'this network' : 'this network';
       statusEl.innerHTML += `<div style="margin-top: 8px; color: var(--warning); font-size: 11px;">⚠️ EIP-7702 not supported on ${networkName}</div>`;
       enableBtn.disabled = true;
       revokeBtn.disabled = true;
     } else {
       // Show network support confirmation
-      const networkName = isBaseMode ? "Base" : "Ethereum";
-      if (statusEl.innerHTML.indexOf("not supported") === -1) {
+      const networkName = isBaseMode ? 'Base' : 'Ethereum';
+      if (statusEl.innerHTML.indexOf('not supported') === -1) {
         statusEl.innerHTML += `<div style="margin-top: 4px; color: var(--dim); font-size: 10px;">✓ 7702 supported on ${networkName}</div>`;
       }
     }
   } catch (err) {
-    console.error("Error checking 7702 status:", err);
+    console.error('Error checking 7702 status:', err);
     statusEl.innerHTML = '<div style="color: var(--error); font-size: 11px;">Could not check delegation status</div>';
   }
 }
@@ -8190,17 +8651,17 @@ async function update7702Status() {
 async function enable7702Delegation() {
   if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
   
-  const enableBtn = document.getElementById("enable7702Btn");
-  const statusEl = document.getElementById("eip7702Status");
+  const enableBtn = document.getElementById('enable7702Btn');
+  const statusEl = document.getElementById('eip7702Status');
   
   try {
     enableBtn.disabled = true;
-    enableBtn.textContent = "Enabling...";
+    enableBtn.textContent = 'Enabling...';
     
     // Check if already delegated
     const currentDelegation = await EIP7702.checkDelegation(wallet.address, provider);
     if (currentDelegation.isOurExecutor) {
-      showToast("Already delegated to the batch executor");
+      showToast('Already delegated to the batch executor');
       await update7702Status();
       return;
     }
@@ -8211,7 +8672,7 @@ async function enable7702Delegation() {
     const receipt = await EIP7702.sendDelegation(wallet);
     
     if (receipt.status === 1) {
-      showToast("7702 delegation enabled successfully!");
+      showToast('7702 delegation enabled successfully!');
       statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation successful!</div>';
       
       // Update UI
@@ -8220,25 +8681,25 @@ async function enable7702Delegation() {
       // Also update main wallet display
       await displayWallet();
     } else {
-      throw new Error("Delegation transaction failed");
+      throw new Error('Delegation transaction failed');
     }
     
   } catch (err) {
-    console.error("Failed to enable 7702:", err);
-    let errorMsg = err.message || "Unknown error";
+    console.error('Failed to enable 7702:', err);
+    let errorMsg = err.message || 'Unknown error';
     
     // Handle common errors
-    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
-      errorMsg = "Transaction cancelled";
-    } else if (errorMsg.includes("insufficient funds")) {
-      errorMsg = "Insufficient gas funds";
+    if (errorMsg.includes('user rejected') || errorMsg.includes('denied')) {
+      errorMsg = 'Transaction cancelled';
+    } else if (errorMsg.includes('insufficient funds')) {
+      errorMsg = 'Insufficient gas funds';
     }
     
     showToast(`Failed to enable 7702: ${errorMsg}`);
     statusEl.innerHTML = `<div style="color: var(--error)">Failed: ${errorMsg}</div>`;
   } finally {
     enableBtn.disabled = false;
-    enableBtn.textContent = "Enable 7702 Batching";
+    enableBtn.textContent = 'Enable 7702 Batching';
   }
 }
 
@@ -8246,15 +8707,15 @@ async function enable7702Delegation() {
 async function revoke7702Delegation() {
   if (!wallet || !provider || typeof EIP7702 === 'undefined') return;
   
-  const revokeBtn = document.getElementById("revoke7702Btn");
-  const statusEl = document.getElementById("eip7702Status");
+  const revokeBtn = document.getElementById('revoke7702Btn');
+  const statusEl = document.getElementById('eip7702Status');
   
   try {
     revokeBtn.disabled = true;
-    revokeBtn.textContent = "Revoking...";
+    revokeBtn.textContent = 'Revoking...';
     
     // Confirm revocation
-    if (!confirm("Are you sure you want to revoke 7702 delegation? You will lose batching capabilities.")) {
+    if (!confirm('Are you sure you want to revoke 7702 delegation? You will lose batching capabilities.')) {
       return;
     }
     
@@ -8263,7 +8724,7 @@ async function revoke7702Delegation() {
     const receipt = await EIP7702.revokeDelegation(wallet);
     
     if (receipt.status === 1) {
-      showToast("7702 delegation revoked successfully");
+      showToast('7702 delegation revoked successfully');
       statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation revoked</div>';
       
       // Update UI
@@ -8272,36 +8733,36 @@ async function revoke7702Delegation() {
       // Also update main wallet display
       await displayWallet();
     } else {
-      throw new Error("Revocation transaction failed");
+      throw new Error('Revocation transaction failed');
     }
     
   } catch (err) {
-    console.error("Failed to revoke 7702:", err);
-    let errorMsg = err.message || "Unknown error";
+    console.error('Failed to revoke 7702:', err);
+    let errorMsg = err.message || 'Unknown error';
     
-    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
-      errorMsg = "Transaction cancelled";
+    if (errorMsg.includes('user rejected') || errorMsg.includes('denied')) {
+      errorMsg = 'Transaction cancelled';
     }
     
     showToast(`Failed to revoke 7702: ${errorMsg}`);
     statusEl.innerHTML = `<div style="color: var(--error)">Failed: ${errorMsg}</div>`;
   } finally {
     revokeBtn.disabled = false;
-    revokeBtn.textContent = "Revoke 7702 Delegation";
+    revokeBtn.textContent = 'Revoke 7702 Delegation';
   }
 }
 
 // Add event listeners for 7702 buttons
-document.addEventListener("DOMContentLoaded", () => {
-  const enable7702Btn = document.getElementById("enable7702Btn");
-  const revoke7702Btn = document.getElementById("revoke7702Btn");
+document.addEventListener('DOMContentLoaded', () => {
+  const enable7702Btn = document.getElementById('enable7702Btn');
+  const revoke7702Btn = document.getElementById('revoke7702Btn');
   
   if (enable7702Btn) {
-    enable7702Btn.addEventListener("click", enable7702Delegation);
+    enable7702Btn.addEventListener('click', enable7702Delegation);
   }
   
   if (revoke7702Btn) {
-    revoke7702Btn.addEventListener("click", revoke7702Delegation);
+    revoke7702Btn.addEventListener('click', revoke7702Delegation);
   }
   
   // Update 7702 status when switching to settings tab

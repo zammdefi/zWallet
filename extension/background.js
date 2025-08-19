@@ -17,7 +17,6 @@ chrome.storage.local.get(null, (items) => {
   }
 });
 
-
 // Handle messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'open_external') {
@@ -42,6 +41,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // If approved and it's a connection request, update connectedSites
       if (request.response.result && pending.request.method === 'eth_requestAccounts') {
         connectedSites[pending.origin] = true;
+        // Store in chrome.storage for persistence
+        chrome.storage.local.set({ [`connected_${pending.origin}`]: true });
       }
       pending.sendResponse(request.response);
       delete pendingRequests[request.requestId];
@@ -90,6 +91,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     });
     return true; // Will respond asynchronously
+  }
+  
+  // Handle account change notification
+  if (request.type === 'ACCOUNT_CHANGED') {
+    accountCache = request.account;
+    
+    // Notify all connected dApps of account change
+    Object.keys(connectedSites).forEach(origin => {
+      chrome.tabs.query({ url: origin + '/*' }, (tabs) => {
+        tabs.forEach(tab => {
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'PROVIDER_EVENT',
+            data: {
+              event: 'accountsChanged',
+              params: request.account ? [request.account] : []
+            }
+          }).catch(() => {});
+        });
+      });
+    });
+    return true;
   }
 });
 
@@ -459,13 +481,5 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
         }
       }
     }
-  }
-});
-
-// Also listen for direct messages from popup (for immediate updates)
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'ACCOUNT_CHANGED') {
-    // Account change is handled via storage listener above
-    return;
   }
 });
