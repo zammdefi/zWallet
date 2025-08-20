@@ -4746,15 +4746,20 @@ async function sendTransaction() {
     
     let tx;
     if (selectedToken === "ETH") {
-      // Send ETH directly - estimate gas dynamically with cache
+      // Send ETH directly - estimate gas dynamically
       let gasLimit = 21000n;
-      const estimated = await estimateGasWithCache({
-        from: wallet.address,
-        to: toAddress,
-        value: ethers.parseEther(amount)
-      });
-      if (estimated) {
-        gasLimit = (estimated * 110n) / 100n; // 10% buffer
+      try {
+        const estimated = await provider.estimateGas({
+          from: wallet.address,
+          to: toAddress,
+          value: ethers.parseEther(amount)
+        });
+        if (estimated) {
+          gasLimit = (estimated * 110n) / 100n; // 10% buffer
+        }
+      } catch (e) {
+        // Use default gas limit if estimation fails
+        console.warn('Gas estimation failed, using default:', e);
       }
       
       tx = await wallet.sendTransaction({
@@ -4778,13 +4783,18 @@ async function sendTransaction() {
 
       // Send to the TOKEN contract with the calldata
       let gasLimit = 120000n;
-      const estimated = await estimateGasWithCache({
-        from: wallet.address,
-        to: token.address,
-        data: transferData
-      });
-      if (estimated) {
-        gasLimit = (estimated * 115n) / 100n; // 15% buffer for ERC6909
+      try {
+        const estimated = await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: transferData
+        });
+        if (estimated) {
+          gasLimit = (estimated * 115n) / 100n; // 15% buffer for ERC6909
+        }
+      } catch (e) {
+        // Use default gas limit if estimation fails
+        console.warn('Gas estimation failed for ERC6909, using default:', e);
       }
       
       tx = await wallet.sendTransaction({
@@ -4807,13 +4817,18 @@ async function sendTransaction() {
 
       // Send to the TOKEN contract with the calldata
       let gasLimit = 65000n;
-      const estimated = await estimateGasWithCache({
-        from: wallet.address,
-        to: token.address,
-        data: transferData
-      });
-      if (estimated) {
-        gasLimit = (estimated * 110n) / 100n; // 10% buffer for ERC20
+      try {
+        const estimated = await provider.estimateGas({
+          from: wallet.address,
+          to: token.address,
+          data: transferData
+        });
+        if (estimated) {
+          gasLimit = (estimated * 110n) / 100n; // 10% buffer for ERC20
+        }
+      } catch (e) {
+        // Use default gas limit if estimation fails
+        console.warn('Gas estimation failed for ERC20, using default:', e);
       }
       
       tx = await wallet.sendTransaction({
