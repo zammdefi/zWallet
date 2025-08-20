@@ -1,8 +1,6 @@
 // EIP-7702 Delegation and Batching Module
 // Supports Ethereum Mainnet, Base, and their testnets
 // Uses CREATE2 deterministic deployment - same address on all chains
-
-// Simply define EIP7702 as a regular object, just like how the rest of the code is structured
 const EIP7702 = {
   // BasicEOABatchExecutor contract address (canonical singleton via CREATE2)
   // Same address on all supported chains (Ethereum, Base, testnets)

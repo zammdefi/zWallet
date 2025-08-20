@@ -134,6 +134,53 @@ let lastTransactionTime = 0;
 let pendingTransactionCount = 0;
 const MAX_PENDING_TRANSACTIONS = 3;
 
+function getCacheKey(method, ...args) {
+  return `${method}:${args.join(':')}`;
+}
+
+// Gas price caching to reduce RPC calls
+let gasPriceCache = { 
+  data: null, 
+  timestamp: 0,
+  networkId: null 
+};
+const GAS_PRICE_CACHE_TTL = 10000; // 10 seconds
+
+
+/**
+ * Get cached gas price data to reduce redundant RPC calls
+ * Automatically invalidates cache on network change
+ * @returns {Promise<Object>} Fee data from provider
+ */
+async function getCachedGasPrice() {
+  const currentNetworkId = currentNetwork;
+  
+  // Check if cache is valid (not expired and same network)
+  if (gasPriceCache.data && 
+      gasPriceCache.networkId === currentNetworkId &&
+      Date.now() - gasPriceCache.timestamp < GAS_PRICE_CACHE_TTL) {
+    return gasPriceCache.data;
+  }
+  
+  // Fetch fresh gas price data
+  try {
+    const feeData = await provider.getFeeData();
+    gasPriceCache = { 
+      data: feeData, 
+      timestamp: Date.now(),
+      networkId: currentNetworkId
+    };
+    return feeData;
+  } catch (error) {
+    console.error('Failed to fetch gas price:', error);
+    // Return cached data if available, even if expired
+    if (gasPriceCache.data) {
+      return gasPriceCache.data;
+    }
+    throw error;
+  }
+}
+
 /**
  * Creates a confirmation button with countdown timer for security
  * @param {HTMLElement} button - The button element to add countdown to
@@ -248,7 +295,8 @@ function initPasswordModal() {
   // Password strength checker
   passwordInput?.addEventListener('input', (e) => {
     if (confirmGroup.style.display !== 'none') {
-      const strength = checkPasswordStrength(e.target.value);
+      const validation = InputValidator.validatePassword(e.target.value);
+      const strength = validation.strength || 0;
       updatePasswordStrength(strength);
       checkPasswordMatch();
     }
@@ -343,16 +391,6 @@ function initPasswordModal() {
   });
 }
 
-function checkPasswordStrength(password) {
-  let strength = 0;
-  if (password.length >= 8) strength++;
-  if (password.length >= 12) strength++;
-  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) strength++;
-  if (/[0-9]/.test(password)) strength++;
-  if (/[^a-zA-Z0-9]/.test(password)) strength++;
-  return strength;
-}
-
 function updatePasswordStrength(strength) {
   const bar = document.getElementById('strengthBar');
   const text = document.getElementById('strengthText');
@@ -411,7 +449,7 @@ class InputValidator {
     // Remove whitespace
     address = address.trim();
     
-    // Check if it's an ENS name
+    // Check if it's an ENS name or Base name
     if (address.endsWith('.eth')) {
       return InputValidator.validateENS(address);
     }
@@ -439,36 +477,48 @@ class InputValidator {
   }
   
   /**
-   * Validate ENS name
-   * @param {string} name - ENS name to validate
+   * Validate ENS name (including Base names)
+   * @param {string} name - ENS/Base name to validate
    * @returns {object} { valid: boolean, error?: string }
    */
   static validateENS(name) {
     if (!name) {
-      return { valid: false, error: 'ENS name is required' };
+      return { valid: false, error: 'Name is required' };
     }
     
     name = name.trim().toLowerCase();
     
-    // Check format
+    // Check format - support both .eth and .base.eth
     if (!name.endsWith('.eth')) {
-      return { valid: false, error: 'ENS names must end with .eth' };
+      return { valid: false, error: 'Names must end with .eth or .base.eth' };
     }
     
-    // Check for valid characters (alphanumeric and hyphens)
-    const label = name.slice(0, -4);
-    if (!/^[a-z0-9-]+$/.test(label)) {
-      return { valid: false, error: 'ENS names can only contain letters, numbers, and hyphens' };
+    // Handle Base names (e.g., z0r0z.base.eth)
+    let label;
+    if (name.endsWith('.base.eth')) {
+      // Base name format
+      label = name.slice(0, -9); // Remove '.base.eth'
+      if (label.length < 1) {
+        return { valid: false, error: 'Base name must have at least 1 character' };
+      }
+    } else {
+      // Standard ENS format
+      label = name.slice(0, -4); // Remove '.eth'
+      if (label.length < 3) {
+        return { valid: false, error: 'ENS name must be at least 3 characters' };
+      }
     }
     
-    // Check length (min 3 characters for the label)
-    if (label.length < 3) {
-      return { valid: false, error: 'ENS name must be at least 3 characters' };
+    // Check for valid characters (alphanumeric, hyphens, and dots for subdomains)
+    if (!/^[a-z0-9.-]+$/.test(label)) {
+      return { valid: false, error: 'Names can only contain letters, numbers, dots, and hyphens' };
     }
     
-    // Check for consecutive hyphens or starting/ending with hyphen
-    if (/--/.test(label) || label.startsWith('-') || label.endsWith('-')) {
-      return { valid: false, error: 'Invalid ENS name format' };
+    // Check for consecutive hyphens or starting/ending with hyphen/dot
+    if (/--/.test(label) || /\.\./.test(label) || 
+        label.startsWith('-') || label.endsWith('-') ||
+        label.startsWith('.') || label.endsWith('.')) {
+      return { valid: false, error: 'Invalid name format' };
     }
     
     return { valid: true, ens: name };
@@ -625,7 +675,7 @@ class InputValidator {
   }
   
   /**
-   * Validate token contract address
+   * Validate token contract address using zWallet contract when available
    * @param {string} address - Contract address
    * @param {object} provider - Ethers provider
    * @returns {Promise<object>} { valid: boolean, error?: string, isContract?: boolean }
@@ -638,7 +688,27 @@ class InputValidator {
     }
     
     try {
-      // Check if address has code (is a contract)
+      // If zWallet contract is available, use it for validation
+      if (window.zWalletContract) {
+        const contractType = await getCachedContractType(addressValidation.address);
+        // Also check if it has code
+        const code = await provider.getCode(address);
+        const hasCode = code !== '0x' && code !== '0x0';
+        
+        if (!hasCode) {
+          return { valid: false, error: 'Address is not a smart contract' };
+        }
+        
+        return { 
+          valid: true, 
+          address: addressValidation.address, 
+          isContract: true,
+          isERC721: contractType.isERC721,
+          isERC6909: contractType.isERC6909
+        };
+      }
+      
+      // Fallback to direct code check
       const code = await provider.getCode(address);
       if (code === '0x' || code === '0x0') {
         return { valid: false, error: 'Address is not a smart contract' };
@@ -897,8 +967,8 @@ const LS_LAST = "last_wallet_addr";
 const KEY_VERSION = 1;
 const DEFAULT_KDF = { kdf: "pbkdf2-sha256", iter: 600000 }; // OWASP 2024 recommended minimum
 
-// Default tokens configuration
-const DEFAULT_TOKENS = {
+// Default tokens configuration for Mainnet
+const DEFAULT_MAINNET_TOKENS = {
   ETH: { address: null, symbol: "ETH", name: "Ethereum", decimals: 18 },
   ZAMM: {
     address: COINS_CONTRACT,
@@ -940,13 +1010,49 @@ const DEFAULT_TOKENS = {
   },
 };
 
+// Base network tokens configuration
+const DEFAULT_BASE_TOKENS = {
+  ETH: { address: null, symbol: "ETH", name: "Ethereum", decimals: 18 },
+  USDC: {
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    symbol: "USDC",
+    name: "USD Coin",
+    decimals: 6,
+  },
+  USDT: {
+    address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+    symbol: "USDT",
+    name: "Tether",
+    decimals: 6,
+  },
+  DAI: {
+    address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+    symbol: "DAI",
+    name: "Dai",
+    decimals: 18,
+  },
+};
+
+const DEFAULT_TOKENS = DEFAULT_MAINNET_TOKENS;
+
 // USDC EIP-3009 constants for IOU functionality  
-const USDC_EIP712_DOMAIN = Object.freeze({
+const USDC_EIP712_DOMAIN_MAINNET = Object.freeze({
   name: "USD Coin",
   version: "2",
   chainId: 1,
   verifyingContract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 });
+
+const USDC_EIP712_DOMAIN_BASE = Object.freeze({
+  name: "USD Coin", 
+  version: "2",
+  chainId: 8453,
+  verifyingContract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+});
+
+// Base USDC specific constants
+const BASE_USDC_TRANSFER_AUTH_TYPEHASH = "0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267";
+const BASE_USDC_DOMAIN_SEPARATOR = "0x02fa7265e7c5d81118673727957699e4d68f74cd74b7db77da710fe8a2c7834f";
 
 const EIP3009_TYPES = {
   TransferWithAuthorization: [
@@ -959,8 +1065,9 @@ const EIP3009_TYPES = {
   ]
 };
 
-// zWallet contract address and ABI
-const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5";
+// zWallet contract addresses for Mainnet and Base
+const ZWALLET_ADDRESS = "0x13e8874aB56f832C11e3Dfe748c0Ec22618c90B5"; // Mainnet
+const BASE_ZWALLET_ADDRESS = "0xA64E4B7aCf500bB3D353299af1D15c9EEc9D2323"; // Base network backend contract
 const ZWALLET_ABI = [
   // Enhanced batch view with ENS and token type detection
   "function batchView(address user, address[] calldata tokens, uint256[] calldata ids) view returns (string ensName, address[] tokensOut, uint256[] idsOut, uint8[] kinds, uint256[] rawBalances, uint256[] balances, string[] names, string[] symbols, uint8[] decimals, uint256[] pricesETH, string[] pricesETHStr, uint256[] pricesUSDC, string[] pricesUSDCStr)",
@@ -1040,6 +1147,10 @@ const activeIntervals = new Set();
 const cleanupCallbacks = new Set();
 
 // Cache configuration for balance data
+const metadataCache = new Map(); // Cache for token metadata (name, symbol, decimals)
+const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours for metadata
+const contractTypeCache = new Map(); // Cache for contract type checks (ERC721, ERC6909)
+const CONTRACT_TYPE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 1 week for contract types
 
 // Track all timers for cleanup
 function setManagedTimeout(callback, delay) {
@@ -1401,9 +1512,11 @@ async function init() {
   if (savedNetwork === 'BASE') {
     isBaseMode = true;
     currentNetwork = 'BASE';
+    TOKENS = { ...DEFAULT_BASE_TOKENS };
   } else {
     isBaseMode = false;
     currentNetwork = 'MAINNET';
+    TOKENS = { ...DEFAULT_MAINNET_TOKENS };
   }
   
   // Check if running as extension and handle CSP restrictions
@@ -1872,27 +1985,33 @@ async function loadCustomTokens() {
       customTokens = JSON.parse(stored);
       // Create TOKENS in specific order: defaults first, then custom
       TOKENS = {};
+      // Use network-specific defaults
+      const currentDefaults = isBaseMode ? DEFAULT_BASE_TOKENS : DEFAULT_MAINNET_TOKENS;
       // Add default tokens in order
-      for (const key of Object.keys(DEFAULT_TOKENS)) {
-        TOKENS[key] = DEFAULT_TOKENS[key];
+      for (const key of Object.keys(currentDefaults)) {
+        TOKENS[key] = currentDefaults[key];
       }
-      // Add custom tokens
-      for (const key of Object.keys(customTokens)) {
-        if (!DEFAULT_TOKENS[key]) {
-          TOKENS[key] = customTokens[key];
+      // Add custom tokens only on mainnet (Base only supports specific tokens)
+      if (!isBaseMode) {
+        for (const key of Object.keys(customTokens)) {
+          if (!currentDefaults[key]) {
+            TOKENS[key] = customTokens[key];
+          }
         }
       }
     } else {
       TOKENS = {};
-      for (const key of Object.keys(DEFAULT_TOKENS)) {
-        TOKENS[key] = DEFAULT_TOKENS[key];
+      const currentDefaults = isBaseMode ? DEFAULT_BASE_TOKENS : DEFAULT_MAINNET_TOKENS;
+      for (const key of Object.keys(currentDefaults)) {
+        TOKENS[key] = currentDefaults[key];
       }
     }
   } catch (err) {
     customTokens = {};
     TOKENS = {};
-    for (const key of Object.keys(DEFAULT_TOKENS)) {
-      TOKENS[key] = DEFAULT_TOKENS[key];
+    const currentDefaults = isBaseMode ? DEFAULT_BASE_TOKENS : DEFAULT_MAINNET_TOKENS;
+    for (const key of Object.keys(currentDefaults)) {
+      TOKENS[key] = currentDefaults[key];
     }
   }
 }
@@ -2001,14 +2120,18 @@ async function initProvider() {
       rpcUrl = baseRpc;
     }
     
+    // Use batch provider for better performance when available
     provider = new ethers.JsonRpcProvider(rpcUrl);
+    
+    // Test connection with block number
     await Promise.race([
       provider.getBlockNumber(),
       timeoutPromise
     ]);
 
-    // Only initialize zWallet and zQuoter contracts on mainnet
+    // Initialize contracts based on network
     if (!isBaseMode) {
+      // Mainnet contracts
       zWalletContract = new ethers.Contract(
         ZWALLET_ADDRESS,
         ZWALLET_ABI,
@@ -2022,7 +2145,12 @@ async function initProvider() {
         provider
       );
     } else {
-      zWalletContract = null; // No zWallet on Base
+      // Base network backend contract (same ABI as mainnet)
+      zWalletContract = new ethers.Contract(
+        BASE_ZWALLET_ADDRESS,
+        ZWALLET_ABI,
+        provider
+      );
       zQuoterContract = null; // No zQuoter on Base
     }
 
@@ -2031,26 +2159,38 @@ async function initProvider() {
     showToast("Connected to network");
   } catch (err) {
     
-    // Try fallback
-    for (const rpc of [
-      "https://eth.llamarpc.com",
-      "https://ethereum.publicnode.com",
-    ]) {
+    // Try fallback RPCs based on network
+    const fallbackRpcs = isBaseMode 
+      ? ["https://mainnet.base.org", "https://base.llamarpc.com"]
+      : ["https://eth.llamarpc.com", "https://ethereum.publicnode.com"];
+      
+    for (const rpc of fallbackRpcs) {
       try {
         provider = new ethers.JsonRpcProvider(rpc);
         await provider.getBlockNumber();
-        zWalletContract = new ethers.Contract(
-          ZWALLET_ADDRESS,
-          ZWALLET_ABI,
-          provider
-        );
-        zQuoterContract = new ethers.Contract(
-          ZQUOTER_ADDRESS,
-          ZQUOTER_ABI,
-          provider
-        );
+        
+        if (!isBaseMode) {
+          zWalletContract = new ethers.Contract(
+            ZWALLET_ADDRESS,
+            ZWALLET_ABI,
+            provider
+          );
+          zQuoterContract = new ethers.Contract(
+            ZQUOTER_ADDRESS,
+            ZQUOTER_ABI,
+            provider
+          );
+        } else {
+          zWalletContract = new ethers.Contract(
+            BASE_ZWALLET_ADDRESS,
+            ZWALLET_ABI,
+            provider
+          );
+          zQuoterContract = null;
+        }
+        
         currentRpc = rpc;
-        localStorage.setItem("rpc_endpoint", rpc);
+        localStorage.setItem(isBaseMode ? "base_rpc" : "rpc_endpoint", rpc);
         loadRpcSettings();
         break;
       } catch (e) {
@@ -2145,43 +2285,107 @@ function updateWalletSelectorFrom(list) {
 }
 
 // Fetch ZAMM price from the AMM pool using constant product formula
+
 /**
- * Get gas estimation with caching
+ * Get cached token metadata or fetch from zWallet contract
+ * @param {string} tokenAddress - Token contract address
+ * @returns {Promise<{name: string, symbol: string, decimals: number}>}
  */
-async function estimateGasWithCache(txParams) {
-  // Create cache key from transaction parameters
-  const cacheKey = `${txParams.from}_${txParams.to}_${txParams.data || '0x'}_${txParams.value || 0}`;
+async function getCachedMetadata(tokenAddress) {
+  const cacheKey = `${currentNetwork}:${tokenAddress}`;
+  const cached = metadataCache.get(cacheKey);
   
-  const now = Date.now();
-  const cached = gasEstimateCache.data.get(cacheKey);
+  // Return cached if valid
+  if (cached && Date.now() - cached.timestamp < METADATA_CACHE_TTL) {
+    return cached.data;
+  }
   
-  // Return cached value if still valid
-  if (cached && (now - cached.timestamp < gasEstimateCache.ttl)) {
-    return cached.estimate;
+  // Fetch from zWallet contract
+  if (!zWalletContract) {
+    return { name: '', symbol: '', decimals: 18 };
   }
   
   try {
-    const estimate = await provider.estimateGas(txParams);
+    const [name, symbol, decimals] = await zWalletContract.getMetadata(tokenAddress);
+    const metadata = { name, symbol, decimals: Number(decimals) };
     
     // Cache the result
-    gasEstimateCache.data.set(cacheKey, {
-      estimate: estimate,
-      timestamp: now
+    metadataCache.set(cacheKey, {
+      data: metadata,
+      timestamp: Date.now()
     });
     
-    // Clean old entries periodically
-    if (gasEstimateCache.data.size > 50) {
-      for (const [key, value] of gasEstimateCache.data.entries()) {
-        if (now - value.timestamp > gasEstimateCache.ttl * 2) {
-          gasEstimateCache.data.delete(key);
-        }
-      }
-    }
+    return metadata;
+  } catch (err) {
+    console.error('Failed to fetch metadata:', err);
+    return { name: '', symbol: '', decimals: 18 };
+  }
+}
+
+/**
+ * Check if contract is ERC721 or ERC6909 using zWallet validation
+ * @param {string} tokenAddress - Contract address to check
+ * @returns {Promise<{isERC721: boolean, isERC6909: boolean}>}
+ */
+async function getCachedContractType(tokenAddress) {
+  const cacheKey = `${currentNetwork}:${tokenAddress}`;
+  const cached = contractTypeCache.get(cacheKey);
+  
+  // Return cached if valid
+  if (cached && Date.now() - cached.timestamp < CONTRACT_TYPE_CACHE_TTL) {
+    return cached.data;
+  }
+  
+  if (!zWalletContract) {
+    return { isERC721: false, isERC6909: false };
+  }
+  
+  try {
+    const [isERC721, isERC6909] = await Promise.all([
+      zWalletContract.isERC721(tokenAddress),
+      zWalletContract.isERC6909(tokenAddress)
+    ]);
     
-    return estimate;
-  } catch (e) {
-    // If estimation fails, return null and let caller use default
-    return null;
+    const contractType = { isERC721, isERC6909 };
+    
+    // Cache the result
+    contractTypeCache.set(cacheKey, {
+      data: contractType,
+      timestamp: Date.now()
+    });
+    
+    return contractType;
+  } catch (err) {
+    console.error('Failed to check contract type:', err);
+    return { isERC721: false, isERC6909: false };
+  }
+}
+
+/**
+ * Fetch individual token price using zWallet price functions with caching
+ * Useful as fallback when batchView fails or for single token checks
+ */
+async function fetchTokenPrice(tokenAddress) {
+  if (!zWalletContract) return { usd: 0, eth: 0 };
+  
+  try {
+    // Get price in USDC terms
+    const [priceInUSDC] = await zWalletContract.checkPrice(tokenAddress);
+    
+    // Get price in ETH terms for better accuracy
+    const [priceInETH] = await zWalletContract.checkPriceInETH(tokenAddress);
+    
+    // Convert from raw values (assuming 18 decimals for price)
+    const usdPrice = Number(priceInUSDC) / 1e18;
+    const ethPrice = Number(priceInETH) / 1e18;
+    
+    return {
+      usd: usdPrice,
+      eth: ethPrice
+    };
+  } catch (err) {
+    console.error('Failed to fetch token price:', err);
+    return { usd: 0, eth: 0 };
   }
 }
 
@@ -2281,6 +2485,16 @@ async function toggleNetwork() {
   isBaseMode = !isBaseMode;
   currentNetwork = isBaseMode ? 'BASE' : 'MAINNET';
   
+  // Invalidate gas price cache on network switch
+  gasPriceCache = { data: null, timestamp: 0, networkId: null };
+  
+  // Update tokens based on network
+  if (isBaseMode) {
+    TOKENS = { ...DEFAULT_BASE_TOKENS };
+  } else {
+    TOKENS = { ...DEFAULT_MAINNET_TOKENS };
+  }
+  
   // Save preference
   localStorage.setItem('network_mode', currentNetwork);
   
@@ -2356,14 +2570,25 @@ function updateSendTabForNetwork() {
   const sendTitle = document.querySelector('#send-tab h2');
   
   if (isBaseMode) {
-    // On Base, only show ETH
+    // On Base, show all Base tokens
     if (tokenSelector) {
-      tokenSelector.innerHTML = '<option value="ETH">ETH</option>';
-      tokenSelector.value = 'ETH';
-      selectedToken = 'ETH';
+      tokenSelector.innerHTML = '';
+      for (const symbol of Object.keys(DEFAULT_BASE_TOKENS)) {
+        const option = document.createElement('option');
+        option.value = symbol;
+        option.textContent = symbol;
+        tokenSelector.appendChild(option);
+      }
+      // Keep current selection if valid, otherwise default to ETH
+      if (DEFAULT_BASE_TOKENS[selectedToken]) {
+        tokenSelector.value = selectedToken;
+      } else {
+        tokenSelector.value = 'ETH';
+        selectedToken = 'ETH';
+      }
     }
     if (sendTitle) {
-      sendTitle.textContent = 'Send ETH on Base';
+      sendTitle.textContent = 'Send on Base';
     }
   } else {
     // On mainnet, show all tokens
@@ -2376,7 +2601,7 @@ function updateSendTabForNetwork() {
   }
 }
 
-// Fetch ETH balance on Base network
+// Fetch all balances on Base network (uses backend contract)
 async function fetchBaseETHBalance() {
   if (!wallet || !provider) return;
   
@@ -2384,62 +2609,9 @@ async function fetchBaseETHBalance() {
     // Show loading state
     showTokenLoadingSkeleton();
     
-    // Get ETH balance directly from provider
-    const balance = await provider.getBalance(wallet.address);
-    const formattedBalance = ethers.formatEther(balance);
-    
-    // Update currentBalances for ETH only
-    currentBalances = {
-      ETH: {
-        raw: balance,
-        formatted: formattedBalance
-      }
-    };
-    
-    // Get ETH price if available (could cache from mainnet)
-    const ethPrice = tokenPrices.ETH?.usd || 0;
-    
-    // Update display for both wallet and send tabs
-    const tokenGrid = document.getElementById("tokenGrid");
-    const sendTokenGrid = document.getElementById("sendTokenGrid");
-    
-    const ethRowHTML = `
-      <div class="token-row" data-token="ETH" data-symbol="ETH">
-        <div class="token-info">
-          <div class="token-icon">${TOKEN_LOGOS.ETH || generateCoinSVG('ETH')}</div>
-          <div class="token-details">
-            <div class="token-symbol">ETH</div>
-            <div class="token-name">Ethereum</div>
-            <div class="token-network-badge" style="display: inline-block; padding: 2px 6px; background: #0052FF; color: white; border-radius: 4px; font-size: 10px; margin-top: 2px;">Base</div>
-          </div>
-        </div>
-        <div class="token-balance">
-          <div class="balance-amount">${parseFloat(formattedBalance).toFixed(6)}</div>
-          <div class="balance-value">${formatCurrency(parseFloat(formattedBalance) * ethPrice)}</div>
-        </div>
-      </div>
-    `;
-    
-    if (tokenGrid) {
-      tokenGrid.innerHTML = ethRowHTML;
-    }
-    
-    if (sendTokenGrid) {
-      sendTokenGrid.innerHTML = ethRowHTML;
-      // Add click handler for the send tab
-      const sendRow = sendTokenGrid.querySelector('.token-row');
-      if (sendRow) {
-        sendRow.classList.add('selected'); // ETH is selected by default on Base
-        sendRow.addEventListener('click', () => selectToken('ETH'));
-      }
-    }
-    
-    // Update portfolio total
-    const portfolioTotal = parseFloat(formattedBalance) * ethPrice;
-    const portfolioEl = document.getElementById("portfolioTotal");
-    if (portfolioEl) {
-      portfolioEl.textContent = `Total: ${formatCurrency(portfolioTotal)}`;
-    }
+    // Since Base has the backend contract, we can use fetchAllBalances
+    // which will use the zWalletContract's batchView
+    await fetchAllBalances(true);
     
     // Hide add token button on Base
     const addTokenBtn = document.getElementById("addTokenBtn");
@@ -2448,8 +2620,8 @@ async function fetchBaseETHBalance() {
     }
     
   } catch (err) {
-    console.error("Error fetching Base ETH balance:", err);
-    showError("Failed to fetch balance");
+    console.error("Error fetching Base balances:", err);
+    showError("Failed to fetch balances");
   }
 }
 
@@ -2464,14 +2636,40 @@ let balanceCache = {
 let zammPriceCache = {
   data: null,
   timestamp: 0,
-  ttl: 30000 // 30 seconds cache
+  ttl: 10000 // 10 seconds - same as balance cache for consistency
 };
 
-// Cache for gas estimations to reduce RPC calls
-let gasEstimateCache = {
-  data: new Map(), // Key: hash of params, Value: {estimate, timestamp}
-  ttl: 15000 // 15 seconds cache
-};
+
+let isFetchingBalances = false;
+
+// Helper function to ensure balances are loaded before operations
+async function ensureBalancesLoaded() {
+  console.log("Ensuring balances loaded. Current state:", {
+    hasBalances: !!currentBalances,
+    balanceCount: currentBalances ? Object.keys(currentBalances).length : 0,
+    ethBalance: currentBalances?.["ETH"]
+  });
+  
+  if (!currentBalances || Object.keys(currentBalances).length === 0) {
+    console.log("No balances found, fetching...");
+    await fetchAllBalances();
+    // Wait a bit for balances to propagate
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  // Double-check ETH balance is loaded for gas calculations
+  if (!currentBalances["ETH"] || !currentBalances["ETH"].raw) {
+    console.warn("ETH balance not loaded, force fetching...");
+    await fetchAllBalances(true);
+  }
+  
+  console.log("Balances after ensure:", {
+    ethBalance: currentBalances?.["ETH"],
+    totalTokens: currentBalances ? Object.keys(currentBalances).length : 0
+  });
+  
+  return currentBalances;
+}
 
 async function fetchAllBalances(forceRefresh = false) {
   
@@ -2479,12 +2677,19 @@ async function fetchAllBalances(forceRefresh = false) {
     return;
   }
   
-  // For Base network, only fetch ETH balance directly
-  if (isBaseMode) {
-    return fetchBaseETHBalance();
+  // Base network now uses the backend contract for batch view
+  if (!zWalletContract) {
+    return;
   }
   
-  if (!zWalletContract) {
+  // Prevent duplicate fetches
+  if (isFetchingBalances && !forceRefresh) {
+    // Wait for existing fetch to complete
+    let attempts = 0;
+    while (isFetchingBalances && attempts < 50) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
     return;
   }
   
@@ -2496,6 +2701,8 @@ async function fetchAllBalances(forceRefresh = false) {
     updateBalanceDisplay();
     return;
   }
+  
+  isFetchingBalances = true;
   
   // Show loading state only if not cached and actually visible
   const tokenGrid = document.getElementById("tokenGrid");
@@ -2559,10 +2766,10 @@ async function fetchAllBalances(forceRefresh = false) {
       ethPrice = Number(pricesUSDC[ethIndex]) / 1e6;
     }
 
-    // Start fetching ZAMM price in parallel (non-blocking)
+    // Start fetching ZAMM price in parallel (non-blocking) - only on mainnet
     let zammPricePromise = null;
-    if (tokenSymbols.includes("ZAMM")) {
-      zammPricePromise = fetchZAMMPrice().catch(err => {
+    if (!isBaseMode && tokenSymbols.includes("ZAMM")) {
+      zammPricePromise = fetchZAMMPrice().catch(() => {
         // ZAMM price fetch failed
         return { eth: 0, usd: 0 };
       });
@@ -2631,11 +2838,17 @@ async function fetchAllBalances(forceRefresh = false) {
     };
     
     updateBalanceDisplay();
+    isFetchingBalances = false;
   } catch (error) {
     
-    // Fallback: try to at least get ETH balance
+    // Fallback: try to at least get ETH balance using zWallet
     try {
-      const ethBalance = await provider.getBalance(wallet.address);
+      const [rawBalance] = await zWalletContract.getBalanceOf(
+        wallet.address,
+        ethers.ZeroAddress, // ETH uses zero address
+        0 // id is 0 for ETH
+      );
+      const ethBalance = rawBalance;
       currentBalances = {
         ETH: {
           raw: ethBalance,
@@ -2651,7 +2864,7 @@ async function fetchAllBalances(forceRefresh = false) {
       }
       
       // Initialize other tokens with zero balance
-      for (const [symbol, token] of Object.entries(TOKENS)) {
+      for (const [symbol] of Object.entries(TOKENS)) {
         if (symbol !== 'ETH' && !currentBalances[symbol]) {
           currentBalances[symbol] = {
             raw: 0n,
@@ -2664,7 +2877,11 @@ async function fetchAllBalances(forceRefresh = false) {
       updateBalanceDisplay();
     } catch (fallbackError) {
       showError(error, 'Fetch Balances');
+    } finally {
+      isFetchingBalances = false;
     }
+  } finally {
+    isFetchingBalances = false;
   }
 }
 
@@ -2794,6 +3011,12 @@ function updateBalanceDisplay() {
     portfolioTotal.innerHTML = `<div style="font-size: 20px; margin-bottom: 4px;">${formatCurrency(totalValue)}</div>
     <div style="font-size: 14px; color: var(--text-secondary);">${totalETH.toFixed(6)} ETH</div>`;
   }
+  
+  // Show/hide add token button based on network
+  const addTokenBtn = document.getElementById("addTokenBtn");
+  if (addTokenBtn) {
+    addTokenBtn.style.display = isBaseMode ? 'none' : '';
+  }
 }
 
 function selectToken(symbol) {
@@ -2825,14 +3048,23 @@ function selectToken(symbol) {
 }
 
 async function resolveENS(name) {
-  if (!name.endsWith(".eth") || !zWalletContract) return null;
+  // Support both .eth (ENS) and .base.eth (Base names)
+  if (!zWalletContract) return null;
+  
+  // On Base, the backend contract checks Base names
+  // On Mainnet, it checks ENS names
+  // Both formats are supported: name.eth and name.base.eth
+  if (!name.endsWith(".eth")) return null;
 
   try {
     const [owner, receiver] = await zWalletContract.whatIsTheAddressOf(name);
     // Return receiver if set, otherwise owner
     return receiver !== ethers.ZeroAddress ? receiver : owner !== ethers.ZeroAddress ? owner : null;
   } catch (err) {
-    console.error('ENS resolution failed:', err);
+    // Don't log error for Base names on Base network - it's expected
+    if (!(isBaseMode && name.endsWith('.base.eth'))) {
+      console.error('Name resolution failed:', err);
+    }
     return null;
   }
 }
@@ -2841,7 +3073,7 @@ async function updateGasPrices() {
   if (!provider) return;
 
   try {
-    const feeData = await provider.getFeeData();
+    const feeData = await getCachedGasPrice();
 
     // Get current base fee and add buffer for next block
     let baseFee = feeData.maxFeePerGas;
@@ -3474,6 +3706,49 @@ function lockWallet() {
   showToast("Locked");
 }
 
+// Helper function to open external URLs in Chrome extension
+function openExternalUrl(url) {
+  if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({ action: 'open_external', url: url });
+  } else {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+// Helper function to create clickable external links
+function createExternalLink(url, text, style = '') {
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = text;
+  if (style) {
+    link.style.cssText = style;
+  }
+  
+  // Add click handler for extension compatibility
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    openExternalUrl(url);
+  });
+  
+  return link;
+}
+
+// Helper to attach click handlers to existing links
+function attachLinkHandlers() {
+  // Find all external links and attach handlers
+  document.querySelectorAll('a[target="_blank"]').forEach(link => {
+    if (!link.dataset.handlerAttached) {
+      link.dataset.handlerAttached = 'true';
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        openExternalUrl(link.href);
+      });
+    }
+  });
+}
+
 async function showEtherscanLink(txHash) {
   const status = document.getElementById("txStatus");
   
@@ -3516,24 +3791,13 @@ async function showEtherscanLink(txHash) {
     explorerName = "Etherscan";
   }
   
-  // Block explorer link
-  const explorerLink = document.createElement("a");
-  explorerLink.href = explorerUrl;
+  // Create explorer link using helper
+  const explorerLink = createExternalLink(
+    explorerUrl,
+    `${explorerName} →`,
+    "color: var(--accent); text-decoration: underline; font-size: 12px;"
+  );
   explorerLink.className = "explorer-link";
-  explorerLink.textContent = `${explorerName} →`;
-  explorerLink.style.cssText = "color: var(--accent); text-decoration: underline; font-size: 12px;";
-  explorerLink.target = "_blank";
-  explorerLink.rel = "noopener noreferrer";
-  
-  // Override click for extension compatibility
-  explorerLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ action: 'open_external', url: explorerUrl });
-    } else {
-      window.open(explorerUrl, '_blank', 'noopener,noreferrer');
-    }
-  });
   
   linksContainer.appendChild(explorerLink);
   status.appendChild(linksContainer);
@@ -3604,12 +3868,17 @@ function showQRModal(address) {
   const qrImage = document.getElementById("qrCodeImage");
   const qrAddress = document.getElementById("qrAddress");
   
-  if (!modal || !qrImage || !qrAddress) return;
+  if (!modal || !qrImage || !qrAddress) {
+    console.error("QR modal elements not found");
+    return;
+  }
   
   // Generate QR code - use production-ready generator
   // Use plain address for maximum compatibility (MetaMask, Trust Wallet, etc)
   
-  // Debug: log what we're encoding
+  console.log("Generating QR for address:", address);
+  
+  let qrGenerated = false;
   
   if (window.generateQRCode) {
     try {
@@ -3620,21 +3889,56 @@ function showQRModal(address) {
         cleanAddress = '0x' + cleanAddress;
       }
       
+      console.log("Using generateQRCode for:", cleanAddress);
       const qrDataUrl = window.generateQRCode(cleanAddress, 256);
-      qrImage.src = qrDataUrl;
+      
+      if (qrDataUrl) {
+        qrImage.src = qrDataUrl;
+        qrGenerated = true;
+        console.log("QR code generated successfully");
+      } else {
+        console.error("generateQRCode returned null");
+      }
     } catch (e) {
-      showToast("QR code generation failed");
+      console.error("QR generation error:", e);
     }
   } else {
-    // Fallback to visual-id if qr-lite not loaded
+    console.warn("window.generateQRCode not available");
+  }
+  
+  // Fallback to visual-id if main QR generator failed
+  if (!qrGenerated) {
     if (window.zWalletVisual && window.zWalletVisual.generateSimpleQR) {
-      const qrDataUrl = window.zWalletVisual.generateSimpleQR(address, 256);
-      qrImage.src = qrDataUrl;
+      console.log("Using fallback generateSimpleQR");
+      try {
+        const qrDataUrl = window.zWalletVisual.generateSimpleQR(address, 256);
+        if (qrDataUrl) {
+          qrImage.src = qrDataUrl;
+          qrGenerated = true;
+          console.log("Fallback QR generated successfully");
+        }
+      } catch (e) {
+        console.error("Fallback QR generation error:", e);
+      }
+    } else {
+      console.error("No QR generation method available");
     }
+  }
+  
+  if (!qrGenerated) {
+    // Show error in the modal
+    qrImage.style.display = 'none';
+    const errorDiv = document.createElement('div');
+    errorDiv.style.cssText = 'padding: 20px; text-align: center; color: var(--error);';
+    errorDiv.textContent = 'QR code generation failed. Please copy the address manually.';
+    qrImage.parentNode.insertBefore(errorDiv, qrImage);
   }
   
   // Display address
   qrAddress.textContent = address;
+  
+  // Show the modal
+  modal.classList.remove('hidden');
   
   // Setup modal buttons
   const closeBtn = document.getElementById("qrModalClose");
@@ -3650,7 +3954,9 @@ function showQRModal(address) {
       const link = document.createElement("a");
       link.download = `zWallet-${address.slice(0, 8)}.png`;
       link.href = qrImage.src;
+      document.body.appendChild(link);
       link.click();
+      document.body.removeChild(link);
     };
   }
   
@@ -3658,8 +3964,7 @@ function showQRModal(address) {
     copyBtn.onclick = () => copyToClipboard(address, "address");
   }
   
-  // Show modal
-  modal.classList.remove("hidden");
+  // Modal already shown above, no need to show again
   
   // Close on outside click
   modal.onclick = (e) => {
@@ -3852,7 +4157,6 @@ async function displayWallet() {
   }
   
   // Apply network UI state
-  const baseNetworkToggle = document.getElementById("baseNetworkToggle");
   const networkIndicator = document.getElementById("networkIndicator");
   
   // Update the header network button icon
@@ -3947,6 +4251,12 @@ async function displayWallet() {
 }
 
 async function addCustomToken(tokenAddress, tokenId = null) {
+  // Custom tokens only supported on mainnet
+  if (isBaseMode) {
+    showToast("Custom tokens not supported on Base network");
+    return null;
+  }
+  
   if (!zWalletContract) return null;
 
   try {
@@ -3955,7 +4265,10 @@ async function addCustomToken(tokenAddress, tokenId = null) {
       throw new Error("Invalid address");
     }
 
-    // First check token type using batchView
+    // First check token type using cached contract type check
+    const contractType = await getCachedContractType(tokenAddress);
+    
+    // Use batchView to get token kind and balance
     const [, , , kinds] = await zWalletContract.batchView(
       wallet.address,
       [tokenAddress],
@@ -3964,21 +4277,17 @@ async function addCustomToken(tokenAddress, tokenId = null) {
     
     const tokenKind = kinds[0];
     
-    // Try to get metadata, but don't fail for ERC6909
-    let name, symbol, decimals;
-    try {
-      [name, symbol, decimals] = await zWalletContract.getMetadata(tokenAddress);
-    } catch (metadataErr) {
-      // Metadata fetch failed (may be normal for ERC6909)
-      // For ERC6909, this is expected - use defaults
-      if (tokenKind === 69 || tokenId) {
-        name = '';
-        symbol = '';
-        decimals = 18;
-      } else {
-        // For ERC20, metadata is required
-        throw new Error("Could not fetch token metadata");
-      }
+    // Get metadata using cached function
+    let { name, symbol, decimals } = await getCachedMetadata(tokenAddress);
+    
+    // For ERC6909, metadata might not be available
+    if ((tokenKind === 69 || tokenId || contractType.isERC6909) && !symbol) {
+      name = name || '';
+      symbol = symbol || '';
+      decimals = decimals || 18;
+    } else if (!symbol) {
+      // For ERC20, metadata is required
+      throw new Error("Could not fetch token metadata");
     }
     
     // For non-ERC6909, symbol is required
@@ -4018,6 +4327,15 @@ async function addCustomToken(tokenAddress, tokenId = null) {
     // Check if already exists
     if (TOKENS[token.symbol]) {
       throw new Error("Token already exists");
+    }
+    
+    // Try to fetch price for the new token
+    if (!token.isERC6909) {
+      const price = await fetchTokenPrice(tokenAddress);
+      if (price.usd > 0) {
+        // Store price in the token prices cache for immediate display
+        tokenPrices[token.symbol] = price;
+      }
     }
 
     return token;
@@ -4121,11 +4439,8 @@ async function sendTransaction() {
     return;
   }
   
-  // On Base network, only allow ETH sends
-  if (isBaseMode && selectedToken !== 'ETH') {
-    status.innerHTML = '<div class="status error">Only ETH transfers supported on Base</div>';
-    return;
-  }
+  // Base network supports ETH and ERC20 tokens
+  // No special restriction needed here since we now have the backend contract
 
   // Check transaction rate limiting
   const now = Date.now();
@@ -4157,10 +4472,11 @@ async function sendTransaction() {
       return;
     }
     
-    status.innerHTML = '<div class="status">Resolving ENS...</div>';
+    const nameType = toInput.endsWith('.base.eth') ? 'Base name' : 'ENS';
+    status.innerHTML = `<div class="status">Resolving ${nameType}...</div>`;
     toAddress = await resolveENS(toInput);
     if (!toAddress) {
-      status.innerHTML = '<div class="status error">ENS name not found</div>';
+      status.innerHTML = `<div class="status error">${nameType} not found</div>`;
       return;
     }
     
@@ -4217,8 +4533,20 @@ async function sendTransaction() {
     return;
   }
 
-  // Check ETH balance for gas
-  const ethBalance = await provider.getBalance(wallet.address);
+  // Check ETH balance for gas (use cached balance)
+  const ethBalanceObj = currentBalances["ETH"];
+  let ethBalance;
+  if (ethBalanceObj) {
+    ethBalance = ethBalanceObj.raw;
+  } else {
+    // Use zWallet's unified balance function
+    const [rawBalance] = await zWalletContract.getBalanceOf(
+      wallet.address,
+      ethers.ZeroAddress,
+      0
+    );
+    ethBalance = rawBalance;
+  }
   if (ethBalance < gasCost) {
     status.innerHTML =
       '<div class="status error">Insufficient ETH for gas</div>';
@@ -4513,20 +4841,9 @@ async function sendTransaction() {
       status.innerHTML = '<div class="status success">✓ Success!</div>';
       showEtherscanLink(tx.hash);
       
-      // Special message for USDC IOUs
-      if (selectedToken === "USDC") {
-        showToast("USDC IOU sent! Recipient can check IOU on IOUSDC.eth");
-        // Add clickable link in status
-        status.innerHTML += `
-          <div style="margin-top: 8px; font-size: 12px;">
-            📄 Recipient can check and claim their IOU at 
-            <a href="https://iousdc.eth.limo/" target="_blank" style="color: var(--accent); text-decoration: underline;">
-              IOUSDC.eth
-            </a>
-          </div>`;
-      } else {
-        showToast("Transaction confirmed!");
-      }
+      // Only show transaction confirmed message for regular transfers
+      // IOUSDC messages are handled in the createIOUSlip function
+      showToast("Transaction confirmed!");
       
       await fetchAllBalances();
       document.getElementById("toAddress").value = "";
@@ -4592,9 +4909,10 @@ async function createIOUSlip() {
         return;
       }
       
+      const nameType = toInput.endsWith('.base.eth') ? 'Base name' : 'ENS';
       toAddress = await resolveENS(toInput);
       if (!toAddress) {
-        status.innerHTML = '<div class="status error">ENS name not found</div>';
+        status.innerHTML = `<div class="status error">${nameType} not found</div>`;
         return;
       }
       
@@ -4624,7 +4942,8 @@ async function createIOUSlip() {
     document.getElementById("iouTo").textContent = toInput.endsWith(".eth") 
       ? `${toInput} (${toAddress.slice(0, 6)}...${toAddress.slice(-4)})`
       : `${toAddress.slice(0, 6)}...${toAddress.slice(-4)}`;
-    document.getElementById("iouAmount").textContent = `${amount} USDC`;
+    const networkLabel = isBaseMode ? ' (Base)' : ' (Ethereum)';
+    document.getElementById("iouAmount").textContent = `${amount} USDC${networkLabel}`;
     document.getElementById("iouExpiry").textContent = new Date(validBefore * 1000).toLocaleString();
 
     // Prepare EIP-712 message
@@ -4652,7 +4971,8 @@ async function createIOUSlip() {
       validBefore: validBefore,
       nonce: nonce,
       created: new Date().toISOString(),
-      chainId: 1
+      chainId: isBaseMode ? 8453 : 1,
+      network: isBaseMode ? 'Base' : 'Ethereum'
     };
 
     document.getElementById("iouDataDisplay").value = JSON.stringify(iouData, null, 2);
@@ -4675,15 +4995,26 @@ async function signAndDownloadIOU() {
     const status = document.getElementById("txStatus");
     status.innerHTML = '<div class="status">Signing IOU...</div>';
 
-    // Sign EIP-712 message
+    // Sign EIP-712 message - use correct domain based on network
     const types = { TransferWithAuthorization: EIP3009_TYPES.TransferWithAuthorization };
-    const signature = await wallet.signTypedData(USDC_EIP712_DOMAIN, types, pendingIouMessage);
+    const domain = isBaseMode ? USDC_EIP712_DOMAIN_BASE : USDC_EIP712_DOMAIN_MAINNET;
+    const signature = await wallet.signTypedData(domain, types, pendingIouMessage);
     
-    // Extract v, r, s from signature
-    const sig = ethers.Signature.from(signature);
-    const v = sig.v;
-    const r = sig.r;
-    const s = sig.s;
+    // Extract v, r, s from signature - manual extraction for compatibility
+    // ethers v6 splitSignature may not work the same as v5 that IOUSDC.html uses
+    const sig = signature.startsWith('0x') ? signature.slice(2) : signature;
+    if (sig.length !== 130) {
+      throw new Error('Invalid signature length');
+    }
+    
+    const r = '0x' + sig.slice(0, 64);  // First 32 bytes
+    const s = '0x' + sig.slice(64, 128); // Next 32 bytes  
+    let v = parseInt(sig.slice(128, 130), 16); // Last byte
+    
+    // Normalize v to 27/28 if it's 0/1
+    if (v === 0 || v === 1) {
+      v += 27;
+    }
 
     // Create complete IOU slip
     const iouSlip = {
@@ -4700,7 +5031,8 @@ async function signAndDownloadIOU() {
       amount: pendingIouAmount,
       signature: signature,
       created: new Date().toISOString(),
-      chainId: 1
+      chainId: isBaseMode ? 8453 : 1,
+      network: isBaseMode ? 'Base' : 'Ethereum'
     };
 
     // Download as JSON file
@@ -4708,21 +5040,31 @@ async function signAndDownloadIOU() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `usdc-iou-${Date.now()}.json`;
+    const networkPrefix = isBaseMode ? 'base' : 'mainnet';
+    a.download = `usdc-iou-${networkPrefix}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
 
     // Update display
     document.getElementById("iouDataDisplay").value = JSON.stringify(iouSlip, null, 2);
     
-    status.innerHTML = `
-      <div class="status success">IOU signed and downloaded!</div>
-      <div style="margin-top: 8px; font-size: 12px;">
-        📄 Recipient can redeem this IOU at 
-        <a href="https://iousdc.eth.limo/" target="_blank" style="color: var(--accent); text-decoration: underline;">
-          IOUSDC.eth
-        </a>
-      </div>`;
+    status.innerHTML = '';
+    const successDiv = document.createElement('div');
+    successDiv.className = 'status success';
+    successDiv.textContent = 'IOU signed and downloaded!';
+    status.appendChild(successDiv);
+    
+    const infoDiv = document.createElement('div');
+    infoDiv.style.cssText = 'margin-top: 8px; font-size: 12px;';
+    infoDiv.textContent = '📄 Recipient can redeem this IOU at ';
+    
+    const iouLink = createExternalLink(
+      'https://iousdc.eth.limo/',
+      'IOUSDC.eth',
+      'color: var(--accent); text-decoration: underline;'
+    );
+    infoDiv.appendChild(iouLink);
+    status.appendChild(infoDiv);
     showToast("IOU created! Recipient can check on IOUSDC.eth");
 
     // Clear form
@@ -4769,20 +5111,7 @@ function handleTabClick(tab) {
     tabContent.classList.add("active");
     // Activate tab
     
-    // Debug: Check what's actually visible in the tab
-    const visibleElements = tabContent.querySelectorAll('*:not(.hidden)');
     // Tab activated
-    
-    // Check computed styles
-    const computedStyle = window.getComputedStyle(tabContent);
-    // Tab content ready
-    
-    // Check if sections are visible
-    const sections = tabContent.querySelectorAll('.section');
-    sections.forEach((section, i) => {
-      const sectionStyle = window.getComputedStyle(section);
-      // Section visible
-    });
   } else {
     // Tab content missing
   }
@@ -4816,7 +5145,7 @@ function setupEventListeners() {
   const allTabs = document.querySelectorAll(".tab");
   // Setup tabs
   
-  allTabs.forEach((tab, index) => {
+  allTabs.forEach((tab) => {
     // Configure tab
     
     // Use only addEventListener, not both onclick and addEventListener
@@ -4829,6 +5158,18 @@ function setupEventListeners() {
       // Update 7702 status when switching to settings tab
       if (tab.dataset.tab === 'settings' && wallet) {
         await update7702Status();
+      }
+      
+      // Ensure balances are loaded when switching to swap tab
+      if (tab.dataset.tab === 'swap' && wallet) {
+        // Always call updateSwapBalances - it will fetch if needed
+        await updateSwapBalances();
+      }
+      
+      // Ensure balances are loaded when switching to bridge tab
+      if (tab.dataset.tab === 'bridge' && wallet) {
+        // Always call updateBridgeBalance - it will fetch if needed
+        await updateBridgeBalance();
       }
     });
   });
@@ -5184,7 +5525,7 @@ function setupEventListeners() {
         
         // Refresh swap dropdowns to include new token
         if (typeof initializeTokenDropdowns === 'function') {
-          initializeTokenDropdowns();
+          await initializeTokenDropdowns();
         }
         
         showToast(`Added ${token.symbol}!`);
@@ -5412,7 +5753,8 @@ function setupEventListeners() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `usdc-iou-${Date.now()}.json`;
+    const networkPrefix = isBaseMode ? 'base' : 'mainnet';
+    a.download = `usdc-iou-${networkPrefix}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
     showToast("IOU downloaded! 💾");
@@ -5428,6 +5770,9 @@ function setupEventListeners() {
       } else {
         currentRpc = rpc;
         localStorage.setItem("rpc_endpoint", rpc);
+        
+        // Invalidate gas price cache on RPC switch
+        gasPriceCache = { data: null, timestamp: 0, networkId: null };
         
         // Only reinit if on mainnet
         if (!isBaseMode) {
@@ -5449,6 +5794,9 @@ function setupEventListeners() {
       
       if (baseRpc) {
         localStorage.setItem("base_rpc", baseRpc);
+        
+        // Invalidate gas price cache on RPC switch
+        gasPriceCache = { data: null, timestamp: 0, networkId: null };
         
         // Only reinit if on Base
         if (isBaseMode) {
@@ -5507,6 +5855,9 @@ function setupEventListeners() {
         currentRpc = urlValidation.url;
         localStorage.setItem("rpc_endpoint", urlValidation.url);
         provider = testProvider;
+        
+        // Invalidate gas price cache on RPC switch
+        gasPriceCache = { data: null, timestamp: 0, networkId: null };
         
         // Reinitialize contracts
         zWalletContract = new ethers.Contract(
@@ -5839,7 +6190,65 @@ async function calculateERC6909SwapOutput(tokenIn, tokenOut, amountIn) {
   }
 }
 
-// Swap state
+// Swap state persistence functions
+function saveSwapState() {
+  const swapState = {
+    fromToken: swapFromToken,
+    toToken: swapToToken,
+    slippage: swapSlippage,
+    mode: swapMode,
+    fromAmount: document.getElementById('swapFromAmount')?.value || '',
+    toAmount: document.getElementById('swapToAmount')?.value || '',
+    timestamp: Date.now()
+  };
+  localStorage.setItem('swap_state', JSON.stringify(swapState));
+}
+
+
+
+function restoreSwapState() {
+  try {
+    const saved = localStorage.getItem('swap_state');
+    if (!saved) return false;
+    
+    const state = JSON.parse(saved);
+    // Only restore if less than 24 hours old
+    if (Date.now() - state.timestamp > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem('swap_state');
+      return false;
+    }
+    
+    // Validate tokens still exist
+    if (TOKENS[state.fromToken] && TOKENS[state.toToken]) {
+      swapFromToken = state.fromToken;
+      swapToToken = state.toToken;
+      swapSlippage = state.slippage || 0.5;
+      swapMode = state.mode || "exactIn";
+      
+      // Restore input values after DOM is ready
+      setTimeout(() => {
+        const fromAmountInput = document.getElementById('swapFromAmount');
+        const toAmountInput = document.getElementById('swapToAmount');
+        if (fromAmountInput && state.fromAmount) {
+          fromAmountInput.value = state.fromAmount;
+        }
+        if (toAmountInput && state.toAmount) {
+          toAmountInput.value = state.toAmount;
+        }
+        updateSwapTokenDisplay('from');
+        updateSwapTokenDisplay('to');
+        updateSwapBalances();
+      }, 100);
+      
+      return true;
+    }
+  } catch (err) {
+    console.error('Failed to restore swap state:', err);
+  }
+  return false;
+}
+
+// Swap state - initialize with saved values or defaults
 let swapFromToken = "ETH";
 let swapToToken = "USDC";
 let swapSlippage = 0.5; // 0.5% default
@@ -5848,6 +6257,9 @@ let bestSwapRoute = null;
 let tokenSelectorTarget = null; // 'from' or 'to'
 let swapSimulationTimeout = null; // Debounce timer
 let isSimulating = false; // Prevent concurrent simulations
+
+// Try to restore saved state
+restoreSwapState();
 
 // AMM sources enum from zQuoter contract
 const AMM_SOURCES = {
@@ -5869,7 +6281,12 @@ const V4_TICK_SPACINGS = {
 async function setupSwapEventListeners() {
   
   // Function to initialize token dropdowns with logos
-  function initializeTokenDropdowns() {
+  async function initializeTokenDropdowns() {
+    // Ensure balances are loaded before initializing dropdowns
+    if (wallet && (!currentBalances || Object.keys(currentBalances).length === 0)) {
+      await fetchAllBalances();
+    }
+    
     // Get all available tokens including custom ones
     const swapTokens = Object.keys(TOKENS);
     
@@ -5898,15 +6315,16 @@ async function setupSwapEventListeners() {
       
       // Add click handlers
       fromDropdown.querySelectorAll('.token-option').forEach(option => {
-        option.addEventListener('click', (e) => {
+        option.addEventListener('click', async (e) => {
           e.stopPropagation();
           swapFromToken = option.dataset.token;
           updateSwapTokenDisplay('from');
           updateSwapBalances();
           fromDropdown.classList.add('hidden');
+          saveSwapState();
           
           // Re-initialize to dropdown based on new from token
-          initializeTokenDropdowns();
+          await initializeTokenDropdowns();
           
           // Check if current to token is still valid
           const fromToken = TOKENS[swapFromToken];
@@ -5974,6 +6392,7 @@ async function setupSwapEventListeners() {
           updateSwapTokenDisplay('to');
           updateSwapBalances();
           toDropdown.classList.add('hidden');
+          saveSwapState();
           if (document.getElementById("swapFromAmount").value) {
             simulateSwap();
           }
@@ -5985,7 +6404,7 @@ async function setupSwapEventListeners() {
   // Initialize token displays and dropdowns
   updateSwapTokenDisplay('from');
   updateSwapTokenDisplay('to');
-  initializeTokenDropdowns();
+  await initializeTokenDropdowns();
   
   // Setup token selector clicks
   document.getElementById('swapFromTokenSelector')?.addEventListener('click', (e) => {
@@ -6019,7 +6438,7 @@ async function setupSwapEventListeners() {
   });
   
   // Swap direction button
-  document.getElementById("swapDirectionBtn")?.addEventListener("click", () => {
+  document.getElementById("swapDirectionBtn")?.addEventListener("click", async () => {
     // Check if swap is valid before allowing
     const fromToken = TOKENS[swapFromToken];
     const toToken = TOKENS[swapToToken];
@@ -6047,7 +6466,10 @@ async function setupSwapEventListeners() {
     updateSwapBalances();
     
     // Re-initialize dropdowns with new restrictions
-    initializeTokenDropdowns();
+    await initializeTokenDropdowns();
+    
+    // Save the new state
+    saveSwapState();
     
     if (fromAmount || toAmount) {
       simulateSwap();
@@ -6064,8 +6486,12 @@ async function setupSwapEventListeners() {
   const handleSwapFromInput = (e) => {
     swapMode = "exactIn";
     
+    // Store current cursor position
+    const cursorPos = e.target.selectionStart;
+    const originalValue = e.target.value;
+    
     // Sanitize input - only allow numbers and decimal point
-    let value = e.target.value.replace(/[^0-9.]/g, '');
+    let value = originalValue.replace(/[^0-9.]/g, '');
     
     // Ensure only one decimal point
     const parts = value.split('.');
@@ -6073,7 +6499,14 @@ async function setupSwapEventListeners() {
       value = parts[0] + '.' + parts.slice(1).join('');
     }
     
-    e.target.value = value;
+    // Only update if value actually changed
+    if (value !== originalValue) {
+      e.target.value = value;
+      // Restore cursor position adjusted for removed characters
+      const diff = originalValue.length - value.length;
+      const newPos = Math.max(0, cursorPos - diff);
+      e.target.setSelectionRange(newPos, newPos);
+    }
     
     // Validate against balance
     const inputAmount = parseFloat(e.target.value);
@@ -6095,17 +6528,17 @@ async function setupSwapEventListeners() {
         }
         const effectiveBalance = Math.max(0, maxBalance - gasBuffer);
         
-        if (inputAmount > effectiveBalance) {
-          e.target.value = effectiveBalance > 0 ? effectiveBalance.toFixed(6) : "0";
-          showToast(`Max available: ${effectiveBalance.toFixed(6)} ETH (${gasBuffer} ETH gas reserved)`);
+        if (inputAmount > effectiveBalance && effectiveBalance > 0) {
+          // Don't automatically change the value, just show a warning
+          showToast(`Warning: Max available is ${effectiveBalance.toFixed(6)} ETH (${gasBuffer} ETH gas reserved)`);
         }
       } else {
         // For tokens, check against token balance
-        if (inputAmount > maxBalance) {
+        if (inputAmount > maxBalance && maxBalance > 0) {
           const decimals = token?.decimals || 18;
           const precision = decimals <= 6 ? 6 : (decimals <= 8 ? 8 : 6);
-          e.target.value = maxBalance > 0 ? maxBalance.toFixed(precision) : "0";
-          showToast(`Max available: ${maxBalance.toFixed(precision)} ${swapFromToken}`);
+          // Don't automatically change the value, just show a warning
+          showToast(`Warning: Max available is ${maxBalance.toFixed(precision)} ${swapFromToken}`);
         }
       }
     }
@@ -6115,8 +6548,10 @@ async function setupSwapEventListeners() {
     
     if (e.target.value) {
       debouncedSimulateSwap();
+      saveSwapState(); // Save state on input change
     } else {
       clearSwapQuote();
+      saveSwapState(); // Save even when clearing
     }
   };
   
@@ -6126,8 +6561,12 @@ async function setupSwapEventListeners() {
   const handleSwapToInput = (e) => {
     swapMode = "exactOut";
     
+    // Store current cursor position
+    const cursorPos = e.target.selectionStart;
+    const originalValue = e.target.value;
+    
     // Sanitize input - only allow numbers and decimal point
-    let value = e.target.value.replace(/[^0-9.]/g, '');
+    let value = originalValue.replace(/[^0-9.]/g, '');
     
     // Ensure only one decimal point
     const parts = value.split('.');
@@ -6135,15 +6574,24 @@ async function setupSwapEventListeners() {
       value = parts[0] + '.' + parts.slice(1).join('');
     }
     
-    e.target.value = value;
+    // Only update if value actually changed
+    if (value !== originalValue) {
+      e.target.value = value;
+      // Restore cursor position adjusted for removed characters
+      const diff = originalValue.length - value.length;
+      const newPos = Math.max(0, cursorPos - diff);
+      e.target.setSelectionRange(newPos, newPos);
+    }
     
     // Update USD display immediately
     updateSwapUSDValues();
     
     if (e.target.value) {
       debouncedSimulateSwap();
+      saveSwapState(); // Save state on input change
     } else {
       clearSwapQuote();
+      saveSwapState(); // Save even when clearing
     }
   };
   
@@ -6156,6 +6604,12 @@ async function setupSwapEventListeners() {
       return;
     }
     
+    // Ensure balances are loaded
+    if (!currentBalances || Object.keys(currentBalances).length === 0) {
+      showToast("Loading balances...");
+      await fetchAllBalances();
+    }
+    
     try {
       let maxAmount;
       const token = TOKENS[swapFromToken];
@@ -6164,17 +6618,17 @@ async function setupSwapEventListeners() {
         // For ETH, we need to account for gas fees more accurately
         const balanceObj = currentBalances["ETH"];
         if (!balanceObj || !balanceObj.formatted) {
-          
           showToast("No ETH balance");
+          document.getElementById("swapFromAmount").value = "";
           return;
         }
         
-        const balanceETH = parseFloat(balanceObj.formatted);
+        const balanceETH = parseFloat(balanceObj.formatted.toString());
         
         // Get current gas price to calculate buffer more accurately
         let gasBuffer;
         try {
-          const feeData = await provider.getFeeData();
+          const feeData = await getCachedGasPrice();
           const gasPrice = feeData.maxFeePerGas || feeData.gasPrice || ethers.parseUnits("30", "gwei");
           
           // Estimate gas for a swap transaction (typically 150k-250k gas)
@@ -6231,8 +6685,8 @@ async function setupSwapEventListeners() {
         // For tokens, use the formatted balance from currentBalances
         const balanceObj = currentBalances[swapFromToken];
         if (!balanceObj || !balanceObj.formatted) {
-          
           showToast(`No ${swapFromToken} balance`);
+          document.getElementById("swapFromAmount").value = "";
           return;
         }
         
@@ -6297,6 +6751,7 @@ async function setupSwapEventListeners() {
       } else {
         document.getElementById("customSlippageSection")?.classList.add("hidden");
         swapSlippage = parseFloat(slippage);
+        saveSwapState(); // Save slippage preference
         
         // Re-simulate if amounts are present
         if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
@@ -6311,6 +6766,7 @@ async function setupSwapEventListeners() {
     const value = parseFloat(e.target.value);
     if (!isNaN(value) && value >= 0 && value <= 50) {
       swapSlippage = value;
+      saveSwapState(); // Save custom slippage
       if (document.getElementById("swapFromAmount").value || document.getElementById("swapToAmount").value) {
         simulateSwap();
       }
@@ -6330,7 +6786,7 @@ async function setupSwapEventListeners() {
   });
   
   // Initialize token dropdowns and display
-  initializeTokenDropdowns();
+  await initializeTokenDropdowns();
   updateSwapTokenDisplay();
   updateSwapBalances();
   
@@ -6356,21 +6812,47 @@ function updateSwapTokenDisplay(which = 'both') {
 }
 
 async function updateSwapBalances() {
+  // Always ensure balances are properly loaded using the same logic as Send tab
+  if (!wallet || !provider) {
+    const fromBalance = document.getElementById("swapFromBalance");
+    const toBalance = document.getElementById("swapToBalance");
+    if (fromBalance) fromBalance.textContent = "0.000000";
+    if (toBalance) toBalance.textContent = "0.000000";
+    return;
+  }
+  
+  // Force fetch if no balances or missing critical tokens
+  if (!currentBalances || Object.keys(currentBalances).length === 0 || 
+      !currentBalances["ETH"] || 
+      (swapFromToken !== "ETH" && !currentBalances[swapFromToken]) ||
+      (swapToToken !== "ETH" && !currentBalances[swapToToken])) {
+    console.log("Swap tab: Fetching balances because missing tokens", { swapFromToken, swapToToken });
+    await fetchAllBalances(true); // Force refresh
+    // Wait a bit for balances to propagate
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
   const fromBalance = document.getElementById("swapFromBalance");
   const toBalance = document.getElementById("swapToBalance");
   
   if (fromBalance) {
     const balanceObj = currentBalances[swapFromToken];
-    const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance) || 0;
-    fromBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    if (balanceObj && balanceObj.formatted !== undefined) {
+      const numBalance = parseFloat(balanceObj.formatted) || 0;
+      fromBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    } else {
+      fromBalance.textContent = "0.000000";
+    }
   }
   
   if (toBalance) {
     const balanceObj = currentBalances[swapToToken];
-    const balance = balanceObj ? balanceObj.formatted : "0";
-    const numBalance = parseFloat(balance) || 0;
-    toBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    if (balanceObj && balanceObj.formatted !== undefined) {
+      const numBalance = parseFloat(balanceObj.formatted) || 0;
+      toBalance.textContent = numBalance === 0 ? "0.000000" : Math.min(numBalance, 1e10).toFixed(6);
+    } else {
+      toBalance.textContent = "0.000000";
+    }
   }
   
   // Check approval status for non-ETH tokens
@@ -6435,6 +6917,9 @@ async function simulateSwap() {
     return;
   }
   
+  // Ensure balances are loaded
+  await ensureBalancesLoaded();
+  
   // Prevent concurrent simulations
   if (isSimulating) {
     
@@ -6447,10 +6932,24 @@ async function simulateSwap() {
     const fromToken = TOKENS[swapFromToken];
     const toToken = TOKENS[swapToToken];
     
-    // Get amount  
-    const amountIn = document.getElementById("swapFromAmount").value;
-    if (!amountIn || parseFloat(amountIn) <= 0) {
-      clearSwapQuote();
+    // Get amount based on swap mode
+    let amountIn, amountOut;
+    if (swapMode === "exactIn") {
+      amountIn = document.getElementById("swapFromAmount").value;
+      if (!amountIn || parseFloat(amountIn) <= 0) {
+        clearSwapQuote();
+        return;
+      }
+    } else {
+      // exactOut mode - not yet fully implemented
+      amountOut = document.getElementById("swapToAmount").value;
+      if (!amountOut || parseFloat(amountOut) <= 0) {
+        clearSwapQuote();
+        return;
+      }
+      // For now, we'll still use exactIn logic
+      // TODO: Implement exactOut quotes
+      showToast("Exact output mode coming soon");
       return;
     }
     
@@ -6487,7 +6986,6 @@ async function simulateSwap() {
       
       // Calculate CULT swap output using actual pool reserves from ZAMM_1
       // CULT uses the special feeOrHook value to identify its pool
-      const cultFeeOrHook = BigInt("57896044618658097711785492504343953926636021160616296542400437774503196477768");
       const cultFee = 40; // 0.4% in basis points
       
       // Use ZAMM_1 contract for CULT pools
@@ -6530,7 +7028,10 @@ async function simulateSwap() {
         const outputAmount = swapAmount - feeAmount;
         const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
         
-        document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+        // Only update the output field if we're in exactIn mode
+        if (swapMode === "exactIn") {
+          document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+        }
         document.getElementById("swapRoute").textContent = "CULT Pool (0.4% fee)";
         document.getElementById("swapBtn").textContent = "Swap";
         document.getElementById("swapBtn").disabled = false;
@@ -6574,7 +7075,10 @@ async function simulateSwap() {
       const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
       
       // Update UI with CULT quote
-      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      // Only update the output field if we're in exactIn mode
+      if (swapMode === "exactIn") {
+        document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      }
       document.getElementById("swapRoute").textContent = `CULT Pool (0.4% fee)`;
       document.getElementById("swapBtn").textContent = "Swap";
       document.getElementById("swapBtn").disabled = false;
@@ -6626,7 +7130,10 @@ async function simulateSwap() {
       const outputFormatted = ethers.formatUnits(outputAmount, toToken?.decimals || 18);
       
       // Update UI with ERC6909 quote
-      document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      // Only update the output field if we're in exactIn mode
+      if (swapMode === "exactIn") {
+        document.getElementById("swapToAmount").value = parseFloat(outputFormatted).toFixed(6);
+      }
       document.getElementById("swapRoute").textContent = `ZAMM AMM (${erc6909Result.swapFee / 100}% fee)`;
       document.getElementById("swapBtn").textContent = "Swap";
       document.getElementById("swapBtn").disabled = false;
@@ -6683,7 +7190,9 @@ async function simulateSwap() {
       document.getElementById("swapRoute").textContent = "No route found";
       document.getElementById("swapBtn").textContent = "No liquidity";
       document.getElementById("swapBtn").disabled = true;
-      document.getElementById("swapToAmount").value = "";
+      if (swapMode === "exactIn") {
+        document.getElementById("swapToAmount").value = "";
+      }
       updateSwapUSDValues();
       return;
     }
@@ -6691,7 +7200,10 @@ async function simulateSwap() {
     // Format the output amount
     const outputAmount = ethers.formatUnits(bestQuote.amountOut, toToken?.decimals || 18);
     
-    document.getElementById("swapToAmount").value = parseFloat(outputAmount).toFixed(6);
+    // Only update the output field if we're in exactIn mode
+    if (swapMode === "exactIn") {
+      document.getElementById("swapToAmount").value = parseFloat(outputAmount).toFixed(6);
+    }
     
     // Update USD values
     updateSwapUSDValues();
@@ -6706,7 +7218,7 @@ async function simulateSwap() {
     const minOutput = parseFloat(outputAmount) * (1 - slippage / 100);
     
     // Estimate gas fee
-    const gasPrice = await provider.getFeeData();
+    const gasPrice = await getCachedGasPrice();
     const gasLimit = 150000n; // Realistic gas for swap
     const gasFee = gasPrice.gasPrice * gasLimit;
     const gasFeeETH = ethers.formatEther(gasFee);
@@ -6766,6 +7278,9 @@ async function executeSwap() {
     return;
   }
   
+  // Ensure balances are loaded
+  await ensureBalancesLoaded();
+  
   // Special handling for CULT token - must use ETH pair
   const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
   if (isCultSwap && swapFromToken !== "ETH" && swapToToken !== "ETH") {
@@ -6775,12 +7290,47 @@ async function executeSwap() {
   
   // Check sufficient balance
   const fromBalance = currentBalances[swapFromToken];
-  if (fromBalance) {
-    const balanceWei = ethers.parseUnits(fromBalance.formatted, TOKENS[swapFromToken]?.decimals || 18);
-    if (balanceWei < bestSwapRoute.amountIn) {
-      showToast(`Insufficient ${swapFromToken} balance`);
+  if (!fromBalance || (!fromBalance.formatted && fromBalance.formatted !== 0)) {
+    showToast(`No ${swapFromToken} balance available`);
+    return;
+  }
+  
+  try {
+    const decimals = TOKENS[swapFromToken]?.decimals || 18;
+    // Use raw balance if available for more accurate comparison
+    let balanceWei;
+    if (fromBalance.raw !== undefined && fromBalance.raw !== null) {
+      balanceWei = BigInt(fromBalance.raw);
+      console.log(`Using raw balance for ${swapFromToken}:`, balanceWei.toString());
+    } else {
+      // Fallback to formatted balance
+      const formattedStr = fromBalance.formatted.toString();
+      balanceWei = ethers.parseUnits(formattedStr, decimals);
+      console.log(`Using formatted balance for ${swapFromToken}:`, formattedStr, "=>", balanceWei.toString());
+    }
+    
+    const amountInBigInt = BigInt(bestSwapRoute.amountIn);
+    console.log("Swap validation:", {
+      token: swapFromToken,
+      balance: balanceWei.toString(),
+      needed: amountInBigInt.toString(),
+      sufficient: balanceWei >= amountInBigInt
+    });
+    
+    if (balanceWei < amountInBigInt) {
+      const needed = ethers.formatUnits(amountInBigInt, decimals);
+      const available = ethers.formatUnits(balanceWei, decimals);
+      showToast(`Insufficient ${swapFromToken}: need ${parseFloat(needed).toFixed(6)}, have ${parseFloat(available).toFixed(6)}`);
       return;
     }
+  } catch (err) {
+    console.error("Balance validation error:", err, {
+      token: swapFromToken,
+      balance: fromBalance,
+      route: bestSwapRoute
+    });
+    showToast("Error validating balance");
+    return;
   }
   
   try {
@@ -6930,7 +7480,7 @@ async function executeSwap() {
     const minFormatted = ethers.formatUnits(minOutputBigInt, toToken?.decimals || 18);
     document.getElementById("confirmSwapMinimum").textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
     
-    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits("30", "gwei");
+    const gasPrice = (await getCachedGasPrice()).maxFeePerGas || ethers.parseUnits("30", "gwei");
     const gasLimit = 150000n; // Realistic estimate
     const gasCost = gasLimit * gasPrice;
     const gasCostEth = ethers.formatEther(gasCost);
@@ -7042,12 +7592,18 @@ async function executeSwap() {
       const explorerName = isBaseMode ? "Basescan" : "Etherscan";
       
       const swapStatus = document.getElementById("swapStatus");
-      swapStatus.innerHTML = `
-        <div style="color: var(--success); font-weight: bold; margin-bottom: 8px;">✓ Swap successful!</div>
-        <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
-          View on ${explorerName} →
-        </a>
-      `;
+      swapStatus.innerHTML = '';
+      const successDiv = document.createElement('div');
+      successDiv.style.cssText = "color: var(--success); font-weight: bold; margin-bottom: 8px;";
+      successDiv.textContent = "✓ Swap successful!";
+      swapStatus.appendChild(successDiv);
+      
+      const link = createExternalLink(
+        explorerUrl,
+        `View on ${explorerName} →`,
+        "color: var(--accent); text-decoration: underline; font-size: 12px;"
+      );
+      swapStatus.appendChild(link);
       
       showToast("Swap successful!");
       
@@ -7256,6 +7812,7 @@ async function executeBatchedSwap() {
           deadline
         );
       } catch (err) {
+        
         showToast("Failed to prepare swap");
         return;
       }
@@ -7329,7 +7886,7 @@ async function executeBatchedSwap() {
     const minFormatted = ethers.formatUnits(minOutputBigInt, toToken?.decimals || 18);
     document.getElementById("confirmSwapMinimum").textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
     
-    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits("30", "gwei");
+    const gasPrice = (await getCachedGasPrice()).maxFeePerGas || ethers.parseUnits("30", "gwei");
     const gasLimit = 200000n; // Higher for batched tx
     const regularGasLimit = 300000n; // Approve + swap separately
     const gasCost = gasLimit * gasPrice;
@@ -7438,14 +7995,18 @@ async function executeBatchedSwap() {
         ? `https://basescan.org/tx/${tx.hash}`
         : `https://etherscan.io/tx/${tx.hash}`;
       
-      statusEl.innerHTML = `
-        <div style="color: var(--success); font-weight: bold; margin-bottom: 8px;">
-          ✓ Batched swap successful! <span class="batch-indicator">⚡ 7702</span>
-        </div>
-        <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
-          View on ${isBaseMode ? "Basescan" : "Etherscan"} →
-        </a>
-      `;
+      statusEl.innerHTML = '';
+      const successDiv = document.createElement('div');
+      successDiv.style.cssText = "color: var(--success); font-weight: bold; margin-bottom: 8px;";
+      successDiv.innerHTML = '✓ Batched swap successful! <span class="batch-indicator">⚡ 7702</span>';
+      statusEl.appendChild(successDiv);
+      
+      const link = createExternalLink(
+        explorerUrl,
+        `View on ${isBaseMode ? "Basescan" : "Etherscan"} →`,
+        "color: var(--accent); text-decoration: underline; font-size: 12px;"
+      );
+      statusEl.appendChild(link);
       
       showToast("Batched swap successful!");
       
@@ -7518,7 +8079,18 @@ async function checkAndRequestApproval(token, amount) {
       : `https://etherscan.io/tx/${approveTx.hash}`;
     
     if (statusEl) {
-      statusEl.innerHTML = `<div class="status">Waiting for approval... <a href="${explorerUrl}" target="_blank" style="color: var(--accent);">View →</a></div>`;
+      statusEl.innerHTML = '';
+      const waitingDiv = document.createElement('div');
+      waitingDiv.className = 'status';
+      waitingDiv.textContent = 'Waiting for approval... ';
+      
+      const viewLink = createExternalLink(
+        explorerUrl,
+        'View →',
+        'color: var(--accent);'
+      );
+      waitingDiv.appendChild(viewLink);
+      statusEl.appendChild(waitingDiv);
     }
     
     const receipt = await approveTx.wait();
@@ -7526,7 +8098,18 @@ async function checkAndRequestApproval(token, amount) {
     if (receipt.status === 1) {
       showToast(`${token.symbol} approved!`);
       if (statusEl) {
-        statusEl.innerHTML = `<div class="status success">✓ ${token.symbol} approved! <a href="${explorerUrl}" target="_blank" style="color: var(--accent);">View →</a></div>`;
+        statusEl.innerHTML = '';
+        const successDiv = document.createElement('div');
+        successDiv.className = 'status success';
+        successDiv.textContent = `✓ ${token.symbol} approved! `;
+        
+        const viewLink = createExternalLink(
+          explorerUrl,
+          'View →',
+          'color: var(--accent);'
+        );
+        successDiv.appendChild(viewLink);
+        statusEl.appendChild(successDiv);
       }
     }
     return true;
@@ -7722,6 +8305,19 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     initPasswordModal();
     initMobileOptimizations();
+    
+    // Attach click handlers to the main etherscan link
+    const etherscanLink = document.getElementById('etherscanLink');
+    if (etherscanLink) {
+      etherscanLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        openExternalUrl(etherscanLink.href);
+      });
+    }
+    
+    // Attach handlers to any existing external links
+    attachLinkHandlers();
+    
     init().catch(() => {
       // Show user-friendly error
       const errorDiv = document.createElement('div');
@@ -7733,6 +8329,19 @@ if (document.readyState === 'loading') {
 } else {
   initPasswordModal();
   initMobileOptimizations();
+  
+  // Attach click handlers to the main etherscan link
+  const etherscanLink = document.getElementById('etherscanLink');
+  if (etherscanLink) {
+    etherscanLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      openExternalUrl(etherscanLink.href);
+    });
+  }
+  
+  // Attach handlers to any existing external links
+  attachLinkHandlers();
+  
   init().catch(() => {
     // Error already handled in init function
   });
@@ -7761,10 +8370,23 @@ function setupBridgeEventListeners() {
       }
       
       try {
-        const balance = await provider.getBalance(wallet.address);
+        // Ensure balances are loaded first
+        if (!currentBalances || !currentBalances["ETH"] || Object.keys(currentBalances).length === 0) {
+          showToast("Loading balances...");
+          await fetchAllBalances();
+        }
+        
+        // Use the cached balance instead of making another call
+        const balanceObj = currentBalances["ETH"];
+        if (!balanceObj || !balanceObj.raw) {
+          showToast("No ETH balance available");
+          return;
+        }
+        
+        const balance = balanceObj.raw;
         
         // Estimate gas for bridge transaction
-        const gasPrice = await provider.getFeeData();
+        const gasPrice = await getCachedGasPrice();
         const gasLimit = 130000n; // Actual bridge gas usage
         const gasCost = gasLimit * gasPrice.maxFeePerGas;
         
@@ -7810,17 +8432,48 @@ function setupBridgeEventListeners() {
 }
 
 async function updateBridgeBalance() {
-  if (!wallet || !provider) return;
+  const balanceEl = document.getElementById("bridgeBalance");
+  
+  if (!wallet || !provider) {
+    if (balanceEl) balanceEl.textContent = "0.0000";
+    return;
+  }
   
   try {
-    const balance = await provider.getBalance(wallet.address);
-    const formatted = parseFloat(ethers.formatEther(balance)).toFixed(4);
-    const balanceEl = document.getElementById("bridgeBalance");
-    if (balanceEl) {
-      balanceEl.textContent = formatted;
+    // Force fetch if no balances or missing ETH balance (same logic as Send tab)
+    if (!currentBalances || Object.keys(currentBalances).length === 0 || !currentBalances["ETH"]) {
+      console.log("Bridge tab: Fetching balances because ETH balance missing");
+      await fetchAllBalances(true); // Force refresh
+      // Wait a bit for balances to propagate
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    const balanceObj = currentBalances["ETH"];
+    if (balanceObj && balanceObj.formatted !== undefined) {
+      const formatted = parseFloat(balanceObj.formatted).toFixed(4);
+      if (balanceEl) {
+        balanceEl.textContent = formatted;
+      }
+    } else {
+      // Fallback to direct fetch if still no balance
+      console.log("Bridge tab: Fallback to direct ETH balance fetch");
+      const balance = await provider.getBalance(wallet.address);
+      const formatted = parseFloat(ethers.formatEther(balance)).toFixed(4);
+      if (balanceEl) {
+        balanceEl.textContent = formatted;
+      }
+      // Update cache with fetched balance
+      if (!currentBalances) currentBalances = {};
+      currentBalances["ETH"] = {
+        formatted: ethers.formatEther(balance),
+        raw: balance.toString(),
+        symbol: "ETH",
+        decimals: 18
+      };
     }
   } catch (err) {
     console.error("Error updating bridge balance:", err);
+    if (balanceEl) balanceEl.textContent = "0.0000";
   }
 }
 
@@ -7844,7 +8497,7 @@ async function updateBridgeEstimates() {
     
     // Estimate gas
     if (provider) {
-      const feeData = await provider.getFeeData();
+      const feeData = await getCachedGasPrice();
       const gasLimit = 130000n; // Bridge transactions typically use ~130k
       const gasCost = gasLimit * feeData.maxFeePerGas;
       const gasCostEth = parseFloat(ethers.formatEther(gasCost));
@@ -7877,13 +8530,35 @@ async function prepareBridge() {
     return;
   }
   
+  // Ensure balances are loaded
+  await ensureBalancesLoaded();
+  
   try {
-    // Check balance
-    const balance = await provider.getBalance(wallet.address);
+    // Check balance - prefer cached balance first
+    let balance;
+    if (currentBalances && currentBalances["ETH"] && currentBalances["ETH"].raw) {
+      balance = BigInt(currentBalances["ETH"].raw);
+    } else {
+      // Fallback to direct query
+      console.warn("ETH balance not cached, fetching directly...");
+      balance = await provider.getBalance(wallet.address);
+    }
+    
+    // Validate balance is valid
+    if (!balance && balance !== 0n) {
+      showToast("Unable to retrieve ETH balance", "error");
+      return;
+    }
+    
     const amountWei = ethers.parseEther(amount);
     
     // Estimate gas - Bridge requires more gas than simple transfer
-    const feeData = await provider.getFeeData();
+    const feeData = await getCachedGasPrice();
+    if (!feeData || !feeData.maxFeePerGas) {
+      showToast("Unable to estimate gas price", "error");
+      return;
+    }
+    
     // Bridge transactions typically use ~130k gas
     const gasLimit = 135000n; // Small buffer for safety
     const gasCost = gasLimit * feeData.maxFeePerGas;
@@ -7891,7 +8566,10 @@ async function prepareBridge() {
     const totalCost = amountWei + gasCost;
     
     if (totalCost > balance) {
-      showToast("Insufficient balance for bridge + gas", "error");
+      const balanceEth = ethers.formatEther(balance);
+      const totalEth = ethers.formatEther(totalCost);
+      const gasEth = ethers.formatEther(gasCost);
+      showToast(`Insufficient balance: need ${parseFloat(totalEth).toFixed(6)} ETH (${amount} + ${parseFloat(gasEth).toFixed(6)} gas), have ${parseFloat(balanceEth).toFixed(6)} ETH`, "error");
       return;
     }
     
@@ -8002,20 +8680,50 @@ async function executeBridge() {
     
     // Success
     if (statusEl && receipt.status === 1) {
-      statusEl.innerHTML = `
-        <div class="status success" style="padding: 12px; border-radius: 8px;">
-          <div style="font-weight: bold; margin-bottom: 8px;">✅ Bridge Successful!</div>
-          <div style="font-size: 12px; margin-bottom: 8px;">
-            Your ETH has been sent to the Base bridge contract.
-          </div>
-          <div style="font-size: 11px;">
-            Your ETH will appear on Base in 1-2 minutes. Check your balance on:
-            <a href="https://basescan.org/address/${wallet.address}" target="_blank" style="color: var(--accent); text-decoration: underline;">
-              Base Explorer →
-            </a>
-          </div>
-        </div>
-      `;
+      statusEl.innerHTML = '';
+      const successContainer = document.createElement('div');
+      successContainer.className = 'status success';
+      successContainer.style.cssText = 'padding: 12px; border-radius: 8px;';
+      
+      const titleDiv = document.createElement('div');
+      titleDiv.style.cssText = 'font-weight: bold; margin-bottom: 8px;';
+      titleDiv.textContent = '✅ Bridge Successful!';
+      successContainer.appendChild(titleDiv);
+      
+      const infoDiv = document.createElement('div');
+      infoDiv.style.cssText = 'font-size: 12px; margin-bottom: 8px;';
+      infoDiv.textContent = 'Your ETH has been sent to the Base bridge contract.';
+      successContainer.appendChild(infoDiv);
+      
+      const checkDiv = document.createElement('div');
+      checkDiv.style.cssText = 'font-size: 11px; margin-bottom: 8px;';
+      checkDiv.textContent = 'Your ETH will appear on Base in 1-2 minutes. Check your balance on: ';
+      
+      const baseLink = createExternalLink(
+        `https://basescan.org/address/${wallet.address}`,
+        'Base Explorer →',
+        'color: var(--accent); text-decoration: underline;'
+      );
+      checkDiv.appendChild(baseLink);
+      successContainer.appendChild(checkDiv);
+      
+      // Add Etherscan link for the mainnet transaction
+      const etherscanDiv = document.createElement('div');
+      etherscanDiv.style.cssText = 'font-size: 11px; display: flex; align-items: center; gap: 8px;';
+      
+      const etherscanText = document.createElement('span');
+      etherscanText.textContent = 'Mainnet transaction: ';
+      etherscanDiv.appendChild(etherscanText);
+      
+      const etherscanLink = createExternalLink(
+        `https://etherscan.io/tx/${tx.hash}`,
+        'View on Etherscan →',
+        'color: var(--accent); text-decoration: underline;'
+      );
+      etherscanDiv.appendChild(etherscanLink);
+      successContainer.appendChild(etherscanDiv);
+      
+      statusEl.appendChild(successContainer);
       
       // Show proper Etherscan link using our helper function
       await showEtherscanLink(tx.hash);
