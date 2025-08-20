@@ -18,6 +18,20 @@ if (fs.existsSync(visualIdPath)) {
   visualIdJs = fs.readFileSync(visualIdPath, 'utf8');
 }
 
+// Read eip7702.js content
+let eip7702Js = '';
+const eip7702Path = path.join(__dirname, 'extension', 'eip7702.js');
+if (fs.existsSync(eip7702Path)) {
+  eip7702Js = fs.readFileSync(eip7702Path, 'utf8');
+}
+
+// Read qrcode-valid.js content
+let qrcodeJs = '';
+const qrcodePath = path.join(__dirname, 'extension', 'qrcode-valid.js');
+if (fs.existsSync(qrcodePath)) {
+  qrcodeJs = fs.readFileSync(qrcodePath, 'utf8');
+}
+
 // Wrap Chrome API calls for standalone version
 popupJs = popupJs.replace(/chrome\.storage\.local\.(get|set)/g, (match, method) => {
   if (method === 'get') {
@@ -51,15 +65,22 @@ html = html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/gi, '');
 // Replace local ethers script with CDN version
 html = html.replace(
   /<script src="ethers\.umd\.min\.js"><\/script>/g,
-  '<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js" integrity="sha256-Jlrx7irtiV+Pl9aJ9t3aZ4iL6FcO6eYitSbJR4arfhI=" crossorigin="anonymous"></script>'
+  '<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js" integrity="sha512-UXYETj+vXKSURF1UlgVRLzWRS9ZiQTv3lcL4rbeLyqTXCPNZC6PTLF/Ik3uxm2Zo+E109cUpJPZfLxJsCgKSng==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>'
 );
 
-// Remove visual-id.js script tag first (if exists)
+// Remove individual script tags for modules we'll inline
 html = html.replace(/<script src="visual-id\.js"><\/script>\s*/g, '');
+html = html.replace(/<script src="eip7702\.js"><\/script>\s*/g, '');
+html = html.replace(/<script src="qrcode-valid\.js"><\/script>\s*/g, '');
 
 // Replace popup.js script tag with combined inline content
-// Include visual-id.js first if it exists, then popup.js
-const combinedJs = visualIdJs ? `${visualIdJs}\n\n${popupJs}` : popupJs;
+// Include all modules in the correct order
+let combinedJs = '';
+if (eip7702Js) combinedJs += eip7702Js + '\n\n';
+if (qrcodeJs) combinedJs += qrcodeJs + '\n\n';
+if (visualIdJs) combinedJs += visualIdJs + '\n\n';
+combinedJs += popupJs;
+
 html = html.replace(
   /<script src="popup\.js"><\/script>/g,
   `<script>\n${combinedJs}\n</script>`

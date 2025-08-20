@@ -602,6 +602,59 @@
         font-weight: bold;
       }
 
+      /* EIP-7702 Delegation Status Styles */
+      .delegation-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        margin: 4px 0;
+      }
+      
+      .delegation-status.active {
+        background: rgba(0, 255, 0, 0.1);
+        border-color: rgba(0, 255, 0, 0.3);
+        color: #00ff00;
+      }
+      
+      .delegation-status.inactive {
+        background: var(--hover);
+        border-color: var(--border);
+        color: var(--dim);
+      }
+      
+      .delegation-status.other {
+        background: rgba(255, 165, 0, 0.1);
+        border-color: rgba(255, 165, 0, 0.3);
+        color: orange;
+      }
+      
+      .delegation-status .status-icon {
+        font-size: 14px;
+      }
+      
+      .delegation-status .status-address {
+        font-family: "Courier New", monospace;
+        font-size: 10px;
+        opacity: 0.8;
+      }
+      
+      .batch-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 6px;
+        background: rgba(0, 123, 255, 0.1);
+        border: 1px solid rgba(0, 123, 255, 0.3);
+        border-radius: 3px;
+        font-size: 10px;
+        color: #007bff;
+        margin-left: 8px;
+      }
+
       .hidden {
         display: none !important;
       }
@@ -1476,7 +1529,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.4</span>
+          <span>zWallet v0.0.5</span>
         </div>
         <div class="title-right">
           <button class="icon-btn network-btn" id="baseNetworkToggle" title="Switch to Base" aria-label="Switch network">
@@ -1556,6 +1609,7 @@
                     </a>
                   </div>
                   <div class="ens-indicator" id="ensName"></div>
+                  <div id="delegationStatus" style="margin-top: 8px;"></div>
                 </div>
               </div>
             </div>
@@ -1891,6 +1945,42 @@
           </div>
 
           <div class="section">
+            <h2>⚡ Smart Batching (EIP-7702)</h2>
+            <div style="margin-bottom: 16px; padding: 16px; background: linear-gradient(135deg, rgba(0, 123, 255, 0.1) 0%, rgba(0, 255, 136, 0.1) 100%); border: 1px solid var(--border); border-radius: 8px;">
+              <div style="display: flex; align-items: start; gap: 12px;">
+                <div style="font-size: 24px;">🚀</div>
+                <div style="flex: 1;">
+                  <strong style="font-size: 13px;">Save Gas on Every Swap</strong>
+                  <p style="margin-top: 6px; font-size: 11px; line-height: 1.5;">
+                    Enable smart batching to combine approve + swap into one transaction.
+                    Save ~30% on gas fees compared to two separate transactions.
+                  </p>
+                  <div style="display: flex; gap: 16px; margin-top: 10px; font-size: 10px; color: var(--dim);">
+                    <span>✅ One-click swaps</span>
+                    <span>✅ Lower fees</span>
+                    <span>✅ Faster execution</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="eip7702Status" style="margin-bottom: 12px;"></div>
+            <button id="enable7702Btn" style="margin-bottom: 8px; background: linear-gradient(135deg, #0052FF 0%, #00D4FF 100%); font-weight: 600;">
+              ⚡ Enable Smart Batching
+            </button>
+            <button id="revoke7702Btn" class="hidden">Revoke Delegation</button>
+            <div id="eip7702Info" class="hidden" style="margin-top: 12px; padding: 12px; background: rgba(0, 255, 0, 0.1); border: 1px solid rgba(0, 255, 0, 0.3); font-size: 11px; border-radius: 6px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                <span style="font-size: 16px;">✅</span>
+                <strong>Smart Batching Active</strong>
+              </div>
+              <p style="margin-left: 24px;">Your swaps are now optimized! Approve and swap happen in one transaction.</p>
+              <p style="margin-top: 8px; margin-left: 24px; font-size: 10px; color: var(--dim);">
+                Executor: <span class="mono" id="delegatedToAddress"></span>
+              </p>
+            </div>
+          </div>
+
+          <div class="section">
             <h2>Web3 Integration</h2>
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
               <input
@@ -2047,6 +2137,7 @@
     <div id="toast" class="toast"></div>
 
     <script src="ethers.umd.min.js"></script>
+    <script src="eip7702.js"></script>
     <script src="visual-id.js"></script>
     <script src="qrcode-valid.js"></script>
     <script src="popup.js"></script>

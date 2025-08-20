@@ -2070,23 +2070,31 @@ function loadWallets() {
 }
 
 async function saveWallet(address, privateKey) {
-  const pass = await securePasswordPrompt('Create Password', 'Create a strong password to encrypt your wallet:', true);
-  if (!pass) return;
-  const payload = await encryptPK(privateKey, pass, {
-    aad: address.toLowerCase(),
-  });
-  const entry = {
-    address,
-    label: address.slice(0, 6) + "..." + address.slice(-4),
-    crypto: payload,
-  };
-  const stored = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
-  if (!stored.find((w) => w.address === address)) {
-    stored.push(entry);
-    localStorage.setItem(LS_WALLETS, JSON.stringify(stored));
-    localStorage.setItem(LS_LAST, address);
+  try {
+    const pass = await securePasswordPrompt('Create Password', 'Create a strong password to encrypt your wallet:', true);
+    if (!pass) return false;
+    const payload = await encryptPK(privateKey, pass, {
+      aad: address.toLowerCase(),
+    });
+    const entry = {
+      address,
+      label: address.slice(0, 6) + "..." + address.slice(-4),
+      crypto: payload,
+    };
+    const stored = JSON.parse(localStorage.getItem(LS_WALLETS) || "[]");
+    if (!stored.find((w) => w.address === address)) {
+      stored.push(entry);
+      localStorage.setItem(LS_WALLETS, JSON.stringify(stored));
+      localStorage.setItem(LS_LAST, address);
+    }
+    updateWalletSelectorFrom(stored);
+    return true;
+  } catch (error) {
+    if (error.message && error.message.includes('cancelled')) {
+      return false;
+    }
+    throw error;
   }
-  updateWalletSelectorFrom(stored);
 }
 
 function deleteWallet(address) {
@@ -3889,6 +3897,19 @@ async function displayWallet() {
     qrBtn.onclick = () => showQRModal(address);
   }
 
+  // Display EIP-7702 delegation status
+  const delegationStatusEl = document.getElementById("delegationStatus");
+  if (delegationStatusEl && (typeof window.EIP7702 !== 'undefined' || typeof EIP7702 !== 'undefined')) {
+    try {
+      const EIP7702Module = window.EIP7702 || EIP7702;
+      const statusHTML = await EIP7702Module.getDelegationStatusHTML(address, provider);
+      delegationStatusEl.innerHTML = statusHTML;
+    } catch (err) {
+      console.log("Could not check delegation status:", err);
+      delegationStatusEl.innerHTML = '';
+    }
+  }
+
   // Private key display moved to Settings tab
 
   // ENS name is already fetched in batchView and displayed
@@ -4799,11 +4820,16 @@ function setupEventListeners() {
     // Configure tab
     
     // Use only addEventListener, not both onclick and addEventListener
-    tab.addEventListener("click", (e) => {
+    tab.addEventListener("click", async (e) => {
       // Tab selected
       e.preventDefault();
       e.stopPropagation();
       handleTabClick(tab);
+      
+      // Update 7702 status when switching to settings tab
+      if (tab.dataset.tab === 'settings' && wallet) {
+        await update7702Status();
+      }
     });
   });
 
@@ -4916,7 +4942,12 @@ function setupEventListeners() {
     generateBtn.addEventListener("click", async () => {
       try {
         wallet = ethers.Wallet.createRandom().connect(provider);
-        saveWallet(wallet.address, wallet.privateKey);
+        const saved = await saveWallet(wallet.address, wallet.privateKey);
+        if (!saved) {
+          // User cancelled password prompt
+          wallet = null;
+          return;
+        }
         await displayWallet();
         showToast("Wallet generated!");
       } catch (err) {
@@ -4968,7 +4999,12 @@ function setupEventListeners() {
           return;
         }
         
-        await saveWallet(wallet.address, wallet.privateKey);
+        const saved = await saveWallet(wallet.address, wallet.privateKey);
+        if (!saved) {
+          // User cancelled password prompt - don't show error, just return
+          return;
+        }
+        
         await displayWallet();
         
         // Clear sensitive data immediately
@@ -5649,6 +5685,23 @@ function setupEventListeners() {
       }
     });
   }
+
+  // EIP-7702 Settings handlers - setup after DOM is ready
+  function setupEIP7702Handlers() {
+    const enable7702Btn = document.getElementById("enable7702Btn");
+    const revoke7702Btn = document.getElementById("revoke7702Btn");
+    
+    if (enable7702Btn) {
+      enable7702Btn.addEventListener("click", enable7702Delegation);
+    }
+    
+    if (revoke7702Btn) {
+      revoke7702Btn.addEventListener("click", revoke7702Delegation);
+    }
+  }
+  
+  // Call setup function immediately since popup.js loads at end of body
+  setupEIP7702Handlers();
 
   // Load auto-refresh setting
   const autoRefresh = localStorage.getItem("auto_refresh") === "true";
@@ -6731,11 +6784,25 @@ async function executeSwap() {
   }
   
   try {
-    // Check if approval is needed for non-ETH tokens
+    // Check if we should use EIP-7702 batching
+    const needsApproval = swapFromToken !== "ETH";
+    const shouldBatch = needsApproval && typeof EIP7702 !== 'undefined' && await EIP7702.shouldUseBatching(
+      wallet.address,
+      provider,
+      needsApproval
+    );
+    
+    // If using 7702 batching, execute batched swap
+    if (shouldBatch) {
+      await executeBatchedSwap();
+      return;
+    }
+    
+    // Regular flow: Check if approval is needed for non-ETH tokens
     if (swapFromToken !== "ETH") {
       const fromToken = TOKENS[swapFromToken];
-      const needsApproval = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
-      if (!needsApproval) return;
+      const approved = await checkAndRequestApproval(fromToken, bestSwapRoute.amountIn);
+      if (!approved) return;
     }
     
     let callData, msgValue;
@@ -6876,7 +6943,7 @@ async function executeSwap() {
     
     // Setup calldata display
     const calldataDisplay = document.getElementById("swapCalldataDisplay");
-    if (calldataDisplay) calldataDisplay.value = callData;
+    if (calldataDisplay) calldataDisplay.value = callData || '';
     
     // Setup Swiss Knife decoder link with correct format
     const swissKnifeLink = document.getElementById("swapSwissKnifeLink");
@@ -7013,6 +7080,391 @@ async function executeSwap() {
     showToast(`Swap failed: ${errorMessage}`);
   }
 }
+
+// Execute batched swap using EIP-7702 delegation
+async function executeBatchedSwap() {
+  try {
+    const fromToken = TOKENS[swapFromToken];
+    const statusEl = document.getElementById("swapStatus");
+    
+    // Show batching indicator with clear UX
+    statusEl.innerHTML = '<div class="status">🚀 Preparing optimized transaction...<span class="batch-indicator">⚡ 7702</span></div>';
+    
+    // First check if delegation is active
+    const delegation = await EIP7702.checkDelegation(wallet.address, provider);
+    if (!delegation.isOurExecutor) {
+      statusEl.innerHTML = `
+        <div class="status info">
+          <div style="margin-bottom: 8px;">🔗 First-time setup required</div>
+          <div style="font-size: 11px; opacity: 0.9;">We'll enable batching to save you gas on future swaps.</div>
+        </div>
+      `;
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Give user time to read
+    }
+    
+    // Get approval data
+    const approvalPayload = fromToken.isERC6909
+      ? await zWalletContract.checkERC6909RouterIsOperator(wallet.address, fromToken.address)
+      : await zWalletContract.checkERC20RouterApproval(wallet.address, fromToken.address, bestSwapRoute.amountIn, true);
+    
+    if (!approvalPayload || approvalPayload === "0x") {
+      // Already approved, no need for batching - execute swap directly
+      showToast("Already approved, executing regular swap");
+      statusEl.innerHTML = '<div class="status">Already approved, executing swap...</div>';
+      
+      // Get swap calldata and execute directly
+      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      let swapCallData, msgValue;
+      
+      // Build swap calldata based on route type
+      if (bestSwapRoute.isERC6909 || swapFromToken === "CULT" || swapToToken === "CULT") {
+        const toToken = TOKENS[swapToToken];
+        swapCallData = await zWalletContract.swapVZ.populateTransaction(
+          fromToken.address,
+          fromToken.isNative ? ethers.ZeroAddress : fromToken.address,
+          toToken.isNative ? ethers.ZeroAddress : toToken.address,
+          bestSwapRoute.amountIn,
+          bestSwapRoute.amountOut,
+          wallet.address,
+          deadline
+        ).then(tx => tx.data);
+        msgValue = swapFromToken === "ETH" ? bestSwapRoute.amountIn : 0n;
+      } else if (swapFromToken === "ETH") {
+        swapCallData = await zWalletContract.swapExactETHForTokens.populateTransaction(
+          bestSwapRoute.amountOut,
+          [WETH_ADDRESS[chainId], TOKENS[swapToToken].address],
+          wallet.address,
+          deadline
+        ).then(tx => tx.data);
+        msgValue = bestSwapRoute.amountIn;
+      } else if (swapToToken === "ETH") {
+        swapCallData = await zWalletContract.swapExactTokensForETH.populateTransaction(
+          bestSwapRoute.amountIn,
+          bestSwapRoute.amountOut,
+          [fromToken.address, WETH_ADDRESS[chainId]],
+          wallet.address,
+          deadline
+        ).then(tx => tx.data);
+        msgValue = 0n;
+      } else {
+        const toToken = TOKENS[swapToToken];
+        swapCallData = await zWalletContract.swapExactTokensForTokens.populateTransaction(
+          bestSwapRoute.amountIn,
+          bestSwapRoute.amountOut,
+          [fromToken.address, toToken.address],
+          wallet.address,
+          deadline
+        ).then(tx => tx.data);
+        msgValue = 0n;
+      }
+      
+      try {
+        const swapTx = await wallet.sendTransaction({
+          to: ZROUTER_ADDRESS,
+          data: swapCallData,
+          value: msgValue,
+          ...gasPrices.normal
+        });
+        
+        statusEl.innerHTML = `<div style="color: var(--info)">Swap tx sent: ${swapTx.hash.slice(0, 10)}...</div>`;
+        const receipt = await swapTx.wait();
+        
+        if (receipt.status === 1) {
+          statusEl.innerHTML = '<div style="color: var(--success)">✓ Swap successful!</div>';
+          showToast("Swap successful!");
+          await fetchAllBalances();
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<div style="color: var(--error)">✗ Swap failed: ${err.message}</div>`;
+        showToast(`Swap failed: ${err.message}`);
+      }
+      return;
+    }
+    
+    // Get swap calldata
+    let swapCallData, msgValue;
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+    
+    // Check if this is a CULT swap (treat like ERC6909)
+    const isCultSwap = swapFromToken === "CULT" || swapToToken === "CULT";
+    
+    if (bestSwapRoute.isERC6909 || isCultSwap) {
+      // Handle ERC6909 and CULT swaps using swapVZ
+      const toToken = TOKENS[swapToToken];
+      
+      // For ZAMM, use max deadline to use the old ZAMM_0 contract
+      const vzDeadline = fromToken?.id === ZAMM_ID || toToken?.id === ZAMM_ID 
+        ? ethers.MaxUint256 
+        : deadline;
+      
+      // Calculate minimum output with slippage
+      const minOutput = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
+      
+      // Create zRouter contract instance
+      const zRouter = new ethers.Contract(ZROUTER_ADDRESS, ZROUTER_ABI, wallet);
+      
+      // Build swapVZ calldata - need actual token addresses
+      const tokenInAddr = swapFromToken === "ETH" ? ethers.ZeroAddress : fromToken.address;
+      const tokenOutAddr = swapToToken === "ETH" ? ethers.ZeroAddress : toToken.address;
+      
+      // For CULT, use special feeOrHook value and 0 for ids; for ERC6909 use normal ids
+      const cultFeeOrHook = BigInt("57896044618658097711785492504343953926636021160616296542400437774503196477768");
+      let idIn, idOut, feeOrHook;
+      if (isCultSwap) {
+        // CULT uses special feeOrHook value (0.4% fee) and 0 for ids
+        idIn = 0n;
+        idOut = 0n;
+        feeOrHook = cultFeeOrHook;
+      } else {
+        // ERC6909 tokens use their ids and swapFee
+        idIn = swapFromToken === "ETH" ? 0n : BigInt(fromToken.id || 0);
+        idOut = swapToToken === "ETH" ? 0n : BigInt(toToken.id || 0);
+        feeOrHook = bestSwapRoute.swapFee || 100n; // Default 100 bps = 1%
+      }
+      
+      swapCallData = zRouter.interface.encodeFunctionData("swapVZ", [
+        wallet.address, // to
+        false, // exactOut = false
+        feeOrHook, // feeOrHook (special value for CULT, fee for others)
+        tokenInAddr, // tokenIn
+        tokenOutAddr, // tokenOut
+        idIn, // idIn
+        idOut, // idOut
+        bestSwapRoute.amountIn, // swapAmount
+        minOutput, // amountLimit
+        vzDeadline // deadline
+      ]);
+      
+      msgValue = swapFromToken === "ETH" ? bestSwapRoute.amountIn : 0n;
+    } else {
+      // Use zQuoter for regular token swaps
+      if (!zQuoterContract) {
+        throw new Error("zQuoter contract not initialized");
+      }
+      
+      const slippageBps = Math.floor(bestSwapRoute.slippage * 100); // Convert % to basis points
+      
+      let swapData;
+      try {
+        swapData = await zQuoterContract.buildBestSwap(
+          wallet.address,
+          false, // exactOut = false
+          bestSwapRoute.tokenIn,
+          bestSwapRoute.tokenOut,
+          bestSwapRoute.amountIn,
+          slippageBps,
+          deadline
+        );
+      } catch (err) {
+        showToast("Failed to prepare swap");
+        return;
+      }
+      
+      // Extract the calldata and value
+      swapCallData = swapData.callData;
+      msgValue = swapData.msgValue;
+    }
+    
+    // Show simulation status if already delegated
+    if (delegation.isOurExecutor) {
+      statusEl.innerHTML = `
+        <div class="status">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="spinner" style="display: inline-block; width: 12px; height: 12px; border: 2px solid var(--dim); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;"></span>
+            <span>Simulating optimized transaction...</span>
+            <span class="batch-indicator">⚡ 7702</span>
+          </div>
+        </div>
+        <style>
+          @keyframes spin {
+            to { transform: rotate(360deg); }
+          }
+        </style>
+      `;
+    }
+    
+    // Create batched transaction (includes simulation)
+    let batchedTx;
+    try {
+      batchedTx = await EIP7702.createBatchedSwapTx({
+        signer: wallet,
+        tokenAddress: fromToken.address,
+        spenderAddress: ZROUTER_ADDRESS,
+        approveAmount: bestSwapRoute.amountIn,
+        approveData: approvalPayload,
+        swapData: swapCallData,
+        swapTarget: ZROUTER_ADDRESS,
+        swapValue: msgValue.toString(),
+        gasSettings: gasPrices.normal || {
+          maxFeePerGas: ethers.parseUnits("30", "gwei"),
+          maxPriorityFeePerGas: ethers.parseUnits("2", "gwei")
+        },
+        simulate: true // Enable simulation
+      });
+      
+      // If we get here, simulation passed (or delegation wasn't set yet)
+      if (delegation.isOurExecutor) {
+        statusEl.innerHTML = '<div class="status success">✓ Simulation successful<span class="batch-indicator">⚡ 7702 Batch</span></div>';
+      }
+    } catch (simError) {
+      // Simulation failed - show error and abort
+      statusEl.innerHTML = `<div class="status error">Simulation failed: ${simError.message}</div>`;
+      showToast(`Transaction would fail: ${simError.message}`);
+      return;
+    }
+    
+    // Show confirmation modal with batch indicator
+    const modal = document.getElementById("swapConfirmModal");
+    const fromFormatted = ethers.formatUnits(bestSwapRoute.amountIn, fromToken?.decimals || 18);
+    const toToken = TOKENS[swapToToken];
+    const toFormatted = ethers.formatUnits(bestSwapRoute.amountOut, toToken?.decimals || 18);
+    
+    // Populate confirmation details
+    document.getElementById("confirmSwapFrom").textContent = `${parseFloat(fromFormatted).toFixed(6)} ${swapFromToken}`;
+    document.getElementById("confirmSwapTo").textContent = `${parseFloat(toFormatted).toFixed(6)} ${swapToToken}`;
+    document.getElementById("confirmSwapRoute").textContent = bestSwapRoute.sourceName || "Best Route";
+    document.getElementById("confirmSwapSlippage").textContent = `${swapSlippage}%`;
+    
+    const minOutputBigInt = bestSwapRoute.amountOut * BigInt(Math.floor((100 - swapSlippage) * 100)) / 10000n;
+    const minFormatted = ethers.formatUnits(minOutputBigInt, toToken?.decimals || 18);
+    document.getElementById("confirmSwapMinimum").textContent = `${parseFloat(minFormatted).toFixed(6)} ${swapToToken}`;
+    
+    const gasPrice = (await provider.getFeeData()).maxFeePerGas || ethers.parseUnits("30", "gwei");
+    const gasLimit = 200000n; // Higher for batched tx
+    const regularGasLimit = 300000n; // Approve + swap separately
+    const gasCost = gasLimit * gasPrice;
+    const regularGasCost = regularGasLimit * gasPrice;
+    const gasSaved = regularGasCost - gasCost;
+    const gasCostEth = ethers.formatEther(gasCost);
+    const gasSavedEth = ethers.formatEther(gasSaved);
+    
+    // Show gas savings
+    document.getElementById("confirmSwapGas").innerHTML = `
+      <span>${parseFloat(gasCostEth).toFixed(5)} ETH</span>
+      <span style="color: var(--success); font-size: 10px; margin-left: 8px;">
+        💰 Save ~${parseFloat(gasSavedEth).toFixed(5)} ETH vs 2 txs
+      </span>
+    `;
+    
+    const totalCostEth = swapFromToken === "ETH" 
+      ? parseFloat(fromFormatted) + parseFloat(gasCostEth)
+      : parseFloat(gasCostEth);
+    document.getElementById("confirmSwapTotal").textContent = `${totalCostEth.toFixed(6)} ETH`;
+    
+    // Add batch indicator to the modal
+    const modalTitle = modal.querySelector("h3");
+    if (modalTitle && !modalTitle.innerHTML.includes("Batched")) {
+      modalTitle.innerHTML = 'Confirm Swap <span class="batch-indicator">⚡ 7702</span>';
+    }
+    
+    // Setup calldata display for batched transaction
+    const calldataDisplay = document.getElementById("swapCalldataDisplay");
+    if (calldataDisplay) {
+      // For batched transactions, show the data field from the transaction
+      calldataDisplay.value = batchedTx.data || '0x';
+    }
+    
+    // Setup Swiss Knife decoder link for batched transaction
+    const swissKnifeLink = document.getElementById("swapSwissKnifeLink");
+    if (swissKnifeLink && batchedTx.data && batchedTx.data !== '0x' && batchedTx.data.length > 2) {
+      const simulationUrl = `https://calldata.swiss-knife.xyz/decoder?calldata=${batchedTx.data}`;
+      
+      swissKnifeLink.href = simulationUrl;
+      swissKnifeLink.target = '_blank';
+      swissKnifeLink.style.display = 'inline-block';
+      
+      swissKnifeLink.onclick = (e) => {
+        e.preventDefault();
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ action: 'open_external', url: simulationUrl });
+        } else {
+          window.open(simulationUrl, '_blank', 'noopener,noreferrer');
+        }
+      };
+    } else if (swissKnifeLink) {
+      swissKnifeLink.style.display = 'none';
+    }
+    
+    // Auto-show calldata section for batched transactions
+    const calldataSection = document.getElementById("swapCalldataSection");
+    const toggleBtn = document.getElementById("toggleSwapCalldata");
+    if (calldataSection && batchedTx.data && batchedTx.data !== '0x') {
+      calldataSection.classList.remove("hidden");
+      if (toggleBtn) toggleBtn.textContent = "Hide";
+    }
+    
+    modal.classList.remove("hidden");
+    
+    // Wait for user confirmation
+    const confirmBtn = document.getElementById("confirmSwapBtn");
+    const cancelBtn = document.getElementById("cancelSwapBtn");
+    
+    const userConfirmed = await new Promise((resolve) => {
+      const handleConfirm = () => {
+        confirmBtn.removeEventListener("click", handleConfirm);
+        cancelBtn.removeEventListener("click", handleCancel);
+        resolve(true);
+      };
+      const handleCancel = () => {
+        confirmBtn.removeEventListener("click", handleConfirm);
+        cancelBtn.removeEventListener("click", handleCancel);
+        resolve(false);
+      };
+      confirmBtn.addEventListener("click", handleConfirm);
+      cancelBtn.addEventListener("click", handleCancel);
+    });
+    
+    modal.classList.add("hidden");
+    
+    if (!userConfirmed) {
+      statusEl.innerHTML = '<div class="status">Swap cancelled</div>';
+      return;
+    }
+    
+    // Send batched transaction
+    statusEl.innerHTML = '<div style="color: var(--warning)">Sending batched transaction...</div>';
+    
+    // If already delegated, it's a regular tx. Otherwise, it's type-4
+    const tx = batchedTx.type === 4 
+      ? await EIP7702.sendType4Transaction(wallet, batchedTx)
+      : await wallet.sendTransaction(batchedTx);
+    
+    statusEl.innerHTML = `<div style="color: var(--info)">Batched tx sent: ${tx.hash.slice(0, 10)}...</div>`;
+    
+    const receipt = await tx.wait();
+    
+    if (receipt.status === 1) {
+      const explorerUrl = isBaseMode 
+        ? `https://basescan.org/tx/${tx.hash}`
+        : `https://etherscan.io/tx/${tx.hash}`;
+      
+      statusEl.innerHTML = `
+        <div style="color: var(--success); font-weight: bold; margin-bottom: 8px;">
+          ✓ Batched swap successful! <span class="batch-indicator">⚡ 7702</span>
+        </div>
+        <a href="${explorerUrl}" target="_blank" style="color: var(--accent); text-decoration: underline; font-size: 12px;">
+          View on ${isBaseMode ? "Basescan" : "Etherscan"} →
+        </a>
+      `;
+      
+      showToast("Batched swap successful!");
+      
+      // Clear inputs and refresh
+      document.getElementById("swapFromAmount").value = "";
+      document.getElementById("swapToAmount").value = "";
+      clearSwapQuote();
+      await fetchAllBalances();
+    } else {
+      throw new Error("Transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Batched swap error:", err);
+    document.getElementById("swapStatus").innerHTML = `<div style="color: var(--error)">✗ Batched swap failed: ${err.message}</div>`;
+    showToast(`Batched swap failed: ${err.message}`);
+  }
+}
+
 async function checkAndRequestApproval(token, amount) {
   if (!token || !token.address || !zWalletContract) return true;
   
@@ -7606,5 +8058,201 @@ async function executeBridge() {
     btnEl.disabled = false;
     btnEl.textContent = "Confirm Bridge";
     pendingBridgeTx = null;
+  }
+}
+
+// EIP-7702 Settings handlers
+async function update7702Status() {
+  if (!wallet || !provider) return;
+  
+  const statusEl = document.getElementById("eip7702Status");
+  const enableBtn = document.getElementById("enable7702Btn");
+  const revokeBtn = document.getElementById("revoke7702Btn");
+  const infoEl = document.getElementById("eip7702Info");
+  const delegatedAddressEl = document.getElementById("delegatedToAddress");
+  
+  if (!statusEl || !enableBtn || !revokeBtn) return;
+  
+  try {
+    const delegation = await EIP7702.checkDelegation(wallet.address, provider);
+    
+    if (delegation.isDelegated) {
+      // Show current delegation status
+      if (delegation.isOurExecutor) {
+        statusEl.innerHTML = '<div class="delegation-status active"><span class="status-icon">🔗</span><span>7702 Batching Active</span></div>';
+        enableBtn.classList.add("hidden");
+        revokeBtn.classList.remove("hidden");
+        infoEl.classList.remove("hidden");
+        if (delegatedAddressEl) {
+          delegatedAddressEl.textContent = delegation.delegatedTo;
+        }
+      } else {
+        statusEl.innerHTML = `
+          <div class="delegation-status other">
+            <span class="status-icon">⚠️</span>
+            <span>Delegated to other contract</span>
+          </div>
+          <div style="margin-top: 8px; padding: 8px; background: rgba(255, 165, 0, 0.1); border: 1px solid rgba(255, 165, 0, 0.3); font-size: 11px; color: orange;">
+            <strong>Warning:</strong> Your account is currently delegated to a different contract (${delegation.delegatedTo.slice(0, 10)}...). 
+            Updating will replace this delegation. Multiple delegations can cause unexpected behavior.
+          </div>
+        `;
+        enableBtn.textContent = "Update Delegation";
+        enableBtn.classList.remove("hidden");
+        revokeBtn.classList.remove("hidden");
+        infoEl.classList.add("hidden");
+      }
+    } else {
+      statusEl.innerHTML = '<div class="delegation-status inactive"><span class="status-icon">⭕</span><span>Standard EOA Mode</span></div>';
+      enableBtn.textContent = "Enable 7702 Batching";
+      enableBtn.classList.remove("hidden");
+      revokeBtn.classList.add("hidden");
+      infoEl.classList.add("hidden");
+    }
+    
+    // Check if network supports 7702
+    const isSupported = await EIP7702.isSupported(provider);
+    if (!isSupported) {
+      const networkName = isBaseMode ? "this network" : "this network";
+      statusEl.innerHTML += `<div style="margin-top: 8px; color: var(--warning); font-size: 11px;">⚠️ EIP-7702 not supported on ${networkName}</div>`;
+      enableBtn.disabled = true;
+      revokeBtn.disabled = true;
+    } else {
+      // Show network support confirmation
+      const networkName = isBaseMode ? "Base" : "Ethereum";
+      if (statusEl.innerHTML.indexOf("not supported") === -1) {
+        statusEl.innerHTML += `<div style="margin-top: 4px; color: var(--dim); font-size: 10px;">✓ 7702 supported on ${networkName}</div>`;
+      }
+    }
+  } catch (err) {
+    console.error("Error checking 7702 status:", err);
+    statusEl.innerHTML = '<div style="color: var(--error); font-size: 11px;">Could not check delegation status</div>';
+  }
+}
+
+// Enable 7702 delegation - just like any other function in this file
+async function enable7702Delegation() {
+  if (!wallet) {
+    showToast("Please connect your wallet first");
+    return;
+  }
+  
+  if (!provider) {
+    showToast("Provider not initialized. Please refresh the page.");
+    return;
+  }
+  
+  const enableBtn = document.getElementById("enable7702Btn");
+  const statusEl = document.getElementById("eip7702Status");
+  
+  try {
+    enableBtn.disabled = true;
+    enableBtn.textContent = "Enabling...";
+    
+    // Check if already delegated
+    const currentDelegation = await EIP7702.checkDelegation(wallet.address, provider);
+    if (currentDelegation.isOurExecutor) {
+      showToast("Already delegated to the batch executor");
+      await update7702Status();
+      return;
+    }
+    
+    // Warn user about the implications
+    if (!confirm("⚠️ IMPORTANT: You are about to delegate your EOA to a smart contract.\n\nThis delegation:\n• Allows batched transactions (approve + swap in one tx)\n• Is tied to your current nonce for security\n• Can be revoked at any time\n\nOnly proceed if you trust the batch executor contract.\n\nContinue?")) {
+      return;
+    }
+    
+    // Send delegation transaction
+    statusEl.innerHTML = '<div style="color: var(--warning)">Sending delegation transaction...</div>';
+    
+    const receipt = await EIP7702.sendDelegation(wallet);
+    
+    if (receipt.status === 1) {
+      showToast("7702 delegation enabled successfully!");
+      statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation successful!</div>';
+      
+      // Update UI
+      await update7702Status();
+      
+      // Also update main wallet display
+      await displayWallet();
+    } else {
+      throw new Error("Delegation transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Failed to enable 7702:", err);
+    let errorMsg = err.message || "Unknown error";
+    let userFriendlyMsg = errorMsg;
+    
+    // Handle common errors with user-friendly messages
+    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
+      userFriendlyMsg = "You cancelled the transaction";
+    } else if (errorMsg.includes("insufficient funds")) {
+      userFriendlyMsg = "Not enough ETH for gas fees. Please add funds to your wallet.";
+    } else if (errorMsg.includes("Executor contract not deployed")) {
+      userFriendlyMsg = "The batch executor is not available on this network yet.";
+    } else if (errorMsg.includes("nonce")) {
+      userFriendlyMsg = "Transaction nonce issue. Please try again.";
+    } else if (errorMsg.includes("gas")) {
+      userFriendlyMsg = "Gas estimation failed. The network may be congested.";
+    }
+    
+    showToast(userFriendlyMsg);
+    statusEl.innerHTML = `<div style="color: var(--error)">❌ ${userFriendlyMsg}</div>`;
+  } finally {
+    enableBtn.disabled = false;
+    enableBtn.textContent = "Enable 7702 Batching";
+  }
+}
+
+// Revoke 7702 delegation
+async function revoke7702Delegation() {
+  if (!wallet || !provider || (typeof window.EIP7702 === 'undefined' && typeof EIP7702 === 'undefined')) return;
+  
+  const EIP7702Module = window.EIP7702 || EIP7702;
+  
+  const revokeBtn = document.getElementById("revoke7702Btn");
+  const statusEl = document.getElementById("eip7702Status");
+  
+  try {
+    revokeBtn.disabled = true;
+    revokeBtn.textContent = "Revoking...";
+    
+    // Confirm revocation
+    if (!confirm("Are you sure you want to revoke 7702 delegation? You will lose batching capabilities.")) {
+      return;
+    }
+    
+    statusEl.innerHTML = '<div style="color: var(--warning)">Revoking delegation...</div>';
+    
+    const receipt = await EIP7702Module.revokeDelegation(wallet);
+    
+    if (receipt.status === 1) {
+      showToast("7702 delegation revoked successfully");
+      statusEl.innerHTML = '<div style="color: var(--success)">✓ Delegation revoked</div>';
+      
+      // Update UI
+      await update7702Status();
+      
+      // Also update main wallet display
+      await displayWallet();
+    } else {
+      throw new Error("Revocation transaction failed");
+    }
+    
+  } catch (err) {
+    console.error("Failed to revoke 7702:", err);
+    let errorMsg = err.message || "Unknown error";
+    
+    if (errorMsg.includes("user rejected") || errorMsg.includes("denied")) {
+      errorMsg = "Transaction cancelled";
+    }
+    
+    showToast(`Failed to revoke 7702: ${errorMsg}`);
+    statusEl.innerHTML = `<div style="color: var(--error)">Failed: ${errorMsg}</div>`;
+  } finally {
+    revokeBtn.disabled = false;
+    revokeBtn.textContent = "Revoke 7702 Delegation";
   }
 }
