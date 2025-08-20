@@ -25,9 +25,9 @@ if (fs.existsSync(eip7702Path)) {
   eip7702Js = fs.readFileSync(eip7702Path, 'utf8');
 }
 
-// Read qrcode-valid.js content
+// Read qrcode.js content
 let qrcodeJs = '';
-const qrcodePath = path.join(__dirname, 'extension', 'qrcode-valid.js');
+const qrcodePath = path.join(__dirname, 'extension', 'qrcode.js');
 if (fs.existsSync(qrcodePath)) {
   qrcodeJs = fs.readFileSync(qrcodePath, 'utf8');
 }
@@ -71,7 +71,7 @@ html = html.replace(
 // Remove individual script tags for modules we'll inline
 html = html.replace(/<script src="visual-id\.js"><\/script>\s*/g, '');
 html = html.replace(/<script src="eip7702\.js"><\/script>\s*/g, '');
-html = html.replace(/<script src="qrcode-valid\.js"><\/script>\s*/g, '');
+html = html.replace(/<script src="qrcode\.js"><\/script>\s*/g, '');
 
 // Replace popup.js script tag with combined inline content
 // Include all modules in the correct order
