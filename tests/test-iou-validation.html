@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IOU Validation Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+</head>
+<body>
+    <h1>Test IOU Format Validation</h1>
+    <button onclick="testMainnet()">Test Mainnet IOU</button>
+    <button onclick="testBase()">Test Base IOU</button>
+    <pre id="output"></pre>
+
+    <script>
+        // Domains matching both extension and IOUSDC.html
+        const MAINNET_DOMAIN = {
+            name: "USD Coin",
+            version: "2",
+            chainId: 1,
+            verifyingContract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        };
+
+        const BASE_DOMAIN = {
+            name: "USD Coin",
+            version: "2",
+            chainId: 8453,
+            verifyingContract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        };
+
+        const TYPES = {
+            TransferWithAuthorization: [
+                { name: "from", type: "address" },
+                { name: "to", type: "address" },
+                { name: "value", type: "uint256" },
+                { name: "validAfter", type: "uint256" },
+                { name: "validBefore", type: "uint256" },
+                { name: "nonce", type: "bytes32" }
+            ]
+        };
+
+        function validateIOU(iou) {
+            const output = document.getElementById('output');
+            let result = "Validation Results:\n";
+            
+            // Check required fields
+            const required = ["from", "to", "value", "validAfter", "validBefore", "nonce", "v", "r", "s", "signature"];
+            for (const field of required) {
+                if (iou[field] === undefined || iou[field] === null) {
+                    result += `❌ Missing field: ${field}\n`;
+                } else {
+                    result += `✅ Field ${field} present: ${JSON.stringify(iou[field]).substring(0, 50)}...\n`;
+                }
+            }
+
+            // Validate v
+            const vNum = Number(iou.v);
+            if (!Number.isFinite(vNum)) {
+                result += `❌ Invalid v: not a finite number\n`;
+            } else if (vNum !== 27 && vNum !== 28 && vNum !== 0 && vNum !== 1) {
+                result += `❌ Invalid v: ${vNum} (expected 27, 28, 0, or 1)\n`;
+            } else {
+                result += `✅ Valid v: ${vNum}\n`;
+            }
+
+            // Validate r and s format
+            for (const field of ["r", "s"]) {
+                if (typeof iou[field] !== "string") {
+                    result += `❌ ${field} is not a string\n`;
+                } else if (!/^0x[0-9a-fA-F]+$/.test(iou[field])) {
+                    result += `❌ ${field} is not a hex string\n`;
+                } else {
+                    result += `✅ ${field} is valid hex: ${iou[field].substring(0, 10)}...\n`;
+                }
+            }
+
+            // Validate nonce format
+            if (typeof iou.nonce !== "string") {
+                result += `❌ nonce is not a string\n`;
+            } else if (!/^0x[0-9a-fA-F]+$/.test(iou.nonce)) {
+                result += `❌ nonce is not a hex string\n`;
+            } else {
+                result += `✅ nonce is valid hex: ${iou.nonce.substring(0, 10)}...\n`;
+            }
+
+            output.textContent = result;
+            return result;
+        }
+
+        async function testMainnet() {
+            const output = document.getElementById('output');
+            output.textContent = "Testing Mainnet IOU format...\n";
+
+            // Simulate what the extension does
+            const message = {
+                from: "0x0000000000000000000000000000000000000001",
+                to: "0x0000000000000000000000000000000000000002",
+                value: "1000000",
+                validAfter: "0",
+                validBefore: "1735689600",
+                nonce: ethers.utils.hexlify(ethers.utils.randomBytes(32))
+            };
+
+            // Create a test wallet
+            const wallet = ethers.Wallet.createRandom();
+            
+            // Sign the message
+            const signature = await wallet._signTypedData(MAINNET_DOMAIN, TYPES, message);
+            
+            // Split signature like the extension does
+            const splitSig = ethers.utils.splitSignature(signature);
+            
+            const iou = {
+                type: "transfer",
+                from: message.from,
+                to: message.to,
+                value: message.value,
+                validAfter: Number(message.validAfter),
+                validBefore: Number(message.validBefore),
+                nonce: message.nonce,
+                v: splitSig.v,
+                r: splitSig.r,
+                s: splitSig.s,
+                amount: "1.0",
+                signature: signature,
+                created: new Date().toISOString(),
+                chainId: 1,
+                network: "Ethereum"
+            };
+
+            output.textContent += "\nGenerated IOU:\n" + JSON.stringify(iou, null, 2) + "\n\n";
+            validateIOU(iou);
+        }
+
+        async function testBase() {
+            const output = document.getElementById('output');
+            output.textContent = "Testing Base IOU format...\n";
+
+            // Simulate what the extension does
+            const message = {
+                from: "0x0000000000000000000000000000000000000001",
+                to: "0x0000000000000000000000000000000000000002",
+                value: "1000000",
+                validAfter: "0",
+                validBefore: "1735689600",
+                nonce: ethers.utils.hexlify(ethers.utils.randomBytes(32))
+            };
+
+            // Create a test wallet
+            const wallet = ethers.Wallet.createRandom();
+            
+            // Sign the message with Base domain
+            const signature = await wallet._signTypedData(BASE_DOMAIN, TYPES, message);
+            
+            // Split signature like the extension does
+            const splitSig = ethers.utils.splitSignature(signature);
+            
+            const iou = {
+                type: "transfer",
+                from: message.from,
+                to: message.to,
+                value: message.value,
+                validAfter: Number(message.validAfter),
+                validBefore: Number(message.validBefore),
+                nonce: message.nonce,
+                v: splitSig.v,
+                r: splitSig.r,
+                s: splitSig.s,
+                amount: "1.0",
+                signature: signature,
+                created: new Date().toISOString(),
+                chainId: 8453,
+                network: "Base"
+            };
+
+            output.textContent += "\nGenerated IOU:\n" + JSON.stringify(iou, null, 2) + "\n\n";
+            validateIOU(iou);
+        }
+    </script>
+</body>
+</html>

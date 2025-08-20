@@ -14,6 +14,13 @@ window.generateQRCode = function(text, size) {
   text = String(text).replace(/^ethereum:/i, '').toLowerCase().trim();
   
   try {
+    // Check if Canvas is supported
+    var testCanvas = document.createElement('canvas');
+    if (!testCanvas.getContext) {
+      console.error('Canvas not supported');
+      return null;
+    }
+    
     // Create QR Code with automatic version detection
     var qr = new qrcode(0, 'M');
     qr.addData(text);
@@ -28,6 +35,11 @@ window.generateQRCode = function(text, size) {
     canvas.height = cellSize * (moduleCount + 8);
     
     var ctx = canvas.getContext('2d');
+    
+    if (!ctx) {
+      console.error('Cannot get 2d context');
+      return null;
+    }
     
     // White background
     ctx.fillStyle = '#ffffff';
@@ -45,8 +57,55 @@ window.generateQRCode = function(text, size) {
     
     return canvas.toDataURL('image/png');
   } catch (e) {
-    console.error('QR generation failed:', e);
-    return null;
+    console.error('QR generation failed, trying SVG fallback:', e);
+    // Fallback to SVG rendering if Canvas fails
+    return generateQRCodeSVG(text, size);
   }
 };
+
+// SVG-based QR code generation as fallback
+function generateQRCodeSVG(text, size) {
+  size = size || 256;
+  text = String(text).replace(/^ethereum:/i, '').toLowerCase().trim();
+  
+  try {
+    var qr = new qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    
+    var moduleCount = qr.getModuleCount();
+    var cellSize = Math.floor(size / (moduleCount + 8));
+    var margin = cellSize * 4;
+    var svgSize = cellSize * (moduleCount + 8);
+    
+    var svg = [];
+    svg.push('<?xml version="1.0" encoding="UTF-8"?>');
+    svg.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + svgSize + '" height="' + svgSize + '" viewBox="0 0 ' + svgSize + ' ' + svgSize + '">');
+    svg.push('<rect width="100%" height="100%" fill="white"/>');
+    
+    // Draw QR modules
+    for (var row = 0; row < moduleCount; row++) {
+      for (var col = 0; col < moduleCount; col++) {
+        if (qr.isDark(row, col)) {
+          var x = margin + col * cellSize;
+          var y = margin + row * cellSize;
+          svg.push('<rect x="' + x + '" y="' + y + '" width="' + cellSize + '" height="' + cellSize + '" fill="black"/>');
+        }
+      }
+    }
+    
+    svg.push('</svg>');
+    
+    // Convert SVG to data URL
+    var svgString = svg.join('');
+    var dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
+    
+    return dataUrl;
+  } catch (e) {
+    console.error('SVG QR generation also failed:', e);
+    return null;
+  }
+}
+
+window.generateQRCodeSVG = generateQRCodeSVG;
 }();
