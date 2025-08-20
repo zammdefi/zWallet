@@ -12,7 +12,13 @@ const EXTENSION_FILES = [
   'background.js',
   'content.js',
   'inject.js',
+  'eip7702.js',
+  'qrcode.js',
+  'visual-id.js',
   'icon.png',
+  'icon16.png',
+  'icon48.png',
+  'icon128.png',
   'ethers.umd.min.js'
 ];
 
