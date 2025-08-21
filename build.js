@@ -73,6 +73,79 @@ html = html.replace(/<script src="visual-id\.js"><\/script>\s*/g, '');
 html = html.replace(/<script src="eip7702\.js"><\/script>\s*/g, '');
 html = html.replace(/<script src="qrcode\.js"><\/script>\s*/g, '');
 
+// Add PWA service worker and install code
+const pwaCode = `
+// Simple service worker for offline functionality
+const CACHE_NAME = 'zwallet-v1';
+const urlsToCache = [
+  './',
+  'https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js'
+];
+
+// Inline service worker registration
+if ('serviceWorker' in navigator) {
+  // Create service worker from blob
+  const swCode = \`
+    self.addEventListener('install', event => {
+      event.waitUntil(
+        caches.open('\${CACHE_NAME}').then(cache => cache.addAll(\${JSON.stringify(urlsToCache)}))
+      );
+      self.skipWaiting();
+    });
+
+    self.addEventListener('activate', event => {
+      event.waitUntil(
+        caches.keys().then(cacheNames => 
+          Promise.all(cacheNames.filter(name => name !== '\${CACHE_NAME}').map(name => caches.delete(name)))
+        )
+      );
+      self.clients.claim();
+    });
+
+    self.addEventListener('fetch', event => {
+      event.respondWith(
+        caches.match(event.request).then(response => response || fetch(event.request))
+      );
+    });
+  \`;
+  
+  const blob = new Blob([swCode], { type: 'application/javascript' });
+  const swUrl = URL.createObjectURL(blob);
+  navigator.serviceWorker.register(swUrl).catch(err => console.log('SW registration failed:', err));
+}
+
+// PWA Install prompt
+let deferredPrompt;
+const installButton = document.getElementById('installPWA');
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  if (window.matchMedia('(max-width: 768px)').matches && installButton) {
+    installButton.classList.add('available');
+  }
+});
+
+if (installButton) {
+  installButton.addEventListener('click', async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        installButton.classList.remove('available');
+      }
+      deferredPrompt = null;
+    }
+  });
+}
+
+window.addEventListener('appinstalled', () => {
+  if (installButton) {
+    installButton.classList.remove('available');
+  }
+});
+`;
+
 // Replace popup.js script tag with combined inline content
 // Include all modules in the correct order
 let combinedJs = '';
@@ -80,6 +153,7 @@ if (eip7702Js) combinedJs += eip7702Js + '\n\n';
 if (qrcodeJs) combinedJs += qrcodeJs + '\n\n';
 if (visualIdJs) combinedJs += visualIdJs + '\n\n';
 combinedJs += popupJs;
+combinedJs += '\n\n// PWA Support\n' + pwaCode;
 
 html = html.replace(
   /<script src="popup\.js"><\/script>/g,
@@ -98,6 +172,34 @@ if (fs.existsSync(path.join(__dirname, 'icon.txt'))) {
   );
 }
 
+// Add PWA manifest link and meta tags for mobile
+html = html.replace(
+  '</title>',
+  `</title>
+    <link rel="manifest" href="data:application/manifest+json;base64,${Buffer.from(JSON.stringify({
+      "name": "zWallet - Web3 Wallet",
+      "short_name": "zWallet",
+      "description": "Your favorite new minimalist Ethereum wallet built for DeFi",
+      "start_url": "./",
+      "display": "standalone",
+      "background_color": "#1a1a2e",
+      "theme_color": "#B967DB",
+      "orientation": "portrait-primary",
+      "icons": [
+        {
+          "src": "data:image/svg+xml,%3Csvg width='192' height='192' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100' height='100' fill='%231a1a2e'/%3E%3Cpolygon points='30,40 50,40 30,60' fill='%236B5B95'/%3E%3Cpolygon points='50,40 70,40 50,60' fill='%238A7FBE'/%3E%3Cpolygon points='30,60 50,60 30,80' fill='%238A7FBE'/%3E%3Cpolygon points='50,60 70,60 50,80' fill='%23B967DB'/%3E%3C/svg%3E",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        },
+        {
+          "src": "data:image/svg+xml,%3Csvg width='512' height='512' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100' height='100' fill='%231a1a2e'/%3E%3Cpolygon points='30,40 50,40 30,60' fill='%236B5B95'/%3E%3Cpolygon points='50,40 70,40 50,60' fill='%238A7FBE'/%3E%3Cpolygon points='30,60 50,60 30,80' fill='%238A7FBE'/%3E%3Cpolygon points='50,60 70,60 50,80' fill='%23B967DB'/%3E%3C/svg%3E",
+          "sizes": "512x512",
+          "type": "image/svg+xml"
+        }
+      ]
+    })).toString('base64')}">`
+);
+
 // Add standalone styles
 const standaloneStyles = `
 <style>
@@ -108,6 +210,44 @@ body {
     align-items: center;
     justify-content: center;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* PWA Install Button */
+#installPWA {
+    display: none;
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    background: #B967DB;
+    color: white;
+    border: none;
+    border-radius: 24px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(185, 103, 219, 0.4);
+    z-index: 1000;
+    animation: pulse 2s infinite;
+}
+
+#installPWA:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(185, 103, 219, 0.5);
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.8; }
+    100% { opacity: 1; }
+}
+
+@media (max-width: 768px) {
+    #installPWA.available {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
 }
 
 .window {
@@ -136,6 +276,16 @@ body {
 
 // Add standalone styles before closing head tag
 html = html.replace('</head>', standaloneStyles + '\n</head>');
+
+// Add PWA install button to body
+html = html.replace(
+  '<body>',
+  `<body>
+    <button id="installPWA">
+      <span>📲</span>
+      <span>Install App</span>
+    </button>`
+);
 
 // Write the standalone file
 fs.writeFileSync(path.join(__dirname, 'zWallet.html'), html);

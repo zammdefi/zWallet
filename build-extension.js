@@ -63,7 +63,7 @@ function buildExtension() {
     console.error('❌ Failed to parse manifest.json:', error.message);
     process.exit(1);
   }
-  const version = manifest.version || '0.0.6';
+  const version = manifest.version || '0.0.7';
   
   console.log(`\n📦 Building zWallet v${version}...`);
   
