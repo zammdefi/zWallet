@@ -941,8 +941,8 @@ const TOKEN_LOGOS = {
 // WETH address for ETH price
 const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
-// zQuoter contract for finding best swap routes
-const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
+// zQuoter contract for finding best swap routes (includes V3 support)
+const ZQUOTER_ADDRESS = "0xb474E11Dd4290d423d681a847475122d076D3b02";
 
 // zQuoter ABI for getting best quotes (moved here to be defined before use)
 const ZQUOTER_ABI = [
@@ -1503,6 +1503,69 @@ async function migrateKeystoreIfNeeded() {
   if (changed) localStorage.setItem(LS_WALLETS, JSON.stringify(list));
 }
 
+// Connection health monitoring
+let connectionHealthInterval = null;
+let connectionRetryCount = 0;
+const MAX_CONNECTION_RETRIES = 3;
+
+async function startConnectionHealthMonitor() {
+  // Clear any existing interval
+  if (connectionHealthInterval) {
+    clearInterval(connectionHealthInterval);
+  }
+  
+  // Check connection every 30 seconds
+  connectionHealthInterval = setInterval(async () => {
+    if (!provider) return;
+    
+    try {
+      // Try to get block number with timeout
+      const timeoutPromise = new Promise((_, reject) => 
+        setManagedTimeout(() => reject(new Error('Health check timeout')), 5000)
+      );
+      await Promise.race([provider.getBlockNumber(), timeoutPromise]);
+      
+      // Connection is healthy, reset retry count
+      if (connectionRetryCount > 0) {
+        connectionRetryCount = 0;
+        showToast("Connection restored", 2000);
+      }
+    } catch (error) {
+      console.warn("Connection health check failed:", error.message);
+      connectionRetryCount++;
+      
+      if (connectionRetryCount >= MAX_CONNECTION_RETRIES) {
+        showToast("Connection lost. Attempting to reconnect...", 3000);
+        
+        // Stop the health monitor to prevent infinite loops
+        clearInterval(connectionHealthInterval);
+        connectionHealthInterval = null;
+        connectionRetryCount = 0;
+        
+        // Try to reconnect
+        try {
+          await initProvider();
+          
+          // Restart health monitor only if reconnected successfully
+          if (provider) {
+            startConnectionHealthMonitor();
+          }
+        } catch (reconnectError) {
+          console.error("Failed to reconnect:", reconnectError);
+          showToast("Reconnection failed. Please refresh the page.", 5000);
+        }
+      }
+    }
+  }, 30000); // Check every 30 seconds
+}
+
+function stopConnectionHealthMonitor() {
+  if (connectionHealthInterval) {
+    clearInterval(connectionHealthInterval);
+    connectionHealthInterval = null;
+  }
+}
+
 // Initialize
 async function init() {
   // Initialization started
@@ -1532,8 +1595,14 @@ async function init() {
   }
   
   // Register cleanup on page unload
-  window.addEventListener('beforeunload', cleanupOnUnload);
-  window.addEventListener('unload', cleanupOnUnload);
+  window.addEventListener('beforeunload', () => {
+    stopConnectionHealthMonitor();
+    cleanupOnUnload();
+  });
+  window.addEventListener('unload', () => {
+    stopConnectionHealthMonitor();
+    cleanupOnUnload();
+  });
   
   // Also cleanup on visibility change (mobile browsers)
   document.addEventListener('visibilitychange', () => {
@@ -1554,6 +1623,11 @@ async function init() {
     initProvider(),
     loadCustomTokens()
   ]);
+  
+  // Start connection health monitor after successful provider init
+  if (provider) {
+    startConnectionHealthMonitor();
+  }
   
   // These depend on provider being ready
   loadWallets();
@@ -2158,16 +2232,65 @@ async function initProvider() {
     loadRpcSettings();
     showToast("Connected to network");
   } catch (err) {
+    console.warn('Primary RPC failed:', err.message);
     
-    // Try fallback RPCs based on network
-    const fallbackRpcs = isBaseMode 
-      ? ["https://mainnet.base.org", "https://base.llamarpc.com"]
-      : ["https://eth.llamarpc.com", "https://ethereum.publicnode.com"];
+    // Enhanced fallback RPCs - prioritize most reliable ones
+    const primaryRpcs = isBaseMode 
+      ? [
+          "https://mainnet.base.org",  // Most reliable for Base
+          "https://base.llamarpc.com"   // Second most reliable
+        ]
+      : [
+          "https://eth.llamarpc.com",   // Most reliable for Ethereum
+          "https://ethereum.publicnode.com"
+        ];
+    
+    const secondaryRpcs = isBaseMode
+      ? [
+          "https://base-mainnet.public.blastapi.io",
+          "https://base.meowrpc.com",
+          "https://base.blockpi.network/v1/rpc/public",
+          "https://base-rpc.publicnode.com",
+          "https://1rpc.io/base",
+          "https://base.drpc.org"
+        ]
+      : [
+          "https://eth-mainnet.public.blastapi.io",
+          "https://rpc.ankr.com/eth",
+          "https://eth.drpc.org",
+          "https://ethereum-rpc.publicnode.com",
+          "https://1rpc.io/eth",
+          "https://eth-pokt.nodies.app",
+          "https://ethereum.blockpi.network/v1/rpc/public",
+          "https://rpc.payload.de",
+          "https://eth.merkle.io",
+          "https://rpc.flashbots.net/fast"
+        ];
+    
+    // Try primary RPCs first, then shuffle secondary for load balancing
+    const shuffledSecondary = [...secondaryRpcs].sort(() => Math.random() - 0.5);
+    const fallbackRpcs = [...primaryRpcs, ...shuffledSecondary];
       
+    let connectionAttempts = 0;
+    let connectedRpc = null;
+    
     for (const rpc of fallbackRpcs) {
+      connectionAttempts++;
       try {
         provider = new ethers.JsonRpcProvider(rpc);
-        await provider.getBlockNumber();
+        
+        // Test with timeout (3 seconds per RPC)
+        const timeoutPromise = new Promise((_, reject) => 
+          setManagedTimeout(() => reject(new Error('RPC timeout')), 3000)
+        );
+        
+        await Promise.race([
+          provider.getBlockNumber(),
+          timeoutPromise
+        ]);
+        
+        connectedRpc = rpc;
+        console.log(`Connected to RPC: ${rpc} (attempt ${connectionAttempts}/${fallbackRpcs.length})`);
         
         if (!isBaseMode) {
           zWalletContract = new ethers.Contract(
@@ -2189,16 +2312,29 @@ async function initProvider() {
           zQuoterContract = null;
         }
         
-        currentRpc = rpc;
-        localStorage.setItem(isBaseMode ? "base_rpc" : "rpc_endpoint", rpc);
+        currentRpc = connectedRpc;
+        localStorage.setItem(isBaseMode ? "base_rpc" : "rpc_endpoint", connectedRpc);
         loadRpcSettings();
+        
+        // Show success message
+        if (connectionAttempts > 1) {
+          showToast(`Connected via backup RPC (${connectionAttempts}/${fallbackRpcs.length} tried)`, 2000);
+        }
         break;
       } catch (e) {
+        console.warn(`RPC ${rpc} failed:`, e.message);
+        
+        // Show progress to user (only for first few attempts to avoid spam)
+        if (connectionAttempts <= 3 && connectionAttempts < fallbackRpcs.length) {
+          showToast(`Trying backup RPC ${connectionAttempts + 1}/${Math.min(fallbackRpcs.length, 3)}...`, 1500);
+        }
         continue;
       }
     }
+    
     if (!provider) {
-      showToast("Network connection failed");
+      showToast("All RPC connections failed. Please check your network.", 5000);
+      console.error('Failed to connect to any RPC endpoint');
     }
   }
 }
@@ -3698,6 +3834,7 @@ function esc(s) {
 
 window.addEventListener("beforeunload", () => {
   // Clean up all event listeners and timers
+  stopConnectionHealthMonitor();
   cleanupEventListeners();
   wallet = null;
 });
@@ -6280,7 +6417,9 @@ restoreSwapState();
 const AMM_SOURCES = {
   0: "UNI_V2",
   1: "SUSHI",
-  2: "ZAMM"
+  2: "ZAMM",
+  3: "UNI_V3",
+  4: "UNI_V4"
 };
 
 // Standard Uniswap V3 fee tiers
@@ -7224,8 +7363,16 @@ async function simulateSwap() {
     updateSwapUSDValues();
     
     // Determine the source name
-    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM"];
+    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM", "Uniswap V3", "Uniswap V4"];
     const sourceName = sourceNames[bestQuote.source] || `AMM ${bestQuote.source}`;
+    // Add fee information to the source name
+    const feeValue = bestQuote.feeBps / 100;
+    // Format fee: remove trailing zeros but keep at least 1 decimal place for whole numbers
+    let feePercent = feeValue.toFixed(2);
+    if (feePercent.endsWith('0') && !feePercent.endsWith('.0')) {
+      feePercent = feePercent.slice(0, -1);
+    }
+    const sourceWithFee = `${sourceName} (${feePercent}% fee)`;
     
     
     // Calculate minimum received with slippage
@@ -7240,7 +7387,7 @@ async function simulateSwap() {
     const gasFeeUSD = parseFloat(gasFeeETH) * (tokenPrices["ETH"]?.usd || 0);
     
     // Update UI with quote details
-    document.getElementById("swapRoute").textContent = sourceName;
+    document.getElementById("swapRoute").textContent = sourceWithFee;
     document.getElementById("swapMinimum").textContent = `${minOutput.toFixed(6)} ${swapToToken}`;
     document.getElementById("swapGasFee").textContent = `$${gasFeeUSD.toFixed(2)}`;
     
@@ -7251,7 +7398,7 @@ async function simulateSwap() {
       tokenOut: tokenOutAddress,
       amountIn: swapAmount,
       amountOut: bestQuote.amountOut,
-      sourceName,
+      sourceName: sourceWithFee,
       slippage
     };
     
