@@ -99,7 +99,14 @@ const NETWORKS = {
     rpcUrls: [
       'https://eth.llamarpc.com',
       'https://ethereum.publicnode.com',
-      'https://cloudflare-eth.com'
+      'https://cloudflare-eth.com',
+      'https://rpc.ankr.com/eth',
+      'https://eth.drpc.org',
+      'https://ethereum.rpc.subquery.network/public',
+      'https://1rpc.io/eth',
+      'https://eth-mainnet.public.blastapi.io',
+      'https://api.mycryptoapi.com/eth',
+      'https://rpc.flashbots.net'
     ],
     blockExplorer: 'https://etherscan.io',
     currency: 'ETH'
@@ -110,7 +117,14 @@ const NETWORKS = {
     rpcUrls: [
       'https://mainnet.base.org',
       'https://base.llamarpc.com',
-      'https://base.publicnode.com'
+      'https://base.publicnode.com',
+      'https://base.meowrpc.com',
+      'https://base.drpc.org',
+      'https://base-mainnet.public.blastapi.io',
+      'https://base.gateway.tenderly.co',
+      'https://rpc.notadegen.com/base',
+      'https://base-rpc.publicnode.com',
+      'https://1rpc.io/base'
     ],
     blockExplorer: 'https://basescan.org',
     currency: 'ETH'
@@ -942,7 +956,7 @@ const TOKEN_LOGOS = {
 const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 // zQuoter contract for finding best swap routes
-const ZQUOTER_ADDRESS = "0xC802D186BdFC8F53F35dF9B424CAf13f5AC5aec7";
+const ZQUOTER_ADDRESS = "0xb474E11Dd4290d423d681a847475122d076D3b02";
 
 // zQuoter ABI for getting best quotes (moved here to be defined before use)
 const ZQUOTER_ABI = [
@@ -6280,14 +6294,17 @@ restoreSwapState();
 const AMM_SOURCES = {
   0: "UNI_V2",
   1: "SUSHI",
-  2: "ZAMM"
+  2: "ZAMM",
+  3: "UNI_V3",
+  4: "UNI_V4"
 };
 
 // Standard Uniswap V3 fee tiers
-const V3_FEE_TIERS = [500, 3000, 10000]; // 0.05%, 0.3%, 1%
+const V3_FEE_TIERS = [100, 500, 3000, 10000]; // 0.01%, 0.05%, 0.3%, 1%
 
 // Uniswap V4 tick spacings
 const V4_TICK_SPACINGS = {
+  100: 1,     // 0.01% fee
   500: 10,    // 0.05% fee
   3000: 60,   // 0.3% fee
   10000: 200  // 1% fee
@@ -7224,7 +7241,7 @@ async function simulateSwap() {
     updateSwapUSDValues();
     
     // Determine the source name
-    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM"];
+    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM", "Uniswap V3"];
     const sourceName = sourceNames[bestQuote.source] || `AMM ${bestQuote.source}`;
     
     

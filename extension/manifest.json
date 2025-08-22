@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "zWallet",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Your favorite new minimalist Ethereum wallet built for DeFi",
   "action": {
     "default_popup": "popup.html",
@@ -39,16 +39,28 @@
   "host_permissions": [
     "https://eth.llamarpc.com/*",
     "https://ethereum.publicnode.com/*",
-    "https://rpc.ankr.com/*",
     "https://cloudflare-eth.com/*",
-    "https://etherscan.io/*",
+    "https://rpc.ankr.com/*",
+    "https://eth.drpc.org/*",
+    "https://ethereum.rpc.subquery.network/*",
+    "https://1rpc.io/*",
+    "https://eth-mainnet.public.blastapi.io/*",
+    "https://api.mycryptoapi.com/*",
+    "https://rpc.flashbots.net/*",
     "https://mainnet.base.org/*",
     "https://base.llamarpc.com/*",
     "https://base.publicnode.com/*",
+    "https://base.meowrpc.com/*",
+    "https://base.drpc.org/*",
+    "https://base-mainnet.public.blastapi.io/*",
+    "https://base.gateway.tenderly.co/*",
+    "https://rpc.notadegen.com/*",
+    "https://base-rpc.publicnode.com/*",
+    "https://etherscan.io/*",
     "https://basescan.org/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src https://eth.llamarpc.com https://ethereum.publicnode.com https://rpc.ankr.com https://cloudflare-eth.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src 'self' https://eth.llamarpc.com https://ethereum.publicnode.com https://cloudflare-eth.com https://rpc.ankr.com https://eth.drpc.org https://ethereum.rpc.subquery.network https://1rpc.io https://eth-mainnet.public.blastapi.io https://api.mycryptoapi.com https://rpc.flashbots.net https://mainnet.base.org https://base.llamarpc.com https://base.publicnode.com https://base.meowrpc.com https://base.drpc.org https://base-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.notadegen.com https://base-rpc.publicnode.com https://etherscan.io https://basescan.org"
   },
   "background": {
     "service_worker": "background.js"

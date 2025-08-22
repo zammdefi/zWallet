@@ -6,6 +6,7 @@ let connectedSites = {};
 let pendingRequests = {};
 let accountCache = null;
 let chainId = '0x1'; // Default to mainnet
+let currentRpcUrl = 'https://eth.llamarpc.com'; // Default RPC
 
 
 // Handle messages from content scripts and popup
@@ -111,7 +112,7 @@ async function handleProviderRequest(request, sender, sendResponse) {
       break;
       
     case 'web3_clientVersion':
-      sendResponse({ result: 'zWallet/0.0.6' });
+      sendResponse({ result: 'zWallet/0.0.7' });
       break;
       
     case 'eth_syncing':
@@ -164,8 +165,8 @@ async function handleProviderRequest(request, sender, sendResponse) {
       
     case 'wallet_switchEthereumChain':
     case 'wallet_addEthereumChain':
-      // Handle chain switching
-      handleChainSwitch(request, sendResponse);
+      // Handle adding new chain
+      handleAddChain(request, sendResponse);
       break;
       
     case 'wallet_watchAsset':
@@ -214,7 +215,7 @@ async function handleProviderRequest(request, sender, sendResponse) {
 // Forward requests to Ethereum provider
 async function forwardToProvider(request, sendResponse) {
   try {
-    const response = await fetch('https://eth.llamarpc.com', {
+    const response = await fetch(currentRpcUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -245,15 +246,63 @@ async function forwardToProvider(request, sendResponse) {
 
 // Handle chain switching
 function handleChainSwitch(request, sendResponse) {
-  // For now, we only support mainnet
-  if (request.params[0].chainId === '0x1') {
+  const requestedChainId = request.params[0].chainId;
+  
+  // Support mainnet and Base
+  if (requestedChainId === '0x1') {
     chainId = '0x1';
+    currentRpcUrl = 'https://eth.llamarpc.com';
+    // Notify all connected sites of chain change
+    notifyChainChange('0x1');
+    sendResponse({ result: null });
+  } else if (requestedChainId === '0x2105') { // Base mainnet chain ID (8453 in hex)
+    chainId = '0x2105';
+    currentRpcUrl = 'https://mainnet.base.org';
+    // Notify all connected sites of chain change
+    notifyChainChange('0x2105');
     sendResponse({ result: null });
   } else {
     sendResponse({ 
       error: {
         code: 4902,
-        message: 'Unrecognized chain ID'
+        message: 'Unrecognized chain ID. zWallet supports Ethereum mainnet (0x1) and Base (0x2105)'
+      }
+    });
+  }
+}
+
+// Notify connected sites of chain change
+function notifyChainChange(newChainId) {
+  Object.keys(connectedSites).forEach(origin => {
+    chrome.tabs.query({ url: origin + '/*' }, (tabs) => {
+      tabs.forEach(tab => {
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'PROVIDER_EVENT',
+          data: {
+            event: 'chainChanged',
+            params: newChainId
+          }
+        }).catch(() => {});
+      });
+    });
+  });
+}
+
+// Handle adding new chain
+function handleAddChain(request, sendResponse) {
+  const chainParams = request.params[0];
+  const requestedChainId = chainParams.chainId;
+  
+  // Check if we support this chain
+  if (requestedChainId === '0x1' || requestedChainId === '0x2105') {
+    // Chain is already supported, switch to it
+    handleChainSwitch({ params: [{ chainId: requestedChainId }] }, sendResponse);
+  } else {
+    // We don't support adding arbitrary chains
+    sendResponse({ 
+      error: {
+        code: 4200,
+        message: 'zWallet only supports Ethereum mainnet and Base. Cannot add custom chains.'
       }
     });
   }

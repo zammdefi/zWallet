@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>zWallet dApp Integration Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .test-section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #B967DB;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background: #a050c0;
+        }
+        .result {
+            background: #f8f8f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .success {
+            color: green;
+        }
+        .error {
+            color: red;
+        }
+        .info {
+            color: blue;
+        }
+    </style>
+</head>
+<body>
+    <h1>zWallet Integration Test Suite</h1>
+    
+    <div class="test-section">
+        <h2>Provider Detection</h2>
+        <button onclick="detectProvider()">Detect Provider</button>
+        <div id="providerResult" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Account Connection</h2>
+        <button onclick="requestAccounts()">Connect Wallet</button>
+        <button onclick="getAccounts()">Get Accounts</button>
+        <div id="accountResult" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Network Information</h2>
+        <button onclick="getChainId()">Get Chain ID</button>
+        <button onclick="getNetworkVersion()">Get Network Version</button>
+        <div id="networkResult" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Chain Switching</h2>
+        <button onclick="switchToMainnet()">Switch to Mainnet</button>
+        <button onclick="switchToBase()">Switch to Base</button>
+        <button onclick="addBaseChain()">Add Base Chain</button>
+        <div id="chainResult" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Event Listeners</h2>
+        <button onclick="setupEventListeners()">Setup Event Listeners</button>
+        <div id="eventResult" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>RPC Calls</h2>
+        <button onclick="getBalance()">Get Balance</button>
+        <button onclick="getBlockNumber()">Get Block Number</button>
+        <div id="rpcResult" class="result"></div>
+    </div>
+    
+    <script>
+        let currentAccount = null;
+        
+        function log(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : 'info';
+            element.innerHTML = `<span class="${className}">[${timestamp}] ${message}</span>`;
+        }
+        
+        async function detectProvider() {
+            try {
+                if (typeof window.ethereum !== 'undefined') {
+                    const info = {
+                        detected: true,
+                        isZWallet: window.ethereum.isZWallet || false,
+                        isMetaMask: window.ethereum.isMetaMask || false,
+                        isConnected: window.ethereum.isConnected(),
+                        chainId: window.ethereum.chainId,
+                        networkVersion: window.ethereum.networkVersion
+                    };
+                    log('providerResult', 'Provider detected:\n' + JSON.stringify(info, null, 2), 'success');
+                } else {
+                    log('providerResult', 'No Ethereum provider detected. Please install zWallet extension.', 'error');
+                }
+            } catch (error) {
+                log('providerResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function requestAccounts() {
+            try {
+                const accounts = await window.ethereum.request({ 
+                    method: 'eth_requestAccounts' 
+                });
+                currentAccount = accounts[0];
+                log('accountResult', 'Connected: ' + accounts.join(', '), 'success');
+            } catch (error) {
+                log('accountResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function getAccounts() {
+            try {
+                const accounts = await window.ethereum.request({ 
+                    method: 'eth_accounts' 
+                });
+                log('accountResult', 'Accounts: ' + (accounts.length > 0 ? accounts.join(', ') : 'No accounts connected'), 'info');
+            } catch (error) {
+                log('accountResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function getChainId() {
+            try {
+                const chainId = await window.ethereum.request({ 
+                    method: 'eth_chainId' 
+                });
+                const chainName = chainId === '0x1' ? 'Ethereum Mainnet' : 
+                                 chainId === '0x2105' ? 'Base' : 'Unknown';
+                log('networkResult', `Chain ID: ${chainId} (${chainName})`, 'success');
+            } catch (error) {
+                log('networkResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function getNetworkVersion() {
+            try {
+                const version = await window.ethereum.request({ 
+                    method: 'net_version' 
+                });
+                log('networkResult', 'Network Version: ' + version, 'success');
+            } catch (error) {
+                log('networkResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function switchToMainnet() {
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: '0x1' }]
+                });
+                log('chainResult', 'Switched to Ethereum Mainnet', 'success');
+            } catch (error) {
+                log('chainResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function switchToBase() {
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: '0x2105' }]
+                });
+                log('chainResult', 'Switched to Base', 'success');
+            } catch (error) {
+                log('chainResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function addBaseChain() {
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_addEthereumChain',
+                    params: [{
+                        chainId: '0x2105',
+                        chainName: 'Base',
+                        nativeCurrency: {
+                            name: 'Ethereum',
+                            symbol: 'ETH',
+                            decimals: 18
+                        },
+                        rpcUrls: ['https://mainnet.base.org'],
+                        blockExplorerUrls: ['https://basescan.org']
+                    }]
+                });
+                log('chainResult', 'Base chain added/switched', 'success');
+            } catch (error) {
+                log('chainResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        function setupEventListeners() {
+            try {
+                window.ethereum.on('accountsChanged', (accounts) => {
+                    log('eventResult', 'accountsChanged: ' + accounts.join(', '), 'info');
+                    currentAccount = accounts[0];
+                });
+                
+                window.ethereum.on('chainChanged', (chainId) => {
+                    log('eventResult', 'chainChanged: ' + chainId, 'info');
+                    // Reload is recommended on chain change
+                    setTimeout(() => location.reload(), 1000);
+                });
+                
+                window.ethereum.on('connect', (info) => {
+                    log('eventResult', 'connect: ' + JSON.stringify(info), 'success');
+                });
+                
+                window.ethereum.on('disconnect', (error) => {
+                    log('eventResult', 'disconnect: ' + error.message, 'error');
+                });
+                
+                log('eventResult', 'Event listeners registered', 'success');
+            } catch (error) {
+                log('eventResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function getBalance() {
+            try {
+                const accounts = await window.ethereum.request({ 
+                    method: 'eth_accounts' 
+                });
+                if (accounts.length === 0) {
+                    log('rpcResult', 'Please connect wallet first', 'error');
+                    return;
+                }
+                
+                const balance = await window.ethereum.request({
+                    method: 'eth_getBalance',
+                    params: [accounts[0], 'latest']
+                });
+                
+                const balanceInEth = parseInt(balance, 16) / 1e18;
+                log('rpcResult', `Balance: ${balanceInEth.toFixed(6)} ETH`, 'success');
+            } catch (error) {
+                log('rpcResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function getBlockNumber() {
+            try {
+                const blockNumber = await window.ethereum.request({
+                    method: 'eth_blockNumber'
+                });
+                
+                log('rpcResult', `Current block: ${parseInt(blockNumber, 16)}`, 'success');
+            } catch (error) {
+                log('rpcResult', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Auto-detect provider on load
+        window.addEventListener('load', () => {
+            setTimeout(detectProvider, 500);
+        });
+    </script>
+</body>
+</html>

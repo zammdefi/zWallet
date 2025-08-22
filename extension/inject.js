@@ -65,6 +65,11 @@
     } else if (event.data.type === 'ZWALLET_PROVIDER_EVENT') {
       // Handle events like accountsChanged, chainChanged
       if (window.ethereum && event.data.data.event) {
+        // Update internal state for chainChanged events
+        if (event.data.data.event === 'chainChanged') {
+          window.ethereum.chainId = event.data.data.params;
+          window.ethereum.networkVersion = parseInt(event.data.data.params, 16).toString();
+        }
         window.ethereum.emit(event.data.data.event, event.data.data.params);
       }
     }

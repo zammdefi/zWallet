@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="zWallet">
+    <meta name="application-name" content="zWallet">
+    <meta name="msapplication-TileColor" content="#B967DB">
+    <meta name="msapplication-TileImage" content="/extension/icon128.png">
+    <meta name="theme-color" content="#B967DB">
+    <meta name="format-detection" content="telephone=no">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    
+    <!-- Apple Touch Icons -->
+    <link rel="apple-touch-icon" href="/extension/icon.png">
+    <link rel="apple-touch-icon" sizes="48x48" href="/extension/icon48.png">
+    <link rel="apple-touch-icon" sizes="128x128" href="/extension/icon128.png">
+    <link rel="apple-touch-icon" sizes="192x192" href="/extension/icon.png">
+    
+    <!-- Favicons -->
+    <link rel="icon" type="image/png" sizes="16x16" href="/extension/icon16.png">
+    <link rel="icon" type="image/png" sizes="48x48" href="/extension/icon48.png">
+    <link rel="icon" type="image/png" sizes="128x128" href="/extension/icon128.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/extension/icon.png">
+    
+    <!-- Apple Splash Screens (optional but nice for iOS) -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <title>zWallet - Minimalist Ethereum Wallet</title>
+    
+    <!-- Preconnect to RPC endpoints -->
+    <link rel="preconnect" href="https://eth.llamarpc.com" crossorigin>
+    <link rel="preconnect" href="https://ethereum.publicnode.com" crossorigin>
+    <link rel="dns-prefetch" href="https://rpc.ankr.com">
+    
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #1a1a2e;
+            --hover: #2a2a3e;
+            --text: #e0e0ff;
+            --muted: #9090a0;
+            --accent: #B967DB;
+            --success: #67db8b;
+            --error: #db6767;
+            --warning: #dba667;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+        
+        /* PWA Install Banner */
+        .install-banner {
+            display: none;
+            background: linear-gradient(135deg, var(--accent), #8b47ab);
+            padding: 16px;
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(185, 103, 219, 0.3);
+            z-index: 1000;
+            animation: slideUp 0.3s ease-out;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        
+        @keyframes slideUp {
+            from {
+                transform: translateY(100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .install-banner.show {
+            display: block;
+        }
+        
+        .install-banner-content {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .install-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .install-icon img {
+            width: 32px;
+            height: 32px;
+        }
+        
+        .install-text {
+            flex: 1;
+        }
+        
+        .install-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        
+        .install-subtitle {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        
+        .install-buttons {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+        
+        .install-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .install-btn-primary {
+            background: white;
+            color: var(--accent);
+        }
+        
+        .install-btn-primary:hover {
+            transform: scale(1.05);
+        }
+        
+        .install-btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        
+        .install-btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        /* iOS Install Instructions */
+        .ios-install-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            padding: 20px;
+            animation: fadeIn 0.3s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .ios-install-modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .ios-install-content {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 24px;
+            max-width: 350px;
+            width: 100%;
+            text-align: center;
+        }
+        
+        .ios-install-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 16px;
+            background: linear-gradient(135deg, var(--accent), #8b47ab);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .ios-install-icon img {
+            width: 50px;
+            height: 50px;
+        }
+        
+        .ios-install-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        
+        .ios-install-steps {
+            text-align: left;
+            margin: 20px 0;
+        }
+        
+        .ios-install-step {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        
+        .ios-install-step-number {
+            width: 24px;
+            height: 24px;
+            background: var(--accent);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        
+        .ios-close-btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .ios-close-btn:hover {
+            transform: scale(1.02);
+        }
+        
+        /* Main Container */
+        .container {
+            width: 100%;
+            max-width: 420px;
+            margin: 0 auto;
+            padding: 20px;
+            flex: 1;
+        }
+        
+        .header {
+            text-align: center;
+            padding: 40px 0;
+        }
+        
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            background: linear-gradient(135deg, var(--accent), #8b47ab);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .logo img {
+            width: 50px;
+            height: 50px;
+        }
+        
+        h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--accent), #67db8b);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .subtitle {
+            color: var(--muted);
+            font-size: 16px;
+            margin-bottom: 30px;
+        }
+        
+        .wallet-frame {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 24px;
+            min-height: 400px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        .wallet-frame iframe {
+            width: 100%;
+            height: 500px;
+            border: none;
+            border-radius: 12px;
+        }
+        
+        .features {
+            margin-top: 40px;
+            display: grid;
+            gap: 16px;
+        }
+        
+        .feature {
+            background: var(--surface);
+            padding: 20px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--accent);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        
+        .feature-text h3 {
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        
+        .feature-text p {
+            color: var(--muted);
+            font-size: 14px;
+        }
+        
+        .action-buttons {
+            margin-top: 30px;
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #8b47ab);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(185, 103, 219, 0.4);
+        }
+        
+        .btn-secondary {
+            background: var(--hover);
+            color: var(--text);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--surface);
+        }
+        
+        @media (max-width: 640px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header {
+                padding: 20px 0;
+            }
+            
+            h1 {
+                font-size: 28px;
+            }
+            
+            .install-banner {
+                bottom: 10px;
+                left: 10px;
+                right: 10px;
+            }
+        }
+        
+        /* Hide install button on desktop */
+        @media (min-width: 768px) {
+            .mobile-install-hint {
+                display: none;
+            }
+        }
+        
+        .mobile-install-hint {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 20px;
+            text-align: center;
+            border: 1px solid var(--accent);
+        }
+        
+        .mobile-install-hint p {
+            color: var(--muted);
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+        
+        .mobile-install-btn {
+            background: var(--accent);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <img src="/extension/icon.png" alt="zWallet">
+            </div>
+            <h1>zWallet</h1>
+            <p class="subtitle">Your minimalist Ethereum wallet for DeFi</p>
+        </div>
+        
+        <div class="wallet-frame">
+            <iframe src="/extension/popup.html" title="zWallet Interface"></iframe>
+        </div>
+        
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🔐</div>
+                <div class="feature-text">
+                    <h3>Secure & Private</h3>
+                    <p>Your keys, your crypto. Always.</p>
+                </div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">⚡</div>
+                <div class="feature-text">
+                    <h3>Lightning Fast</h3>
+                    <p>Optimized for speed and efficiency</p>
+                </div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📱</div>
+                <div class="feature-text">
+                    <h3>Works Everywhere</h3>
+                    <p>Mobile, desktop, or as an extension</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="mobile-install-hint">
+            <p>📱 Install zWallet on your device for quick access</p>
+            <button class="mobile-install-btn" id="mobileInstallBtn">Install App</button>
+        </div>
+        
+        <div class="action-buttons">
+            <a href="https://github.com/yourusername/zWallet" class="btn btn-secondary" target="_blank">View Source</a>
+            <button class="btn btn-primary" id="installBtn" style="display: none;">Install App</button>
+        </div>
+    </div>
+    
+    <!-- PWA Install Banner -->
+    <div class="install-banner" id="installBanner">
+        <div class="install-banner-content">
+            <div class="install-icon">
+                <img src="/extension/icon.png" alt="zWallet">
+            </div>
+            <div class="install-text">
+                <div class="install-title">Install zWallet</div>
+                <div class="install-subtitle">Add to your home screen for easy access</div>
+            </div>
+            <div class="install-buttons">
+                <button class="install-btn install-btn-secondary" id="dismissBtn">Later</button>
+                <button class="install-btn install-btn-primary" id="installPromptBtn">Install</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- iOS Install Instructions Modal -->
+    <div class="ios-install-modal" id="iosInstallModal">
+        <div class="ios-install-content">
+            <div class="ios-install-icon">
+                <img src="/extension/icon.png" alt="zWallet">
+            </div>
+            <div class="ios-install-title">Install zWallet</div>
+            <p style="color: var(--muted); margin-bottom: 20px;">Add zWallet to your home screen</p>
+            <div class="ios-install-steps">
+                <div class="ios-install-step">
+                    <div class="ios-install-step-number">1</div>
+                    <div>Tap the Share button <span style="color: var(--accent);">↗</span> at the bottom of your browser</div>
+                </div>
+                <div class="ios-install-step">
+                    <div class="ios-install-step-number">2</div>
+                    <div>Scroll down and tap "Add to Home Screen"</div>
+                </div>
+                <div class="ios-install-step">
+                    <div class="ios-install-step-number">3</div>
+                    <div>Tap "Add" in the top right corner</div>
+                </div>
+            </div>
+            <button class="ios-close-btn" id="iosCloseBtn">Got it!</button>
+        </div>
+    </div>
+    
+    <script>
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(registration => console.log('SW registered:', registration))
+                    .catch(err => console.log('SW registration failed:', err));
+            });
+        }
+        
+        // PWA Install Logic
+        let deferredPrompt;
+        const installBanner = document.getElementById('installBanner');
+        const installBtn = document.getElementById('installBtn');
+        const installPromptBtn = document.getElementById('installPromptBtn');
+        const dismissBtn = document.getElementById('dismissBtn');
+        const mobileInstallBtn = document.getElementById('mobileInstallBtn');
+        const iosInstallModal = document.getElementById('iosInstallModal');
+        const iosCloseBtn = document.getElementById('iosCloseBtn');
+        
+        // Check if running in standalone mode
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || 
+                           window.navigator.standalone || 
+                           document.referrer.includes('android-app://');
+        
+        // Detect iOS
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        
+        // Handle beforeinstallprompt event (Android/Chrome)
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            // Show install banner after a short delay
+            if (!isStandalone && !localStorage.getItem('installDismissed')) {
+                setTimeout(() => {
+                    installBanner.classList.add('show');
+                }, 3000);
+            }
+            
+            // Show install button
+            installBtn.style.display = 'inline-block';
+        });
+        
+        // Install button click handler
+        const handleInstallClick = async () => {
+            if (isIOS) {
+                // Show iOS install instructions
+                iosInstallModal.classList.add('show');
+            } else if (deferredPrompt) {
+                // Show Chrome install prompt
+                installBanner.classList.remove('show');
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`User response: ${outcome}`);
+                deferredPrompt = null;
+                installBtn.style.display = 'none';
+            }
+        };
+        
+        installBtn.addEventListener('click', handleInstallClick);
+        installPromptBtn.addEventListener('click', handleInstallClick);
+        mobileInstallBtn.addEventListener('click', handleInstallClick);
+        
+        // Dismiss banner
+        dismissBtn.addEventListener('click', () => {
+            installBanner.classList.remove('show');
+            localStorage.setItem('installDismissed', 'true');
+            // Re-show after 7 days
+            setTimeout(() => {
+                localStorage.removeItem('installDismissed');
+            }, 7 * 24 * 60 * 60 * 1000);
+        });
+        
+        // Close iOS modal
+        iosCloseBtn.addEventListener('click', () => {
+            iosInstallModal.classList.remove('show');
+        });
+        
+        // Show install hint for iOS users who haven't installed
+        if (isIOS && !isStandalone && !localStorage.getItem('iosInstallShown')) {
+            setTimeout(() => {
+                if (!deferredPrompt) {
+                    // Show custom iOS install hint
+                    mobileInstallBtn.style.display = 'inline-block';
+                }
+            }, 5000);
+        }
+        
+        // Track app installed
+        window.addEventListener('appinstalled', () => {
+            console.log('PWA was installed');
+            installBanner.classList.remove('show');
+            installBtn.style.display = 'none';
+        });
+        
+        // Handle standalone mode
+        if (isStandalone) {
+            document.body.classList.add('standalone');
+            // Hide install prompts
+            document.querySelector('.mobile-install-hint').style.display = 'none';
+        }
+    </script>
+</body>
+</html>

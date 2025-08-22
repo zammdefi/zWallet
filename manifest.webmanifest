@@ -1,0 +1,70 @@
+{
+  "name": "zWallet - Minimalist Ethereum Wallet",
+  "short_name": "zWallet",
+  "description": "Your favorite new minimalist Ethereum wallet built for DeFi",
+  "version": "0.0.7",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#B967DB",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/extension/icon16.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "/extension/icon48.png",
+      "sizes": "48x48",
+      "type": "image/png"
+    },
+    {
+      "src": "/extension/icon128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    },
+    {
+      "src": "/extension/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/extension/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "utilities"],
+  "screenshots": [],
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "shortcuts": [
+    {
+      "name": "Send Transaction",
+      "short_name": "Send",
+      "description": "Send Ethereum or tokens",
+      "url": "/index.html?action=send",
+      "icons": [{"src": "/extension/icon48.png", "sizes": "48x48"}]
+    },
+    {
+      "name": "View Balance",
+      "short_name": "Balance",
+      "description": "Check your wallet balance",
+      "url": "/index.html?action=balance",
+      "icons": [{"src": "/extension/icon48.png", "sizes": "48x48"}]
+    }
+  ],
+  "share_target": {
+    "action": "/index.html",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
