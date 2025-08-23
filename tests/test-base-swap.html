@@ -296,7 +296,7 @@
                                 Input: ${amount} ${fromSymbol}<br>
                                 Output: ${outputFormatted} ${toSymbol}<br>
                                 Fee: ${bestQuote.feeBps / 100}%<br>
-                                Source: ${['UNI_V2', 'UNI_V3', 'SUSHI'][bestQuote.source] || 'Unknown'}
+                                Source: ${['UNI_V2', 'SUSHI', 'ZAMM', 'UNI_V3', 'UNI_V4'][bestQuote.source] || 'Unknown'}
                             </div>
                         `;
                         log(`Quote successful: ${outputFormatted} ${toSymbol}`, 'success');

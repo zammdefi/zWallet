@@ -962,7 +962,8 @@ const TOKEN_LOGOS = {
 const WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 // zQuoter contract for finding best swap routes
-const ZQUOTER_ADDRESS = "0xb474E11Dd4290d423d681a847475122d076D3b02";
+const ZQUOTER_ADDRESS = "0x9a5414424725269b6c853822B2b6C7E6dbeaF472"; // Mainnet
+const BASE_ZQUOTER_ADDRESS = "0x69c644eBE4A792f601eDddF593c32DDEc35eC5D7"; // Base
 
 // zQuoter ABI for getting best quotes (moved here to be defined before use)
 const ZQUOTER_ABI = [
@@ -2237,7 +2238,12 @@ async function initProvider() {
         ZWALLET_ABI,
         provider
       );
-      zQuoterContract = null; // No zQuoter on Base
+      // Initialize Base zQuoter
+      zQuoterContract = new ethers.Contract(
+        BASE_ZQUOTER_ADDRESS,
+        ZQUOTER_ABI,
+        provider
+      );
     }
 
     // Connected to RPC
@@ -2272,7 +2278,11 @@ async function initProvider() {
             ZWALLET_ABI,
             provider
           );
-          zQuoterContract = null;
+          zQuoterContract = new ethers.Contract(
+            BASE_ZQUOTER_ADDRESS,
+            ZQUOTER_ABI,
+            provider
+          );
         }
         
         currentRpc = rpc;
@@ -6362,13 +6372,23 @@ let isSimulating = false; // Prevent concurrent simulations
 // Try to restore saved state
 restoreSwapState();
 
-// AMM sources enum from zQuoter contract
+// AMM sources enum from zQuoter contract - Mainnet
 const AMM_SOURCES = {
   0: "UNI_V2",
   1: "SUSHI",
   2: "ZAMM",
   3: "UNI_V3",
   4: "UNI_V4"
+};
+
+// AMM sources enum from zQuoter contract - Base
+const BASE_AMM_SOURCES = {
+  0: "UNI_V2",
+  1: "AERO",
+  2: "ZAMM",
+  3: "UNI_V3",
+  4: "UNI_V4",
+  5: "AERO_CL"
 };
 
 // Standard Uniswap V3 fee tiers
@@ -7312,8 +7332,10 @@ async function simulateSwap() {
     // Update USD values
     updateSwapUSDValues();
     
-    // Determine the source name
-    const sourceNames = ["Uniswap V2", "Sushiswap", "zAMM", "Uniswap V3"];
+    // Determine the source name based on network
+    const sourceNames = isBaseMode ? 
+      ["Uniswap V2", "Aerodrome", "zAMM", "Uniswap V3", "Uniswap V4", "Aerodrome CL"] :
+      ["Uniswap V2", "Sushiswap", "zAMM", "Uniswap V3", "Uniswap V4"];
     const sourceName = sourceNames[bestQuote.source] || `AMM ${bestQuote.source}`;
     
     
