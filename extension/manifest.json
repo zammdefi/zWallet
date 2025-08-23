@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "zWallet",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Your favorite new minimalist Ethereum wallet built for DeFi",
   "action": {
     "default_popup": "popup.html",

@@ -1,0 +1,84 @@
+<svg width="400" height="250" viewBox="0 0 400 250" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Noise texture for metallic effect -->
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" seed="5"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="discrete" tableValues="0 .02 .03 .04 .05 .06 .07 .08"/>
+      </feComponentTransfer>
+      <feComposite operator="over" in2="SourceGraphic"/>
+    </filter>
+    
+    <!-- Brushed metal texture -->
+    <pattern id="brushed" x="0" y="0" width="100" height="1" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="100" y2="0" stroke="#ffffff" stroke-width="0.5" opacity="0.03"/>
+    </pattern>
+    
+    <!-- Main gradient -->
+    <linearGradient id="mainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="25%" style="stop-color:#16213e;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0f1924;stop-opacity:1" />
+      <stop offset="75%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0c0c1a;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Chrome highlight gradient -->
+    <linearGradient id="chromeHighlight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.1" />
+      <stop offset="30%" style="stop-color:#ffffff;stop-opacity:0.02" />
+      <stop offset="60%" style="stop-color:#ffffff;stop-opacity:0.05" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.01" />
+    </linearGradient>
+    
+    <!-- Radial glow -->
+    <radialGradient id="glow">
+      <stop offset="0%" style="stop-color:#627eea;stop-opacity:0.1" />
+      <stop offset="50%" style="stop-color:#627eea;stop-opacity:0.05" />
+      <stop offset="100%" style="stop-color:#627eea;stop-opacity:0" />
+    </radialGradient>
+    
+    <!-- Hexagon pattern for subtle Ethereum reference -->
+    <pattern id="hexPattern" x="0" y="0" width="60" height="52" patternUnits="userSpaceOnUse">
+      <polygon points="30,0 45,8.66 45,26 30,34.66 15,26 15,8.66" 
+               fill="none" 
+               stroke="#627eea" 
+               stroke-width="0.5" 
+               opacity="0.05"/>
+    </pattern>
+    
+    <!-- Metallic sheen -->
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0" />
+      <stop offset="45%" style="stop-color:#ffffff;stop-opacity:0" />
+      <stop offset="50%" style="stop-color:#ffffff;stop-opacity:0.1" />
+      <stop offset="55%" style="stop-color:#ffffff;stop-opacity:0" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Base layer -->
+  <rect width="400" height="250" fill="url(#mainGradient)"/>
+  
+  <!-- Subtle hex pattern -->
+  <rect width="400" height="250" fill="url(#hexPattern)"/>
+  
+  <!-- Brushed metal texture -->
+  <rect width="400" height="250" fill="url(#brushed)"/>
+  
+  <!-- Chrome highlight -->
+  <rect width="400" height="250" fill="url(#chromeHighlight)"/>
+  
+  <!-- Center glow -->
+  <ellipse cx="200" cy="125" rx="150" ry="100" fill="url(#glow)"/>
+  
+  <!-- Metallic sheen -->
+  <rect width="400" height="250" fill="url(#sheen)"/>
+  
+  <!-- Noise texture overlay -->
+  <rect width="400" height="250" filter="url(#noise)" opacity="0.5"/>
+  
+  <!-- Subtle vignette -->
+  <rect width="400" height="250" fill="none" stroke="black" stroke-width="80" stroke-opacity="0.3"/>
+</svg>

@@ -32,6 +32,16 @@ if (fs.existsSync(qrcodePath)) {
   qrcodeJs = fs.readFileSync(qrcodePath, 'utf8');
 }
 
+// Embed ENA.png as base64 if it exists
+const enaPngPath = path.join(__dirname, 'extension', 'ENA.png');
+if (fs.existsSync(enaPngPath)) {
+  const enaPngBase64 = fs.readFileSync(enaPngPath, 'base64');
+  popupJs = popupJs.replace(
+    /<img src="ENA\.png"/g,
+    `<img src="data:image/png;base64,${enaPngBase64}"`
+  );
+}
+
 // Wrap Chrome API calls for standalone version
 popupJs = popupJs.replace(/chrome\.storage\.local\.(get|set)/g, (match, method) => {
   if (method === 'get') {
@@ -107,7 +117,9 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: var(--bg) url('data:image/svg+xml;base64,${Buffer.from(fs.readFileSync(path.join(__dirname, 'extension/backdrop.svg'), 'utf8')).toString('base64')}') no-repeat center center;
+    background-size: cover;
+    background-attachment: fixed;
 }
 
 .window {
