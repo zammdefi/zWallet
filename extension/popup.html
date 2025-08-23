@@ -102,6 +102,68 @@
         will-change: transform;
       }
       
+      /* Additional browser mobile optimizations */
+      @supports (-webkit-touch-callout: none) {
+        /* iOS Safari specific fixes */
+        body {
+          -webkit-user-select: none;
+          user-select: none;
+        }
+        
+        input, textarea {
+          -webkit-user-select: text;
+          user-select: text;
+        }
+        
+        /* Fix for iOS bounce scrolling */
+        .window {
+          -webkit-overflow-scrolling: touch;
+        }
+        
+        /* Prevent double-tap zoom */
+        button, .tab, .token-row {
+          touch-action: manipulation;
+        }
+      }
+      
+      /* Smooth scrolling for mobile */
+      @media (pointer: coarse) {
+        * {
+          scroll-behavior: smooth;
+        }
+        
+        .content {
+          overscroll-behavior-y: contain;
+        }
+        
+        /* Larger tap targets */
+        a, button, .clickable {
+          position: relative;
+        }
+        
+        a::after, button::after, .clickable::after {
+          content: '';
+          position: absolute;
+          top: -8px;
+          right: -8px;
+          bottom: -8px;
+          left: -8px;
+        }
+      }
+      
+      /* Optimize for PWA mode on mobile */
+      @media (display-mode: standalone) and (max-width: 640px) {
+        body {
+          padding-top: env(safe-area-inset-top, 20px);
+        }
+        
+        .window {
+          border-radius: 0;
+          border: none;
+          box-shadow: none;
+        }
+      }
+      
       /* Chrome detection */
       @media (max-width: 800px) {
         body.extension-mode {
@@ -132,21 +194,37 @@
       
       /* Mobile-specific optimizations */
       @media (max-width: 480px) {
+        :root {
+          --safe-area-inset-top: env(safe-area-inset-top, 0px);
+          --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+          --safe-area-inset-left: env(safe-area-inset-left, 0px);
+          --safe-area-inset-right: env(safe-area-inset-right, 0px);
+        }
+        
         body {
           padding: 10px;
-          padding-bottom: env(safe-area-inset-bottom);
+          padding-top: calc(10px + var(--safe-area-inset-top));
+          padding-bottom: calc(10px + var(--safe-area-inset-bottom));
+          padding-left: calc(10px + var(--safe-area-inset-left));
+          padding-right: calc(10px + var(--safe-area-inset-right));
           font-size: 14px;
           -webkit-tap-highlight-color: transparent;
+          min-height: 100vh;
+          min-height: 100dvh;
         }
         
         .window {
           border-radius: 0;
           box-shadow: 2px 2px 0 var(--border);
+          max-width: 100%;
+          width: 100%;
+          margin: 0;
         }
         
         .content {
           padding: 16px;
-          padding-bottom: calc(16px + env(safe-area-inset-bottom));
+          padding-bottom: calc(16px + var(--safe-area-inset-bottom));
+          overflow-x: hidden;
         }
         
         .tabs {
@@ -187,6 +265,8 @@
           min-height: 44px;
           touch-action: manipulation;
           -webkit-appearance: none;
+          appearance: none;
+          border-radius: 8px;
         }
         
         input:focus, select:focus, textarea:focus {
@@ -224,7 +304,10 @@
         .modal-content {
           margin: 16px !important;
           padding: 20px !important;
-          max-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 40px) !important;
+          max-height: calc(100vh - var(--safe-area-inset-top) - var(--safe-area-inset-bottom) - 40px) !important;
+          max-width: calc(100vw - 32px) !important;
+          width: 100% !important;
+          box-sizing: border-box !important;
         }
         
         /* Dropdown improvements */
@@ -277,7 +360,9 @@
 
       body {
         font-family: Chicago, -apple-system, "Helvetica Neue", monospace;
-        background: var(--bg);
+        background: var(--bg) url('backdrop.svg') no-repeat center center;
+        background-size: cover;
+        background-attachment: fixed;
         color: var(--fg);
         padding: 20px;
         font-size: 13px;
@@ -1370,6 +1455,79 @@
         background: var(--hover);
       }
 
+      /* Enhanced mobile form inputs */
+      @media (max-width: 768px) {
+        /* Better form inputs */
+        input[type="text"],
+        input[type="number"],
+        input[type="password"],
+        input[type="email"],
+        textarea {
+          width: 100%;
+          padding: 14px;
+          font-size: 16px !important;
+          border-radius: 10px;
+          transition: border-color 0.2s, transform 0.1s;
+        }
+        
+        input:focus,
+        textarea:focus {
+          transform: scale(1.01);
+          box-shadow: 0 0 0 3px rgba(185, 103, 219, 0.1);
+        }
+        
+        /* Better button states */
+        button:active {
+          transform: scale(0.98);
+          box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        
+        button:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+          transform: none !important;
+        }
+        
+        /* Better modal handling on mobile */
+        .modal {
+          padding: 10px;
+        }
+        
+        .modal-content {
+          border-radius: 16px;
+          max-height: calc(100vh - 40px);
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        
+        /* Improved dropdowns */
+        .token-dropdown {
+          max-height: 50vh;
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          border-radius: 12px;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        /* Better spacing for mobile */
+        .section {
+          padding: 20px 16px;
+        }
+        
+        /* Improved gas selector for mobile */
+        .gas-selector {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        
+        .gas-option {
+          padding: 14px;
+          min-height: 50px;
+          width: 100%;
+        }
+      }
+
       @media (max-width: 640px) {
         body {
           padding: 0;
@@ -1529,7 +1687,7 @@
             <polygon points="30,60 50,60 50,80" fill="#FF9F40" />
             <polygon points="50,60 70,60 50,80" fill="#B967DB" />
           </svg>
-          <span>zWallet v0.0.7</span>
+          <span>zWallet v0.0.8</span>
         </div>
         <div class="title-right">
           <button class="icon-btn network-btn" id="baseNetworkToggle" title="Switch to Base" aria-label="Switch network">

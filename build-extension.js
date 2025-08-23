@@ -15,6 +15,7 @@ const EXTENSION_FILES = [
   'eip7702.js',
   'qrcode.js',
   'visual-id.js',
+  'backdrop.svg',
   'icon.png',
   'icon16.png',
   'icon48.png',
@@ -63,7 +64,7 @@ function buildExtension() {
     console.error('❌ Failed to parse manifest.json:', error.message);
     process.exit(1);
   }
-  const version = manifest.version || '0.0.7';
+  const version = manifest.version || '0.0.8';
   
   console.log(`\n📦 Building zWallet v${version}...`);
   

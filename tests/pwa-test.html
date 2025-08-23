@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PWA Test - zWallet</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#B967DB">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+            background: #0a0a0f;
+            color: #e0e0ff;
+        }
+        h1 { color: #B967DB; }
+        .status { 
+            padding: 10px; 
+            margin: 10px 0; 
+            border-radius: 8px;
+            background: #1a1a2e;
+        }
+        .success { background: #67db8b33; color: #67db8b; }
+        .error { background: #db676733; color: #db6767; }
+        .info { background: #B967DB33; color: #B967DB; }
+        button {
+            background: #B967DB;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <h1>PWA Installation Test</h1>
+    
+    <div id="status"></div>
+    
+    <h2>PWA Checklist:</h2>
+    <div id="checklist"></div>
+    
+    <h2>Actions:</h2>
+    <button onclick="checkPWA()">Check PWA Status</button>
+    <button onclick="registerSW()">Register Service Worker</button>
+    <button onclick="installPWA()" id="installBtn" style="display:none;">Install PWA</button>
+    
+    <script>
+        let deferredPrompt;
+        const status = document.getElementById('status');
+        const checklist = document.getElementById('checklist');
+        
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.textContent = message;
+            status.appendChild(div);
+            console.log(message);
+        }
+        
+        async function checkPWA() {
+            checklist.innerHTML = '';
+            
+            // Check HTTPS
+            const isSecure = location.protocol === 'https:' || location.hostname === 'localhost';
+            addCheckItem('HTTPS/Secure Context', isSecure);
+            
+            // Check manifest
+            const manifestLink = document.querySelector('link[rel="manifest"]');
+            const hasManifest = !!manifestLink;
+            addCheckItem('Manifest linked', hasManifest);
+            
+            if (hasManifest) {
+                try {
+                    const manifestResponse = await fetch(manifestLink.href);
+                    const manifest = await manifestResponse.json();
+                    addCheckItem('Manifest loads', true);
+                    addCheckItem(`App name: ${manifest.name}`, true);
+                    addCheckItem(`Icons: ${manifest.icons?.length || 0} icons`, manifest.icons?.length > 0);
+                    addCheckItem(`Start URL: ${manifest.start_url}`, !!manifest.start_url);
+                    addCheckItem(`Display: ${manifest.display}`, manifest.display === 'standalone' || manifest.display === 'fullscreen');
+                } catch (e) {
+                    addCheckItem('Manifest loads', false);
+                    log('Error loading manifest: ' + e.message, 'error');
+                }
+            }
+            
+            // Check service worker
+            const swSupported = 'serviceWorker' in navigator;
+            addCheckItem('Service Worker API supported', swSupported);
+            
+            if (swSupported) {
+                const registration = await navigator.serviceWorker.getRegistration();
+                addCheckItem('Service Worker registered', !!registration);
+                if (registration) {
+                    addCheckItem(`SW state: ${registration.active?.state || 'not active'}`, registration.active?.state === 'activated');
+                }
+            }
+            
+            // Check install prompt
+            addCheckItem('Install prompt available', !!deferredPrompt);
+            
+            // Check standalone
+            const isStandalone = window.matchMedia('(display-mode: standalone)').matches || 
+                               window.navigator.standalone;
+            addCheckItem('Running as installed app', isStandalone);
+        }
+        
+        function addCheckItem(label, success) {
+            const div = document.createElement('div');
+            div.className = 'status ' + (success ? 'success' : 'error');
+            div.textContent = (success ? '✓' : '✗') + ' ' + label;
+            checklist.appendChild(div);
+        }
+        
+        async function registerSW() {
+            if ('serviceWorker' in navigator) {
+                try {
+                    const registration = await navigator.serviceWorker.register('/sw.js');
+                    log('Service Worker registered successfully', 'success');
+                    
+                    registration.addEventListener('updatefound', () => {
+                        log('New service worker available', 'info');
+                    });
+                    
+                    if (registration.active) {
+                        log('Service Worker is active', 'success');
+                    }
+                } catch (err) {
+                    log('Service Worker registration failed: ' + err.message, 'error');
+                }
+            } else {
+                log('Service Workers not supported', 'error');
+            }
+        }
+        
+        async function installPWA() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                log(`User ${outcome === 'accepted' ? 'accepted' : 'dismissed'} the install prompt`, 
+                    outcome === 'accepted' ? 'success' : 'info');
+                deferredPrompt = null;
+                document.getElementById('installBtn').style.display = 'none';
+            } else {
+                log('No install prompt available', 'error');
+            }
+        }
+        
+        // Listen for install prompt
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('installBtn').style.display = 'inline-block';
+            log('Install prompt captured', 'success');
+        });
+        
+        // Listen for app installed
+        window.addEventListener('appinstalled', () => {
+            log('PWA was installed!', 'success');
+            deferredPrompt = null;
+        });
+        
+        // Auto-check on load
+        window.addEventListener('load', () => {
+            checkPWA();
+            if ('serviceWorker' in navigator) {
+                registerSW();
+            }
+        });
+    </script>
+</body>
+</html>

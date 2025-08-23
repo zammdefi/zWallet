@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Base Network Swap Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .network-info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .test-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background: #c8e6c9;
+            color: #1b5e20;
+        }
+        .error {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+        .info {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        button {
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #1565c0;
+        }
+        .mono {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f5f5f5;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔄 Base Network Swap Test</h1>
+        <p>Test suite for zRouter swap functionality on Base network</p>
+        
+        <div class="network-info">
+            <strong>Network:</strong> Base (Chain ID: 8453)<br>
+            <strong>zRouter Address:</strong> <span class="mono">0x0000000000404FECAf36E6184245475eE1254835</span><br>
+            <strong>zQuoter Address:</strong> <span class="mono">0xb474E11Dd4290d423d681a847475122d076D3b02</span> (placeholder)<br>
+            <strong>Status:</strong> <span id="networkStatus">Not connected</span>
+        </div>
+
+        <div class="test-section">
+            <h3>1. Contract Verification</h3>
+            <button onclick="verifyContracts()">Verify Contracts</button>
+            <div id="contractResults"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>2. Token Configuration Test</h3>
+            <button onclick="testTokenConfig()">Test Token Config</button>
+            <div id="tokenResults"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>3. Swap Simulation</h3>
+            <label>From Token: 
+                <select id="fromToken">
+                    <option value="ETH">ETH</option>
+                    <option value="WETH">WETH</option>
+                    <option value="USDC">USDC</option>
+                </select>
+            </label>
+            <label>To Token: 
+                <select id="toToken">
+                    <option value="USDC">USDC</option>
+                    <option value="WETH">WETH</option>
+                    <option value="ETH">ETH</option>
+                </select>
+            </label>
+            <label>Amount: 
+                <input type="number" id="swapAmount" value="0.01" step="0.001">
+            </label>
+            <button onclick="simulateSwap()">Simulate Swap</button>
+            <div id="swapResults"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>Test Results Log</h3>
+            <pre id="testLog"></pre>
+        </div>
+    </div>
+
+    <script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js"></script>
+    <script>
+        // Base Network Configuration
+        const BASE_RPC = "https://mainnet.base.org";
+        const ZROUTER_ADDRESS = "0x0000000000404FECAf36E6184245475eE1254835";
+        const ZQUOTER_ADDRESS = "0xb474E11Dd4290d423d681a847475122d076D3b02";
+        const WETH_ADDRESS_BASE = "0x4200000000000000000000000000000000000006";
+        
+        // Base token addresses
+        const BASE_TOKENS = {
+            ETH: { address: ethers.constants.AddressZero, symbol: "ETH", decimals: 18 },
+            WETH: { address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18 },
+            USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 },
+            USDT: { address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", symbol: "USDT", decimals: 6 },
+            DAI: { address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", symbol: "DAI", decimals: 18 }
+        };
+
+        // zRouter ABI
+        const ZROUTER_ABI = [
+            "function swapVZ(address to, bool exactOut, uint256 feeOrHook, address tokenIn, address tokenOut, uint256 idIn, uint256 idOut, uint256 swapAmount, uint256 amountLimit, uint256 deadline) payable returns (uint256 amountIn, uint256 amountOut)"
+        ];
+
+        // zQuoter ABI
+        const ZQUOTER_ABI = [
+            "function getQuotes(bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, (uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut)[] quotes)",
+            "function buildBestSwap(address to, bool exactOut, address tokenIn, address tokenOut, uint256 swapAmount, uint256 slippageBps, uint256 deadline) view returns ((uint8 source, uint256 feeBps, uint256 amountIn, uint256 amountOut) best, bytes callData, uint256 amountLimit, uint256 msgValue)"
+        ];
+
+        let provider;
+        let zRouter;
+        let zQuoter;
+
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('testLog');
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+            logEl.textContent += `[${timestamp}] ${prefix} ${message}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function init() {
+            try {
+                provider = new ethers.providers.JsonRpcProvider(BASE_RPC);
+                const network = await provider.getNetwork();
+                
+                if (network.chainId !== 8453) {
+                    throw new Error(`Wrong network! Expected Base (8453), got ${network.chainId}`);
+                }
+                
+                document.getElementById('networkStatus').textContent = '✅ Connected to Base';
+                document.getElementById('networkStatus').style.color = 'green';
+                
+                zRouter = new ethers.Contract(ZROUTER_ADDRESS, ZROUTER_ABI, provider);
+                zQuoter = new ethers.Contract(ZQUOTER_ADDRESS, ZQUOTER_ABI, provider);
+                
+                log('Connected to Base network successfully', 'success');
+            } catch (error) {
+                document.getElementById('networkStatus').textContent = '❌ Connection failed';
+                document.getElementById('networkStatus').style.color = 'red';
+                log(`Failed to connect: ${error.message}`, 'error');
+            }
+        }
+
+        async function verifyContracts() {
+            const resultsDiv = document.getElementById('contractResults');
+            resultsDiv.innerHTML = '';
+            
+            try {
+                // Check zRouter
+                const zRouterCode = await provider.getCode(ZROUTER_ADDRESS);
+                const zRouterDeployed = zRouterCode !== '0x';
+                
+                resultsDiv.innerHTML += `
+                    <div class="test-result ${zRouterDeployed ? 'success' : 'error'}">
+                        zRouter: ${zRouterDeployed ? '✅ Deployed' : '❌ Not found'} 
+                        (${zRouterCode.length} bytes)
+                    </div>
+                `;
+                log(`zRouter verified: ${zRouterDeployed}`, zRouterDeployed ? 'success' : 'error');
+                
+                // Check zQuoter (might not be deployed yet)
+                const zQuoterCode = await provider.getCode(ZQUOTER_ADDRESS);
+                const zQuoterDeployed = zQuoterCode !== '0x';
+                
+                resultsDiv.innerHTML += `
+                    <div class="test-result ${zQuoterDeployed ? 'success' : 'info'}">
+                        zQuoter: ${zQuoterDeployed ? '✅ Deployed' : '⚠️ Not deployed (using placeholder)'} 
+                        (${zQuoterCode.length} bytes)
+                    </div>
+                `;
+                log(`zQuoter status: ${zQuoterDeployed ? 'deployed' : 'using placeholder'}`, zQuoterDeployed ? 'success' : 'info');
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="test-result error">Error: ${error.message}</div>`;
+                log(`Contract verification failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testTokenConfig() {
+            const resultsDiv = document.getElementById('tokenResults');
+            resultsDiv.innerHTML = '';
+            
+            try {
+                for (const [symbol, token] of Object.entries(BASE_TOKENS)) {
+                    if (symbol === 'ETH') {
+                        resultsDiv.innerHTML += `
+                            <div class="test-result success">
+                                ${symbol}: Native token (no address needed)
+                            </div>
+                        `;
+                        continue;
+                    }
+                    
+                    const code = await provider.getCode(token.address);
+                    const hasCode = code !== '0x';
+                    
+                    resultsDiv.innerHTML += `
+                        <div class="test-result ${hasCode ? 'success' : 'error'}">
+                            ${symbol}: ${hasCode ? '✅' : '❌'} ${token.address.slice(0, 10)}...
+                        </div>
+                    `;
+                    log(`${symbol} token: ${hasCode ? 'verified' : 'not found'}`, hasCode ? 'success' : 'error');
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="test-result error">Error: ${error.message}</div>`;
+                log(`Token config test failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function simulateSwap() {
+            const resultsDiv = document.getElementById('swapResults');
+            const fromSymbol = document.getElementById('fromToken').value;
+            const toSymbol = document.getElementById('toToken').value;
+            const amount = document.getElementById('swapAmount').value;
+            
+            resultsDiv.innerHTML = '<div class="test-result info">Simulating swap...</div>';
+            
+            try {
+                const fromToken = BASE_TOKENS[fromSymbol];
+                const toToken = BASE_TOKENS[toSymbol];
+                const swapAmount = ethers.utils.parseUnits(amount, fromToken.decimals);
+                
+                log(`Simulating swap: ${amount} ${fromSymbol} -> ${toSymbol}`, 'info');
+                
+                // Try to get quote from zQuoter
+                if (zQuoter) {
+                    try {
+                        const quotesResult = await zQuoter.getQuotes(
+                            false, // exactOut = false
+                            fromToken.address,
+                            toToken.address,
+                            swapAmount
+                        );
+                        
+                        const bestQuote = quotesResult.best;
+                        const outputFormatted = ethers.utils.formatUnits(bestQuote.amountOut, toToken.decimals);
+                        
+                        resultsDiv.innerHTML = `
+                            <div class="test-result success">
+                                <strong>Quote received!</strong><br>
+                                Input: ${amount} ${fromSymbol}<br>
+                                Output: ${outputFormatted} ${toSymbol}<br>
+                                Fee: ${bestQuote.feeBps / 100}%<br>
+                                Source: ${['UNI_V2', 'SUSHI', 'ZAMM', 'UNI_V3', 'UNI_V4'][bestQuote.source] || 'Unknown'}
+                            </div>
+                        `;
+                        log(`Quote successful: ${outputFormatted} ${toSymbol}`, 'success');
+                    } catch (quoteError) {
+                        resultsDiv.innerHTML = `
+                            <div class="test-result info">
+                                zQuoter not available (expected on Base): ${quoteError.message}<br>
+                                Would use zRouter directly for swaps.
+                            </div>
+                        `;
+                        log(`zQuoter unavailable (expected): ${quoteError.message}`, 'info');
+                    }
+                }
+                
+                // Build swap calldata for zRouter
+                const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
+                const slippageBps = 50; // 0.5%
+                
+                const swapCalldata = zRouter.interface.encodeFunctionData("swapVZ", [
+                    "0x0000000000000000000000000000000000000000", // to (would be user address)
+                    false, // exactOut
+                    100, // fee (1%)
+                    fromToken.address,
+                    toToken.address,
+                    0, // idIn
+                    0, // idOut
+                    swapAmount,
+                    0, // amountLimit (would be calculated with slippage)
+                    deadline
+                ]);
+                
+                resultsDiv.innerHTML += `
+                    <div class="test-result success">
+                        <strong>Swap calldata generated:</strong><br>
+                        <span class="mono">${swapCalldata.slice(0, 66)}...</span><br>
+                        Message value: ${fromSymbol === 'ETH' ? amount + ' ETH' : '0'}
+                    </div>
+                `;
+                log('Swap calldata generated successfully', 'success');
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="test-result error">Error: ${error.message}</div>`;
+                log(`Swap simulation failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Initialize on load
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

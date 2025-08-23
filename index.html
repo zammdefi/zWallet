@@ -62,12 +62,19 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: var(--bg);
+            background: var(--bg) url('/extension/backdrop.svg') no-repeat center center;
+            background-size: cover;
+            background-attachment: fixed;
             color: var(--text);
             min-height: 100vh;
+            min-height: 100dvh;
             display: flex;
             flex-direction: column;
             overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: pan-y;
         }
         
         /* PWA Install Banner */
@@ -279,6 +286,7 @@
             margin: 0 auto;
             padding: 20px;
             flex: 1;
+            box-sizing: border-box;
         }
         
         .header {
@@ -337,6 +345,7 @@
             margin-top: 40px;
             display: grid;
             gap: 16px;
+            padding: 0 10px;
         }
         
         .feature {
@@ -386,6 +395,11 @@
             transition: all 0.2s;
             text-decoration: none;
             display: inline-block;
+            -webkit-appearance: none;
+            appearance: none;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
         }
         
         .btn-primary {
@@ -407,23 +421,117 @@
             background: var(--surface);
         }
         
+        /* Enhanced Mobile Styles */
         @media (max-width: 640px) {
+            :root {
+                --safe-area-inset-top: env(safe-area-inset-top, 0px);
+                --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+                --safe-area-inset-left: env(safe-area-inset-left, 0px);
+                --safe-area-inset-right: env(safe-area-inset-right, 0px);
+            }
+            
+            body {
+                padding-top: var(--safe-area-inset-top);
+                padding-bottom: var(--safe-area-inset-bottom);
+                padding-left: var(--safe-area-inset-left);
+                padding-right: var(--safe-area-inset-right);
+            }
+            
             .container {
-                padding: 10px;
+                padding: 15px;
+                max-width: 100%;
             }
             
             .header {
-                padding: 20px 0;
+                padding: 20px 10px;
+                text-align: center;
+            }
+            
+            h1 {
+                font-size: clamp(28px, 8vw, 36px);
+                line-height: 1.2;
+            }
+            
+            h2 {
+                font-size: clamp(20px, 6vw, 24px);
+            }
+            
+            p {
+                font-size: clamp(14px, 4vw, 18px);
+            }
+            
+            .features {
+                gap: 15px;
+                padding: 10px 0;
+            }
+            
+            .feature {
+                padding: 20px;
+                min-height: auto;
+                touch-action: manipulation;
+            }
+            
+            .feature-icon {
+                font-size: 32px;
+            }
+            
+            .action-buttons {
+                flex-direction: column;
+                gap: 12px;
+                width: 100%;
+                padding: 0 10px;
+            }
+            
+            .btn {
+                width: 100%;
+                min-height: 48px;
+                font-size: 16px !important;
+                padding: 14px 24px;
+            }
+            
+            .install-banner {
+                bottom: calc(10px + var(--safe-area-inset-bottom));
+                left: 10px;
+                right: 10px;
+                max-width: calc(100% - 20px);
+                padding: 20px;
+            }
+            
+            .mobile-install-hint {
+                margin: 20px 10px;
+                padding: 20px;
+            }
+        }
+        
+        /* Improved touch targets for mobile */
+        @media (pointer: coarse) {
+            button, a.btn, .feature {
+                min-height: 44px;
+                cursor: pointer;
+            }
+            
+            .feature:active {
+                transform: scale(0.98);
+                transition: transform 0.1s;
+            }
+            
+            .btn:active {
+                transform: scale(0.98);
+            }
+        }
+        
+        /* Landscape mobile adjustments */
+        @media (max-width: 896px) and (orientation: landscape) {
+            .header {
+                padding: 15px;
             }
             
             h1 {
                 font-size: 28px;
             }
             
-            .install-banner {
-                bottom: 10px;
-                left: 10px;
-                right: 10px;
+            .features {
+                grid-template-columns: repeat(2, 1fr);
             }
         }
         

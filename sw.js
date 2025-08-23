@@ -1,8 +1,10 @@
-const CACHE_NAME = 'zwallet-v1.0.0';
+const CACHE_NAME = 'zwallet-v0.0.8';
 const urlsToCache = [
-  '/zWallet.html',
+  '/',
+  '/index.html',
+  '/manifest.webmanifest',
+  '/extension/popup.html',
   '/extension/popup.js',
-  '/extension/styles.css',
   '/extension/ethers.umd.min.js',
   '/extension/icon.png',
   '/extension/icon128.png',
@@ -82,7 +84,7 @@ self.addEventListener('fetch', (event) => {
       .catch(() => {
         // Offline fallback
         if (event.request.destination === 'document') {
-          return caches.match('/zWallet.html');
+          return caches.match('/index.html');
         }
       })
   );
